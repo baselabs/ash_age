@@ -323,12 +323,14 @@ defmodule AshAge.DataLayer do
   @impl true
   def transaction(resource, fun, _timeout \\ nil, _reason \\ nil) do
     repo = AshAge.DataLayer.Info.repo(resource)
+    # credo:disable-for-next-line Credo.Check.Refactor.Apply
     apply(repo, :transaction, [fun])
   end
 
   @impl true
   def in_transaction?(resource) do
     repo = AshAge.DataLayer.Info.repo(resource)
+    # credo:disable-for-next-line Credo.Check.Refactor.Apply
     apply(repo, :in_transaction?, [])
   end
 

@@ -11,5 +11,4 @@ defmodule AshAge.Edge do
           direction: :outgoing | :incoming | :both,
           destination: module()
         }
-
 end

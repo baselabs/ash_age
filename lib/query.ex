@@ -3,7 +3,17 @@ defmodule AshAge.Query do
   Query structure for AGE graph queries.
   """
 
-  defstruct [:resource, :graph, :label, :repo, :expression, :limit, :offset]
+  defstruct [
+    :resource,
+    :graph,
+    :label,
+    :repo,
+    :expression,
+    :limit,
+    :offset,
+    filters: [],
+    sort: []
+  ]
 
   @type t :: %__MODULE__{
           resource: module(),
@@ -12,7 +22,9 @@ defmodule AshAge.Query do
           repo: module(),
           expression: Ash.Filter.t() | nil,
           limit: non_neg_integer() | nil,
-          offset: non_neg_integer() | nil
+          offset: non_neg_integer() | nil,
+          filters: [String.t()],
+          sort: [{atom(), :asc | :desc}]
         }
 
   @doc """
@@ -25,7 +37,7 @@ defmodule AshAge.Query do
     {where, params} =
       if query.expression do
         case AshAge.Query.Filter.translate(query.expression, query) do
-          {:ok, _query, clause, params} -> {clause, params}
+          {:ok, _query, clause} -> {clause, %{}}
           _ -> {"", %{}}
         end
       else
