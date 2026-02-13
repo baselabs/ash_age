@@ -31,9 +31,32 @@ See `lib/ash_age.ex` for full documentation.
 ### Quick Start
 
 1. Ensure Apache AGE extension is installed in PostgreSQL
-2. Add `search_path: "public, ag_catalog, "$user"` to your Ecto repo config
-   (public MUST be first to prevent shadowing system tables)
-3. Create an AGE graph via migration:
+
+2. Register Postgrex types for AGE's `agtype`:
+
+```elixir
+defmodule MyApp.PostgrexTypes do
+  Postgrex.Types.define(
+    MyApp.PostgrexTypes,
+    [AshAge.Type.Agtype.Extension] ++ Ecto.Adapters.Postgres.extensions(),
+    []
+  )
+end
+```
+
+3. Configure your Repo with the AGE session hook and types module:
+
+```elixir
+config :my_app, MyApp.Repo,
+  after_connect: {AshAge.Session, :setup, []},
+  types: MyApp.PostgrexTypes
+```
+
+This sets `search_path` to `public, ag_catalog, "$user"` and loads the AGE
+extension on each connection. (`public` must be first to prevent shadowing
+Ecto's `schema_migrations` table.)
+
+4. Create an AGE graph via migration:
 
 ```elixir
 defmodule MyApp.Repo.Migrations.CreateAgeGraph do
@@ -51,7 +74,7 @@ defmodule MyApp.Repo.Migrations.CreateAgeGraph do
 end
 ```
 
-4. Define Ash resources using AshAge.DataLayer:
+5. Define Ash resources using AshAge.DataLayer:
 
 ```elixir
 defmodule MyApp.MyEntity do
@@ -77,6 +100,12 @@ defmodule MyApp.MyEntity do
   end
 end
 ```
+
+## Mix Tasks
+
+- **`mix ash_age.install`** — Print step-by-step setup instructions
+- **`mix ash_age.gen.migration NAME`** — Generate a timestamped AGE migration
+- **`mix ash_age.verify`** — Verify AGE extension, search_path, and graph existence
 
 ## Development
 

@@ -20,3 +20,16 @@ priv/plts/
 # OS
 .DS_Store
 *.DS_Store
+
+# AI Tools
+/.serena/
+/.expert/
+/.gemini/
+/.cursor/
+/.opencode/
+/.antigravity/
+/.codex/
+/.claude/
+/.agent/
+/.aider/
+
