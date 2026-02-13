@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-13
+
+### Fixed
+
+- Add missing `:filters` and `:sort` fields to `AshAge.Query` struct
+- Fix pattern match arity in `AshAge.Query.to_cypher/1`
+- Add module aliases to satisfy Credo strict checks
+- Replace `cond` with `if/else` in `AshAge.Type.Agtype`
+- Fix `mix docs` CI step to use correct MIX_ENV
+
 ## [0.1.0] - 2025-01-01
 
 ### Added
@@ -20,5 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/baselabs/ash_age/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/baselabs/ash_age/releases/tag/v0.1.0
