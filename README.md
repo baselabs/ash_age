@@ -38,7 +38,7 @@ See `lib/ash_age.ex` for full documentation.
 defmodule MyApp.PostgrexTypes do
   Postgrex.Types.define(
     MyApp.PostgrexTypes,
-    [AshAge.Type.Agtype.Extension] ++ Ecto.Adapters.Postgres.extensions(),
+    [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
     []
   )
 end

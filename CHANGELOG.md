@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-13
+
+### Added
+
+- `AshAge.Type.Edge` struct for AGE edge data (`id`, `label`, `start_id`, `end_id`, `properties`)
+- Real agtype parser in `AshAge.Type.Agtype` — decodes `::vertex`, `::edge`, `::path` suffixes and scalar values
+- Vertex-to-resource attribute mapping in `AshAge.Type.Cast` with type coercion (ISO8601 → Date/DateTime)
+- DSL transformer validation: `ValidateGraph`, `EnsureLabelled`, `ValidateLabelFormat`
+- Idempotent migration helpers — `create_age_graph/1`, `create_vertex_label/2`, `create_edge_label/2` now check catalog before creating
+
+### Changed
+
+- `AshAge.DataLayer.Info` reads all config dynamically from the resource's Spark DSL instead of hard-coded values
+- `AshAge.Cypher.Parameterized` wraps Cypher in `ag_catalog.cypher()` with JSON-encoded `$1` parameter
+- `AshAge.Query` generates proper `MATCH/WHERE/RETURN/ORDER BY/SKIP/LIMIT` Cypher and accumulates params in a map
+- `AshAge.Query.add_param/2` correctly accumulates parameters with `$paramN` references
+
+### Fixed
+
+- Postgrex extension module reference: `AshAge.Type.Agtype.Extension` → `AshAge.Postgrex.AgtypeExtension` in docs and README
+- Removed non-existent `AshAge.Cypher.Traversal` from doc groups in `mix.exs`
+
 ## [0.1.2] - 2026-02-13
 
 ### Added
@@ -42,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/baselabs/ash_age/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/baselabs/ash_age/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/baselabs/ash_age/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/baselabs/ash_age/releases/tag/v0.1.0

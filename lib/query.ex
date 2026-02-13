@@ -12,7 +12,8 @@ defmodule AshAge.Query do
     :limit,
     :offset,
     filters: [],
-    sort: []
+    sort: [],
+    params: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -24,41 +25,77 @@ defmodule AshAge.Query do
           limit: non_neg_integer() | nil,
           offset: non_neg_integer() | nil,
           filters: [String.t()],
-          sort: [{atom(), :asc | :desc}]
+          sort: [{atom(), :asc | :desc}],
+          params: map()
         }
 
   @doc """
   Converts a query to Cypher with parameters.
+
+  Returns `{cypher_string, params_map}`.
   """
   @spec to_cypher(t()) :: {String.t(), map()}
   def to_cypher(%__MODULE__{} = query) do
-    base = "MATCH (n:#{query.label} {$params})"
+    {where_parts, query} = build_where(query)
 
-    {where, params} =
-      if query.expression do
-        case AshAge.Query.Filter.translate(query.expression, query) do
-          {:ok, _query, clause} -> {clause, %{}}
-          _ -> {"", %{}}
-        end
-      else
-        {"", %{}}
-      end
+    parts =
+      ["MATCH (n:#{query.label})"] ++
+        build_where_clause(where_parts) ++
+        ["RETURN n"] ++
+        build_order_by(query.sort) ++
+        build_skip(query.offset) ++
+        build_limit(query.limit)
 
-    cypher =
-      base <>
-        if where == "" do
-          ""
-        else
-          " WHERE " <> where
-        end
-
-    {cypher, params}
+    {Enum.join(parts, " "), query.params}
   end
 
   @doc """
-  Adds a parameter to the query.
+  Adds a parameter to the query, returning the updated query and a `$paramN` reference.
   """
-  def add_param(query, _value) do
-    {query, "$param#{map_size(query.expression || {}) + 1}"}
+  @spec add_param(t(), term()) :: {t(), String.t()}
+  def add_param(%__MODULE__{params: params} = query, value) do
+    key = "param#{map_size(params) + 1}"
+    {%{query | params: Map.put(params, key, value)}, "$#{key}"}
   end
+
+  defp build_where(query) do
+    filter_clauses = query.filters
+
+    {expression_clauses, query} =
+      if query.expression do
+        case AshAge.Query.Filter.translate(query.expression, query) do
+          {:ok, query, ""} -> {[], query}
+          {:ok, query, clause} -> {[clause], query}
+          _ -> {[], query}
+        end
+      else
+        {[], query}
+      end
+
+    {filter_clauses ++ expression_clauses, query}
+  end
+
+  defp build_where_clause([]), do: []
+
+  defp build_where_clause(parts) do
+    ["WHERE " <> Enum.join(parts, " AND ")]
+  end
+
+  defp build_order_by([]), do: []
+
+  defp build_order_by(sort_clauses) do
+    order =
+      Enum.map_join(sort_clauses, ", ", fn {field, direction} ->
+        dir = if direction == :desc, do: "DESC", else: "ASC"
+        "n.#{field} #{dir}"
+      end)
+
+    ["ORDER BY " <> order]
+  end
+
+  defp build_skip(nil), do: []
+  defp build_skip(offset), do: ["SKIP #{offset}"]
+
+  defp build_limit(nil), do: []
+  defp build_limit(limit), do: ["LIMIT #{limit}"]
 end

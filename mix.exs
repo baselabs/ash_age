@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.2.0"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
@@ -92,7 +92,7 @@ defmodule AshAge.MixProject do
       groups_for_modules: [
         "Data Layer": [AshAge.DataLayer],
         Types: [AshAge.Type.Agtype, AshAge.Type.Vertex, AshAge.Type.Edge, AshAge.Type.Path],
-        Cypher: [AshAge.Cypher.Parameterized, AshAge.Cypher.Traversal],
+        Cypher: [AshAge.Cypher.Parameterized],
         Query: [AshAge.Query, AshAge.Query.Filter],
         Utilities: [AshAge.Graph, AshAge.Session, AshAge.Migration],
         "Mix Tasks": [
