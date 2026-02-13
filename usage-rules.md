@@ -20,10 +20,13 @@ end
 ```
 
 **Important:**
-- Graph must exist in PostgreSQL (create via migration)
+- Repo must define a Postgrex types module with `AshAge.Type.Agtype.Extension` and set `types:` in config
+- Graph must exist in PostgreSQL (create via migration or `mix ash_age.gen.migration`)
 - Repo must have `after_connect: {AshAge.Session, :setup, []}` in config
 - Search path must include `ag_catalog` and `public` (Session.setup handles this)
 - Session.setup sets search_path to: `public, ag_catalog, "$user"` — this order prevents `ag_catalog.schema_migrations` from shadowing Ecto's `public.schema_migrations`
+- Run `mix ash_age.install` for full setup instructions
+- Run `mix ash_age.verify` to check your database configuration
 
 ## Query Operations
 

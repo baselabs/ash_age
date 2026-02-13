@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-13
+
+### Added
+
+- Add `AshAge` root module with complete setup documentation
+- Add `mix ash_age.install` task for printing setup instructions
+- Add `mix ash_age.gen.migration` task for generating AGE migrations
+- Add `mix ash_age.verify` task for runtime AGE configuration verification
+- Implement `AshAge.Session` module with `setup/1` for `after_connect` hook
+- Implement `AshAge.Migration` module with graph, label, and index helpers
+- Add unit tests for Session, Migration, and Mix task modules
+
 ## [0.1.1] - 2026-02-13
 
 ### Fixed
@@ -30,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/baselabs/ash_age/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/baselabs/ash_age/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/baselabs/ash_age/releases/tag/v0.1.0
