@@ -104,6 +104,8 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 ## Version History
 
 Key changes that affect agent behavior:
+- v0.2.1: Fixed error struct field mismatches in data_layer.ex (`:message`/`:detail` → `:reason`; `:resource` → `:query` for QueryFailed). Removed phantom `TraversalDepthExceeded` from docs.
+- v0.2.0: Core data pipeline — real agtype parser, vertex-to-resource casting, DSL transformer validation, idempotent migrations, parameterized Cypher
 - v0.1.0: Initial release with CRUD, filter, traversal
 - Removed MERGE support due to AGE bugs (use CREATE + SET)
 - Added search_path: `public, ag_catalog, "$user"` to fix schema_migrations shadowing

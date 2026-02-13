@@ -191,9 +191,8 @@ defmodule AshAge.DataLayer do
       {:error, %Postgrex.Error{} = error} ->
         {:error,
          QueryFailed.exception(
-           resource: resource,
-           message: "AGE query failed",
-           detail: Exception.message(error)
+           query: "AGE read query",
+           reason: Exception.message(error)
          )}
     end
   end
@@ -240,8 +239,7 @@ defmodule AshAge.DataLayer do
         {:error,
          CreateFailed.exception(
            resource: resource,
-           message: "Failed to create vertex",
-           detail: Exception.message(error)
+           reason: Exception.message(error)
          )}
     end
   end
@@ -289,8 +287,7 @@ defmodule AshAge.DataLayer do
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           message: "Failed to update vertex",
-           detail: Exception.message(error)
+           reason: Exception.message(error)
          )}
     end
   end
@@ -319,9 +316,8 @@ defmodule AshAge.DataLayer do
       {:error, %Postgrex.Error{} = error} ->
         {:error,
          QueryFailed.exception(
-           resource: resource,
-           message: "Failed to delete vertex",
-           detail: Exception.message(error)
+           query: "AGE delete query",
+           reason: Exception.message(error)
          )}
     end
   end
