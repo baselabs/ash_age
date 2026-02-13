@@ -81,9 +81,7 @@ defmodule Mix.Tasks.AshAge.Verify do
       _ ->
         Mix.shell().error("  ✗ AGE extension is NOT installed")
 
-        Mix.shell().info(
-          "    Run: CREATE EXTENSION IF NOT EXISTS age; in your database"
-        )
+        Mix.shell().info("    Run: CREATE EXTENSION IF NOT EXISTS age; in your database")
 
         :error
     end
