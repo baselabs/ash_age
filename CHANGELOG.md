@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-02-13
+
+### Fixed
+
+- `AgtypeExtension.encode/1` missing `<<byte_size(value)::int32()>>` length prefix required by Postgrex wire protocol
+- `AgtypeExtension.decode/1` missing `<<len::int32(), value::binary-size(len)>>` extraction — Postgrex sends length-prefixed data on the wire
+
 ## [0.2.2] - 2026-02-13
 
 ### Fixed
@@ -80,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/baselabs/ash_age/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/baselabs/ash_age/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/baselabs/ash_age/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/baselabs/ash_age/compare/v0.1.2...v0.2.0
