@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-13
+
+### Fixed
+
+- Error struct field mismatches in `data_layer.ex` — `:message`/`:detail` fields were silently dropped at runtime because the Splode error structs only define `:reason` (and `:query` for `QueryFailed`)
+- `QueryFailed` construction in `run_query/2` and `destroy/2` used non-existent `:resource` field instead of `:query`
+- Removed phantom `AshAge.Errors.TraversalDepthExceeded` reference from `usage-rules.md` (module does not exist)
+- Updated `AGENTS.md` version history to include v0.2.0 and v0.2.1 changes
+
 ## [0.2.0] - 2026-02-13
 
 ### Added
@@ -64,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/baselabs/ash_age/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/baselabs/ash_age/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/baselabs/ash_age/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/baselabs/ash_age/compare/v0.1.0...v0.1.1

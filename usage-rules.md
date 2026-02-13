@@ -120,7 +120,6 @@ end
 - `AshAge.Errors.CreateFailed` — Vertex creation failed
 - `AshAge.Errors.UpdateFailed` — Vertex update failed
 - `AshAge.Errors.UnsupportedFilter` — Filter not supported by AshAge
-- `AshAge.Errors.TraversalDepthExceeded` — Depth limit exceeded
 
 ## Testing Patterns
 
