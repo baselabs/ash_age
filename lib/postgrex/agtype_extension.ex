@@ -14,7 +14,7 @@ defmodule AshAge.Postgrex.AgtypeExtension do
   def encode(_) do
     quote do
       value when is_binary(value) ->
-        {:ok, value}
+        value
 
       _ ->
         :error
