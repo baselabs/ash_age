@@ -65,7 +65,7 @@ defmodule AshAge.Type.Cast do
   end
 
   defp maybe_put_id(attrs, nil), do: attrs
-  defp maybe_put_id(attrs, id), do: Map.put(attrs, :id, id)
+  defp maybe_put_id(attrs, id), do: Map.put_new(attrs, :id, id)
 
   defp coerce_value(value, type) when is_binary(value) and type in @date_types do
     coerce_date(value)

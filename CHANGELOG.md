@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-02-13
+
+### Fixed
+
+- UUID primary key overwritten by AGE internal integer ID — `maybe_put_id` used `Map.put` which unconditionally replaced the UUID extracted from vertex properties; now uses `Map.put_new` to preserve UUID when present
+- Static Cypher queries passed `NULL` as third argument to `ag_catalog.cypher()` — AGE rejects this with `invalid_parameter_value`; now omits the params argument entirely for parameterless queries
+
 ## [0.2.3] - 2026-02-13
 
 ### Fixed
@@ -87,7 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/baselabs/ash_age/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/baselabs/ash_age/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/baselabs/ash_age/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/baselabs/ash_age/compare/v0.2.0...v0.2.1

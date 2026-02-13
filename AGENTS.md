@@ -104,6 +104,7 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 ## Version History
 
 Key changes that affect agent behavior:
+- v0.2.4: Fixed UUID primary key overwrite by AGE integer ID (`Map.put` → `Map.put_new`). Removed `NULL` third arg from static Cypher queries (AGE rejects it).
 - v0.2.3: Added Postgrex wire protocol length prefix to `AgtypeExtension` encode/decode — required for proper parameter framing.
 - v0.2.2: Fixed `AgtypeExtension.encode/1` returning `{:ok, value}` tuple instead of raw binary. Added missing `rollback/2` callback to DataLayer.
 - v0.2.1: Fixed error struct field mismatches in data_layer.ex (`:message`/`:detail` → `:reason`; `:resource` → `:query` for QueryFailed). Removed phantom `TraversalDepthExceeded` from docs.

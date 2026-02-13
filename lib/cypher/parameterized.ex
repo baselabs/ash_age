@@ -38,7 +38,7 @@ defmodule AshAge.Cypher.Parameterized do
   @doc """
   Builds a static Cypher query (no parameters).
 
-  Uses `NULL` for the params argument.
+  Omits the params argument entirely — AGE rejects `NULL` as the third argument.
   """
   @spec build_static(atom() | String.t(), String.t()) :: {String.t(), list()}
   def build_static(graph, cypher) do
@@ -54,7 +54,7 @@ defmodule AshAge.Cypher.Parameterized do
     columns = format_return_columns(return_types)
 
     sql =
-      "SELECT * FROM ag_catalog.cypher('#{graph_name}', $$ #{cypher} $$, NULL) AS (#{columns})"
+      "SELECT * FROM ag_catalog.cypher('#{graph_name}', $$ #{cypher} $$) AS (#{columns})"
 
     {sql, []}
   end
