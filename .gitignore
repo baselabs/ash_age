@@ -1,0 +1,8 @@
+# Build artifacts
+_build/
+erl_crash.dump
+*.beam
+
+# Dependencies (managed by parent project gpt_core)
+deps/
+mix.lock
