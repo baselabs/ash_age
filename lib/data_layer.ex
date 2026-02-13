@@ -338,6 +338,12 @@ defmodule AshAge.DataLayer do
     apply(repo, :in_transaction?, [])
   end
 
+  @impl true
+  def rollback(resource, value) do
+    repo = Info.repo(resource)
+    repo.rollback(value)
+  end
+
   # === Filter/Sort/Limit/Offset ===
 
   @impl true
