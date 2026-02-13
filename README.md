@@ -1,5 +1,15 @@
 # ash_age
 
+> **⚠️ AI-Generated Code - Use at Your Own Risk**
+>
+> This package was initially created using AI tools as part of a larger project
+> integration effort. While functional, it may not reflect production-ready
+> standards or best practices for a standalone library.
+>
+> **Use this code at your own discretion.** Review it carefully before
+> using in production. Pull requests and contributions to improve the
+> implementation and documentation are welcome.
+
 Ash DataLayer for Apache AGE graph database.
 
 ## Installation
@@ -8,15 +18,9 @@ Add to your `mix.exs`:
 
 ```elixir
 def deps do
-  [{:ash_age, path: "../vendor/ash_age"}]
-end
-```
-
-Or for external projects (when published to Hex.pm):
-
-```elixir
-def deps do
-  [{:ash_age, "~> 0.1.0"}]
+  [
+    {:ash_age, "~> 0.1.0"}
+  ]
 end
 ```
 
@@ -27,7 +31,8 @@ See `lib/ash_age.ex` for full documentation.
 ### Quick Start
 
 1. Ensure Apache AGE extension is installed in PostgreSQL
-2. Add `after_connect: {AshAge.Session, :setup, []}` to your Ecto repo config
+2. Add `search_path: "public, ag_catalog, "$user"` to your Ecto repo config
+   (public MUST be first to prevent shadowing system tables)
 3. Create an AGE graph via migration:
 
 ```elixir
@@ -76,7 +81,8 @@ end
 ## Development
 
 ```bash
-cd vendor/ash_age
+cd ash_age
+mix deps.get
 mix test
 mix format
 mix credo --strict
@@ -84,9 +90,10 @@ mix credo --strict
 
 ## Documentation
 
-- **AGENTS.md** — AI agent development guide
+- **CONTRIBUTING.md** — Contribution guidelines
+- **LICENSE** — MIT License
 - **usage-rules.md** — AI agent usage patterns (via `usage_rules` package)
 
 ## License
 
-[Add your license here - e.g., MIT, Apache-2.0]
+MIT
