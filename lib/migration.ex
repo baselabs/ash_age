@@ -26,11 +26,22 @@ defmodule AshAge.Migration do
 
   @doc """
   Creates an AGE graph with the given name.
+
+  Idempotent — checks `ag_catalog.ag_graph` before creating.
   """
   @spec create_age_graph(String.t()) :: :ok
   def create_age_graph(graph_name) do
     validate_identifier!(graph_name)
-    execute("SELECT ag_catalog.create_graph('#{graph_name}')")
+
+    execute("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM ag_catalog.ag_graph WHERE name = '#{graph_name}') THEN
+        PERFORM ag_catalog.create_graph('#{graph_name}');
+      END IF;
+    END $$;
+    """)
+
     :ok
   end
 
@@ -46,23 +57,53 @@ defmodule AshAge.Migration do
 
   @doc """
   Creates a vertex label in the given graph.
+
+  Idempotent — checks `ag_catalog.ag_label` before creating.
   """
   @spec create_vertex_label(String.t(), String.t()) :: :ok
   def create_vertex_label(graph_name, label) do
     validate_identifier!(graph_name)
     validate_identifier!(label)
-    execute("SELECT ag_catalog.create_vlabel('#{graph_name}', '#{label}')")
+
+    execute("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM ag_catalog.ag_label
+        WHERE name = '#{label}'
+          AND graph = (SELECT graphid FROM ag_catalog.ag_graph WHERE name = '#{graph_name}')
+      ) THEN
+        PERFORM ag_catalog.create_vlabel('#{graph_name}', '#{label}');
+      END IF;
+    END $$;
+    """)
+
     :ok
   end
 
   @doc """
   Creates an edge label in the given graph.
+
+  Idempotent — checks `ag_catalog.ag_label` before creating.
   """
   @spec create_edge_label(String.t(), String.t()) :: :ok
   def create_edge_label(graph_name, label) do
     validate_identifier!(graph_name)
     validate_identifier!(label)
-    execute("SELECT ag_catalog.create_elabel('#{graph_name}', '#{label}')")
+
+    execute("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM ag_catalog.ag_label
+        WHERE name = '#{label}'
+          AND graph = (SELECT graphid FROM ag_catalog.ag_graph WHERE name = '#{graph_name}')
+      ) THEN
+        PERFORM ag_catalog.create_elabel('#{graph_name}', '#{label}');
+      END IF;
+    END $$;
+    """)
+
     :ok
   end
 
