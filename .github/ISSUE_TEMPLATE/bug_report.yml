@@ -1,0 +1,82 @@
+name: Bug Report
+description: Report a bug in AshAge
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Define a resource with ...
+        2. Run the query ...
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened, including any error messages or stack traces.
+    validations:
+      required: true
+
+  - type: input
+    id: ash-age-version
+    attributes:
+      label: AshAge Version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: elixir-version
+    attributes:
+      label: Elixir Version
+      placeholder: "1.18.x"
+    validations:
+      required: true
+
+  - type: input
+    id: otp-version
+    attributes:
+      label: Erlang/OTP Version
+      placeholder: "27.x"
+    validations:
+      required: true
+
+  - type: input
+    id: age-version
+    attributes:
+      label: Apache AGE Version
+      placeholder: "1.5.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any additional context, configuration, or screenshots.

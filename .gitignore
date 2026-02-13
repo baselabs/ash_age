@@ -2,7 +2,21 @@
 _build/
 erl_crash.dump
 *.beam
+*.ez
 
-# Dependencies (managed by parent project gpt_core)
+# Dependencies
 deps/
-mix.lock
+
+# Documentation
+/doc/
+
+# Dialyzer PLTs
+priv/plts/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+*.DS_Store
