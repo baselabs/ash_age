@@ -13,9 +13,10 @@ defmodule AshAge.Type.Agtype do
     # Simplified decoder - in production this would parse the agtype format
     # For now, return a basic structure.
     # Heuristic for path vs vertex to satisfy compiler warnings in callers.
-    cond do
-      String.contains?(agtype_string, "vertices") -> %Path{vertices: [], edges: []}
-      true -> %Vertex{id: nil, label: "Entity", properties: %{}}
+    if String.contains?(agtype_string, "vertices") do
+      %Path{vertices: [], edges: []}
+    else
+      %Vertex{id: nil, label: "Entity", properties: %{}}
     end
   end
 

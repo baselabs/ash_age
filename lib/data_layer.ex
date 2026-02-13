@@ -88,6 +88,14 @@ defmodule AshAge.DataLayer do
 
   @behaviour Ash.DataLayer
 
+  alias Ash.Error.Query.NotFound
+  alias AshAge.Cypher.Parameterized
+  alias AshAge.DataLayer.Info
+  alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
+  alias AshAge.Query.Filter
+  alias AshAge.Type.{Agtype, Cast}
+  alias Ecto.Adapters.SQL
+
   use Spark.Dsl.Extension,
     sections: [@age],
     transformers: [
@@ -143,9 +151,9 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def resource_to_query(resource, _domain) do
-    graph = AshAge.DataLayer.Info.graph(resource)
-    label = AshAge.DataLayer.Info.label(resource)
-    repo = AshAge.DataLayer.Info.repo(resource)
+    graph = Info.graph(resource)
+    label = Info.label(resource)
+    repo = Info.repo(resource)
 
     %AshAge.Query{resource: resource, graph: graph, label: label, repo: repo}
   end
@@ -156,24 +164,24 @@ defmodule AshAge.DataLayer do
 
     result =
       if map_size(params) > 0 do
-        {sql, pg_params} = AshAge.Cypher.Parameterized.build(query.graph, cypher, params)
-        Ecto.Adapters.SQL.query(query.repo, sql, pg_params)
+        {sql, pg_params} = Parameterized.build(query.graph, cypher, params)
+        SQL.query(query.repo, sql, pg_params)
       else
-        {sql, pg_params} = AshAge.Cypher.Parameterized.build_static(query.graph, cypher)
-        Ecto.Adapters.SQL.query(query.repo, sql, pg_params)
+        {sql, pg_params} = Parameterized.build_static(query.graph, cypher)
+        SQL.query(query.repo, sql, pg_params)
       end
 
     case result do
       {:ok, %{rows: rows}} ->
-        attribute_map = AshAge.DataLayer.Info.attribute_map(resource)
-        attribute_types = AshAge.DataLayer.Info.attribute_types(resource)
+        attribute_map = Info.attribute_map(resource)
+        attribute_types = Info.attribute_types(resource)
 
         records =
           Enum.map(rows, fn [agtype_text] ->
-            vertex = AshAge.Type.Agtype.decode(agtype_text)
+            vertex = Agtype.decode(agtype_text)
 
             attrs =
-              AshAge.Type.Cast.vertex_to_resource_attrs(vertex, attribute_map, attribute_types)
+              Cast.vertex_to_resource_attrs(vertex, attribute_map, attribute_types)
 
             struct(resource, attrs)
           end)
@@ -182,7 +190,7 @@ defmodule AshAge.DataLayer do
 
       {:error, %Postgrex.Error{} = error} ->
         {:error,
-         AshAge.Errors.QueryFailed.exception(
+         QueryFailed.exception(
            resource: resource,
            message: "AGE query failed",
            detail: Exception.message(error)
@@ -194,9 +202,9 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def create(resource, changeset) do
-    repo = AshAge.DataLayer.Info.repo(resource)
-    graph = AshAge.DataLayer.Info.graph(resource)
-    label = AshAge.DataLayer.Info.label(resource)
+    repo = Info.repo(resource)
+    graph = Info.graph(resource)
+    label = Info.label(resource)
 
     props = changeset_to_properties(resource, changeset)
 
@@ -214,23 +222,23 @@ defmodule AshAge.DataLayer do
         "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
       end
 
-    {sql, pg_params} = AshAge.Cypher.Parameterized.build(graph, cypher, props)
+    {sql, pg_params} = Parameterized.build(graph, cypher, props)
 
-    case Ecto.Adapters.SQL.query(repo, sql, pg_params) do
+    case SQL.query(repo, sql, pg_params) do
       {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = AshAge.DataLayer.Info.attribute_map(resource)
-        attribute_types = AshAge.DataLayer.Info.attribute_types(resource)
+        attribute_map = Info.attribute_map(resource)
+        attribute_types = Info.attribute_types(resource)
 
         attrs =
           vertex_text
-          |> AshAge.Type.Agtype.decode()
-          |> AshAge.Type.Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+          |> Agtype.decode()
+          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
 
         {:ok, struct(resource, attrs)}
 
       {:error, %Postgrex.Error{} = error} ->
         {:error,
-         AshAge.Errors.CreateFailed.exception(
+         CreateFailed.exception(
            resource: resource,
            message: "Failed to create vertex",
            detail: Exception.message(error)
@@ -240,9 +248,9 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def update(resource, changeset) do
-    repo = AshAge.DataLayer.Info.repo(resource)
-    graph = AshAge.DataLayer.Info.graph(resource)
-    label = AshAge.DataLayer.Info.label(resource)
+    repo = Info.repo(resource)
+    graph = Info.graph(resource)
+    label = Info.label(resource)
 
     id = Ash.Changeset.get_attribute(changeset, :id)
     changed_attrs = changeset_to_properties(resource, changeset)
@@ -260,26 +268,26 @@ defmodule AshAge.DataLayer do
     """
 
     params = Map.put(changed_attrs, "match_id", id)
-    {sql, pg_params} = AshAge.Cypher.Parameterized.build(graph, cypher, params)
+    {sql, pg_params} = Parameterized.build(graph, cypher, params)
 
-    case Ecto.Adapters.SQL.query(repo, sql, pg_params) do
+    case SQL.query(repo, sql, pg_params) do
       {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = AshAge.DataLayer.Info.attribute_map(resource)
-        attribute_types = AshAge.DataLayer.Info.attribute_types(resource)
+        attribute_map = Info.attribute_map(resource)
+        attribute_types = Info.attribute_types(resource)
 
         attrs =
           vertex_text
-          |> AshAge.Type.Agtype.decode()
-          |> AshAge.Type.Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+          |> Agtype.decode()
+          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
 
         {:ok, struct(resource, attrs)}
 
       {:ok, %{rows: []}} ->
-        {:error, Ash.Error.Query.NotFound.exception(resource: resource)}
+        {:error, NotFound.exception(resource: resource)}
 
       {:error, %Postgrex.Error{} = error} ->
         {:error,
-         AshAge.Errors.UpdateFailed.exception(
+         UpdateFailed.exception(
            resource: resource,
            message: "Failed to update vertex",
            detail: Exception.message(error)
@@ -289,9 +297,9 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def destroy(resource, changeset) do
-    repo = AshAge.DataLayer.Info.repo(resource)
-    graph = AshAge.DataLayer.Info.graph(resource)
-    label = AshAge.DataLayer.Info.label(resource)
+    repo = Info.repo(resource)
+    graph = Info.graph(resource)
+    label = Info.label(resource)
 
     id = Ash.Changeset.get_attribute(changeset, :id)
 
@@ -302,15 +310,15 @@ defmodule AshAge.DataLayer do
     """
 
     {sql, pg_params} =
-      AshAge.Cypher.Parameterized.build(graph, cypher, %{"match_id" => id}, [{:n, :agtype}])
+      Parameterized.build(graph, cypher, %{"match_id" => id}, [{:n, :agtype}])
 
-    case Ecto.Adapters.SQL.query(repo, sql, pg_params) do
+    case SQL.query(repo, sql, pg_params) do
       {:ok, _} ->
         :ok
 
       {:error, %Postgrex.Error{} = error} ->
         {:error,
-         AshAge.Errors.QueryFailed.exception(
+         QueryFailed.exception(
            resource: resource,
            message: "Failed to delete vertex",
            detail: Exception.message(error)
@@ -322,14 +330,14 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def transaction(resource, fun, _timeout \\ nil, _reason \\ nil) do
-    repo = AshAge.DataLayer.Info.repo(resource)
+    repo = Info.repo(resource)
     # credo:disable-for-next-line Credo.Check.Refactor.Apply
     apply(repo, :transaction, [fun])
   end
 
   @impl true
   def in_transaction?(resource) do
-    repo = AshAge.DataLayer.Info.repo(resource)
+    repo = Info.repo(resource)
     # credo:disable-for-next-line Credo.Check.Refactor.Apply
     apply(repo, :in_transaction?, [])
   end
@@ -338,7 +346,7 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def filter(query, filter, _resource) do
-    case AshAge.Query.Filter.translate(filter, query) do
+    case Filter.translate(filter, query) do
       {:ok, query, where_clause} ->
         {:ok, %{query | filters: query.filters ++ [where_clause]}}
 
@@ -371,7 +379,7 @@ defmodule AshAge.DataLayer do
   # === Helpers ===
 
   defp changeset_to_properties(resource, changeset) do
-    skip = AshAge.DataLayer.Info.skip(resource)
+    skip = Info.skip(resource)
 
     changeset.attributes
     |> Enum.reject(fn {key, _} -> key in skip end)
