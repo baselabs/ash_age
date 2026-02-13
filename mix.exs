@@ -91,10 +91,10 @@ defmodule AshAge.MixProject do
       ],
       groups_for_modules: [
         "Data Layer": [AshAge.DataLayer],
-        "Types": [AshAge.Type.Agtype, AshAge.Type.Vertex, AshAge.Type.Edge, AshAge.Type.Path],
-        "Cypher": [AshAge.Cypher.Parameterized, AshAge.Cypher.Traversal],
-        "Query": [AshAge.Query, AshAge.Query.Filter],
-        "Utilities": [AshAge.Graph, AshAge.Session, AshAge.Migration]
+        Types: [AshAge.Type.Agtype, AshAge.Type.Vertex, AshAge.Type.Edge, AshAge.Type.Path],
+        Cypher: [AshAge.Cypher.Parameterized, AshAge.Cypher.Traversal],
+        Query: [AshAge.Query, AshAge.Query.Filter],
+        Utilities: [AshAge.Graph, AshAge.Session, AshAge.Migration]
       ]
     ]
   end

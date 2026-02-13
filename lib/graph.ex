@@ -3,6 +3,8 @@ defmodule AshAge.Graph do
   Helper functions for AGE graph management.
   """
 
+  alias Ecto.Adapters.SQL
+
   @doc """
   Checks if an AGE graph exists in the database.
   """
@@ -16,7 +18,7 @@ defmodule AshAge.Graph do
     WHERE name = $1
     """
 
-    case Ecto.Adapters.SQL.query(repo, query, [graph_name_str]) do
+    case SQL.query(repo, query, [graph_name_str]) do
       {:ok, %{rows: [[true]]}} -> true
       _ -> false
     end
