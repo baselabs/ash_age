@@ -19,7 +19,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 0.1.0"}
+    {:ash_age, "~> 0.2.4"}
   ]
 end
 ```
