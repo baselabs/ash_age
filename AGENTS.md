@@ -10,10 +10,10 @@ AshAge is an Ash Framework DataLayer for Apache AGE graph database. It translate
 
 When making changes, understand these dependency levels:
 
-**Level 0 (no deps):** `errors`, `vertex`, `edge`, `path`, `session`, `migration`, `telemetry`
-**Level 1 (leaf deps):** `agtype` (→ vertex,edge,path), `parameterized` (→ errors)
+**Level 0 (no deps):** `errors`, `vertex`, `edge`, `path`, `session`, `migration`
+**Level 1 (leaf deps):** `agtype` (→ vertex,edge,path), `parameterized` (→ errors), `agtype_extension`
 **Level 2 (mid deps):** `graph` (→ parameterized), `query` (→ errors), `cast` (→ agtype)
-**Level 3 (combined):** `filter` (→ query), `traversal` (→ parameterized), `info` (→ Spark)
+**Level 3 (combined):** `filter` (→ query), `info` (→ Spark)
 **Level 4 (transforms):** `transformers` (→ info)
 **Level 5 (top):** `data_layer` (→ ALL above)
 
@@ -24,7 +24,7 @@ When making changes, understand these dependency levels:
 | Purpose | Files |
 |---------|-------|
 | DataLayer entry point | `lib/data_layer.ex` |
-| Cypher generation | `lib/cypher/parameterized.ex`, `lib/query/filter.ex`, `lib/cypher/traversal.ex` |
+| Cypher generation | `lib/cypher/parameterized.ex`, `lib/query/filter.ex` |
 | Type handling | `lib/type/agtype.ex`, `lib/type/cast.ex`, `lib/type/vertex.ex`, `lib/type/edge.ex`, `lib/type/path.ex` |
 | DSL/Info | `lib/data_layer/info.ex`, `lib/edge.ex`, `lib/data_layer/transformers/*` |
 | Graph lifecycle | `lib/graph.ex`, `lib/session.ex`, `lib/migration.ex` |
@@ -58,13 +58,6 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 2. Add test case to `test/ash_age/query/filter_test.exs`
 3. Update `can?/2` in `lib/data_layer.ex` if new capability
 
-### Adding a New Traversal Pattern
-
-1. Add function to `lib/cypher/traversal.ex`
-2. Generate Cypher with `build/4` pattern for parameterization
-3. Add test to `test/ash_age/cypher/traversal_test.exs`
-4. Wire to DataLayer actions if exposing as Ash action
-
 ### Adding DSL Configuration
 
 1. Add field to `@age` DSL section in `lib/data_layer.ex`
@@ -89,11 +82,10 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 ## Common Pitfalls
 
 1. **Forgetting parameterization** — If you write `cypher <> value`, you're wrong. Use parameters.
-2. **Breaking depth limits** — Traversal depth MUST be capped (4 real-time, 6 background)
-3. **Missing error returns** — Unsupported operations MUST return `{:error, UnsupportedFilter}`
-4. **Assuming Ash 2.x patterns** — Ash 3.x has different operator modules, no `Ash.Query.Value`
-5. **Using ->> operator in indexes** — Must use `ag_catalog.agtype_access_operator()` because public comes before ag_catalog in search_path
-6. **Assuming CREATE with $props works** — AGE doesn't support `CREATE (n:Label $props)` — must use `CREATE (n:Label) SET n.key = $val`
+2. **Missing error returns** — Unsupported operations MUST return `{:error, UnsupportedFilter}`
+3. **Assuming Ash 2.x patterns** — Ash 3.x has different operator modules, no `Ash.Query.Value`
+4. **Using ->> operator in indexes** — Must use `ag_catalog.agtype_access_operator()` because public comes before ag_catalog in search_path
+5. **Assuming CREATE with $props works** — AGE doesn't support `CREATE (n:Label $props)` — must use `CREATE (n:Label) SET n.key = $val`
 
 ## When to Ask for Help
 
@@ -104,12 +96,13 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 ## Version History
 
 Key changes that affect agent behavior:
+- v0.2.5: Removed phantom references to non-existent modules (`traversal.ex`, `telemetry`) and features (`traverse`, `neighbors`, `find_path`, depth limits) from all docs. Updated README install version.
 - v0.2.4: Fixed UUID primary key overwrite by AGE integer ID (`Map.put` → `Map.put_new`). Removed `NULL` third arg from static Cypher queries (AGE rejects it).
 - v0.2.3: Added Postgrex wire protocol length prefix to `AgtypeExtension` encode/decode — required for proper parameter framing.
 - v0.2.2: Fixed `AgtypeExtension.encode/1` returning `{:ok, value}` tuple instead of raw binary. Added missing `rollback/2` callback to DataLayer.
 - v0.2.1: Fixed error struct field mismatches in data_layer.ex (`:message`/`:detail` → `:reason`; `:resource` → `:query` for QueryFailed). Removed phantom `TraversalDepthExceeded` from docs.
 - v0.2.0: Core data pipeline — real agtype parser, vertex-to-resource casting, DSL transformer validation, idempotent migrations, parameterized Cypher
-- v0.1.0: Initial release with CRUD, filter, traversal
+- v0.1.0: Initial release with CRUD, filter, sort, limit/offset
 - Removed MERGE support due to AGE bugs (use CREATE + SET)
 - Added search_path: `public, ag_catalog, "$user"` to fix schema_migrations shadowing
 - Fixed index SQL to use `ag_catalog.agtype_access_operator()` for agtype properties

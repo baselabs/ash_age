@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.5] - 2026-02-13
+## [0.2.6] - 2026-02-14
+
+### Fixed
+
+- Removed all phantom references to non-existent modules and features from documentation
+- `usage-rules.md`: Corrected Postgrex extension module name (`AshAge.Type.Agtype.Extension` → `AshAge.Postgrex.AgtypeExtension`)
+- `usage-rules.md`: Removed phantom `traverse()`, `neighbors()`, `find_path()` examples (not implemented)
+- `usage-rules.md`: Replaced phantom depth limits section with actual supported capabilities list
+- `AGENTS.md`: Removed phantom `telemetry` and `traversal` modules from dependency levels and Key Files
+- `AGENTS.md`: Removed "Adding a New Traversal Pattern" section referencing non-existent files
+- `AGENTS.md`: Removed phantom "Breaking depth limits" from Common Pitfalls
+- Cleaned up all merged fix branches (local and remote)
+
+## [0.2.5] - 2026-02-14
 
 ### Fixed
 
@@ -100,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/baselabs/ash_age/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/baselabs/ash_age/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/baselabs/ash_age/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/baselabs/ash_age/compare/v0.2.2...v0.2.3

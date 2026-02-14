@@ -20,7 +20,7 @@ end
 ```
 
 **Important:**
-- Repo must define a Postgrex types module with `AshAge.Type.Agtype.Extension` and set `types:` in config
+- Repo must define a Postgrex types module with `AshAge.Postgrex.AgtypeExtension` and set `types:` in config
 - Graph must exist in PostgreSQL (create via migration or `mix ash_age.gen.migration`)
 - Repo must have `after_connect: {AshAge.Session, :setup, []}` in config
 - Search path must include `ag_catalog` and `public` (Session.setup handles this)
@@ -38,15 +38,6 @@ MyResource
 |> Ash.Query.filter(label == "Entity")
 |> Ash.Query.for_read(:read)
 |> Ash.read!()
-
-# Traversal
-MyResource.traverse(actor, depth: 3, direction: :outgoing)
-
-# Neighbors
-MyResource.neighbors(actor, edge_label: :RELATES_TO)
-
-# Path finding
-MyResource.find_path(actor, to_id: target_id, max_depth: 4)
 ```
 
 **Restrictions:**
@@ -134,8 +125,10 @@ test "creates vertex" do
 end
 ```
 
-## Depth Limits
+## Supported Capabilities
 
-- Real-time queries (Chat GraphLookup): max 3-4 hops
-- Background jobs (community detection): max 6 hops
-- Traversal actions enforce these limits via `@max_realtime_depth` and `@max_background_depth`
+- CRUD: `:read`, `:create`, `:update`, `:destroy`
+- Transactions: `:transact` with `rollback/2`
+- Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
+- Boolean expressions: `and`, `or`, `not`
+- Sort, limit, offset
