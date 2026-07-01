@@ -48,7 +48,6 @@ defmodule AshAge.Multitenancy do
   defp default_encode(tenant) do
     str = to_string(tenant)
     passthrough = "t_" <> str
-    encoded = "g" <> Base.encode32(str, case: :lower, padding: false)
 
     cond do
       str == "" ->
@@ -57,11 +56,11 @@ defmodule AshAge.Multitenancy do
       Regex.match?(@identifier_body, str) and byte_size(passthrough) <= @max_bytes ->
         passthrough
 
-      byte_size(encoded) <= @max_bytes ->
-        encoded
-
+      # Only the "dirty"/overflow branch needs base32 — compute it lazily here so
+      # the passthrough hot path (ULID/integer/slug tenants) never pays for it.
       true ->
-        fail_closed!()
+        encoded = "g" <> Base.encode32(str, case: :lower, padding: false)
+        if byte_size(encoded) <= @max_bytes, do: encoded, else: fail_closed!()
     end
   end
 
