@@ -73,7 +73,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       age:
-        image: apache/age:latest
+        # Pinned by digest for reproducible AGE behavior (apache/age:release_PG16_1.6.0,
+        # AGE 1.6.0 / PostgreSQL 16). A floating tag makes graph-behavior CI non-reproducible.
+        image: apache/age@sha256:16aa423d20a31aed36a3313244bf7aa00731325862f20ed584510e381f2feaed
         ports:
           - 5432:5432
         env:
