@@ -210,4 +210,11 @@ defmodule AshAge.MultitenancyTest do
       assert err.message =~ "redacted"
     end
   end
+
+  describe "AshAge.tenant_graph/2 public shim" do
+    test "returns the same name the encoder produces (provisioning == query time)" do
+      assert AshAge.tenant_graph(AshAge.MultitenancyTest.PlainResource, "acme") ==
+               AshAge.Multitenancy.graph_name(AshAge.MultitenancyTest.PlainResource, "acme")
+    end
+  end
 end

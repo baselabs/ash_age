@@ -84,4 +84,14 @@ defmodule AshAge do
   - `AshAge.Migration` — Migration helpers
   - `AshAge.Graph` — Graph management utilities
   """
+
+  @doc """
+  Resolves the AGE graph name for a `:context`-multitenant `resource` and `tenant`.
+
+  Host applications call this to derive the graph name to provision (via
+  `AshAge.Migration.provision_tenant/3`), guaranteeing the provisioned name matches
+  the one ash_age resolves at query time. Delegates to `AshAge.Multitenancy.graph_name/2`.
+  """
+  @spec tenant_graph(Ash.Resource.t(), term()) :: String.t()
+  def tenant_graph(resource, tenant), do: AshAge.Multitenancy.graph_name(resource, tenant)
 end
