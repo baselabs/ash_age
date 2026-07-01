@@ -1,0 +1,126 @@
+defmodule AshAge.Integration.CompositePkTest do
+  use AshAge.DataCase, async: false
+  @moduletag :integration
+
+  defmodule Doc do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_s2_composite
+      repo AshAge.TestRepo
+      label :Doc
+    end
+
+    attributes do
+      attribute :tenant_id, :string, primary_key?: true, allow_nil?: false, public?: true
+      attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:tenant_id, :id, :name]
+      defaults [:read, :destroy]
+
+      create :create do
+        accept [:tenant_id, :id, :name]
+      end
+
+      update :update do
+        accept [:name]
+      end
+    end
+  end
+
+  defmodule Coded do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_s2_stringkey
+      repo AshAge.TestRepo
+      label :Coded
+    end
+
+    attributes do
+      attribute :code, :string, primary_key?: true, allow_nil?: false, public?: true
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:code, :name]
+      defaults [:read, :destroy]
+
+      create :create do
+        accept [:code, :name]
+      end
+
+      update :update do
+        accept [:name]
+      end
+    end
+  end
+
+  defp create!(resource, attrs) do
+    resource |> Ash.Changeset.for_create(:create, attrs) |> Ash.create!()
+  end
+
+  test "composite PK: update targets exactly the (tenant_id, id) row, not a same-id sibling" do
+    with_graph(
+      "itest_s2_composite",
+      fn ->
+        create!(Doc, %{tenant_id: "t1", id: "shared", name: "a"})
+        create!(Doc, %{tenant_id: "t2", id: "shared", name: "b"})
+
+        # A hardcoded `WHERE n.id = $id` match would hit BOTH rows (same id).
+        [t1_row] = Enum.filter(Ash.read!(Doc), &(&1.tenant_id == "t1"))
+
+        {:ok, updated} =
+          t1_row |> Ash.Changeset.for_update(:update, %{name: "a2"}) |> Ash.update()
+
+        assert updated.name == "a2"
+
+        names = Map.new(Ash.read!(Doc), &{&1.tenant_id, &1.name})
+        assert names == %{"t1" => "a2", "t2" => "b"}
+      end,
+      vlabels: ["Doc"]
+    )
+  end
+
+  test "composite PK: destroy removes exactly the (tenant_id, id) row (DETACH DELETE preserved)" do
+    with_graph(
+      "itest_s2_composite",
+      fn ->
+        create!(Doc, %{tenant_id: "t1", id: "shared", name: "a"})
+        create!(Doc, %{tenant_id: "t2", id: "shared", name: "b"})
+
+        [t1_row] = Enum.filter(Ash.read!(Doc), &(&1.tenant_id == "t1"))
+        t1_row |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy!()
+
+        assert [%{tenant_id: "t2", name: "b"}] = Ash.read!(Doc)
+      end,
+      vlabels: ["Doc"]
+    )
+  end
+
+  test "non-:id single PK: update/destroy match on the actual key name (:code)" do
+    with_graph(
+      "itest_s2_stringkey",
+      fn ->
+        row = create!(Coded, %{code: "abc", name: "x"})
+
+        {:ok, updated} = row |> Ash.Changeset.for_update(:update, %{name: "y"}) |> Ash.update()
+        assert updated.name == "y"
+        assert [%{code: "abc", name: "y"}] = Ash.read!(Coded)
+
+        row |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy!()
+        assert [] == Ash.read!(Coded)
+      end,
+      vlabels: ["Coded"]
+    )
+  end
+end
