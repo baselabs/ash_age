@@ -118,4 +118,24 @@ defmodule AshAge.MigrationTest do
       end
     end
   end
+
+  describe "provision_tenant/3 identifier validation" do
+    test "rejects an invalid graph name before any DDL" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        AshAge.Migration.provision_tenant(AshAge.TestRepo, "has-a-hyphen", vlabels: ["Doc"])
+      end
+    end
+
+    test "rejects an invalid vertex label" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        AshAge.Migration.provision_tenant(AshAge.TestRepo, "good_graph", vlabels: ["Bad-Label"])
+      end
+    end
+
+    test "rejects an invalid edge label" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        AshAge.Migration.provision_tenant(AshAge.TestRepo, "good_graph", elabels: ["Bad-Label"])
+      end
+    end
+  end
 end
