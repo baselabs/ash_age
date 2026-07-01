@@ -142,16 +142,17 @@ defmodule AshAge.Integration.MultitenancyAttributeTest do
           |> Ash.Changeset.for_update(:update, %{body: "HACKED"}, tenant: @org_b)
           |> Ash.update()
 
-        # Must be a NotFound specifically — proving the SCOPED query ran and matched
-        # 0 rows, not that Ash rejected the fabricated changeset before the data
+        # Must be a StaleRecord specifically — proving the SCOPED query ran and
+        # matched 0 rows (the Ash contract signal for a record-mutation excluded by
+        # a filter), not that Ash rejected the fabricated changeset before the data
         # layer (which would leave the scoping code unexercised).
         assert {:error, update_err} = attacker_update
 
         assert Enum.any?(
                  List.wrap(Map.get(update_err, :errors, [update_err])),
-                 &match?(%Ash.Error.Query.NotFound{}, &1)
+                 &match?(%Ash.Error.Changes.StaleRecord{}, &1)
                ),
-               "expected NotFound (scoped query matched 0 rows), got: #{inspect(update_err)}"
+               "expected StaleRecord (scoped query matched 0 rows), got: #{inspect(update_err)}"
 
         # Victim's row is intact under org_a.
         assert {:ok, [only]} = Note |> Ash.Query.for_read(:read) |> Ash.read(tenant: @org_a)
@@ -166,9 +167,9 @@ defmodule AshAge.Integration.MultitenancyAttributeTest do
 
         assert Enum.any?(
                  List.wrap(Map.get(destroy_err, :errors, [destroy_err])),
-                 &match?(%Ash.Error.Query.NotFound{}, &1)
+                 &match?(%Ash.Error.Changes.StaleRecord{}, &1)
                ),
-               "expected NotFound (scoped query matched 0 rows), got: #{inspect(destroy_err)}"
+               "expected StaleRecord (scoped query matched 0 rows), got: #{inspect(destroy_err)}"
 
         assert {:ok, [_]} = Note |> Ash.Query.for_read(:read) |> Ash.read(tenant: @org_a)
       end,

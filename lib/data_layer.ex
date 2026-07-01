@@ -94,7 +94,7 @@ defmodule AshAge.DataLayer do
 
   @behaviour Ash.DataLayer
 
-  alias Ash.Error.Query.NotFound
+  alias Ash.Error.Changes.StaleRecord
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
@@ -286,8 +286,8 @@ defmodule AshAge.DataLayer do
 
         # Match on the resource's full primary key (composite or non-:id supported).
         # `changed_attrs` are reserved so a match param never clobbers a SET param.
-        {where_clause, match_params} =
-          pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk, changed_attrs)
 
         case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
           {:ok, full_where, params} ->
@@ -299,7 +299,7 @@ defmodule AshAge.DataLayer do
             """
 
             {sql, pg_params} = Parameterized.build(graph, cypher, params)
-            decode_update_result(resource, SQL.query(repo, sql, pg_params))
+            decode_update_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
 
           {:error, _} ->
             {:error,
@@ -325,7 +325,8 @@ defmodule AshAge.DataLayer do
         repo = Info.repo(resource)
         label = validated_label(resource)
 
-        {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk, %{})
 
         case changeset_where(changeset, where_clause, match_params) do
           {:ok, full_where, params} ->
@@ -333,7 +334,7 @@ defmodule AshAge.DataLayer do
             # real deletion from a no-match. Without it, `DETACH DELETE n` returns
             # zero rows whether or not anything matched — which would silently
             # report success for a scoping-denied (cross-tenant) delete. An empty
-            # result therefore fails CLOSED as NotFound, mirroring update/2.
+            # result therefore fails CLOSED as StaleRecord, mirroring update/2.
             cypher = """
             MATCH (n:#{label})
             WHERE #{full_where}
@@ -342,7 +343,7 @@ defmodule AshAge.DataLayer do
             """
 
             {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:n, :agtype}])
-            decode_destroy_result(resource, SQL.query(repo, sql, pg_params))
+            decode_destroy_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
 
           {:error, _} ->
             {:error,
@@ -526,8 +527,11 @@ defmodule AshAge.DataLayer do
 
   # Decodes the AGE result of an update's `MATCH ... SET ... RETURN n`. A returned
   # vertex is the updated row; an empty result means the WHERE (PK + scoping
-  # filter) matched nothing and fails CLOSED as NotFound.
-  defp decode_update_result(resource, {:ok, %{rows: [[vertex_text]]}}) do
+  # filter) matched nothing — the record is gone or a filter excluded it, which is
+  # `StaleRecord` per the Ash data-layer contract (NotFound is for identifier
+  # lookups; StaleRecord is the record-mutation signal, and Ash's bulk paths
+  # pattern-match it). Mirrors the reference ETS data layer.
+  defp decode_update_result(resource, _filter, {:ok, %{rows: [[vertex_text]]}}) do
     attribute_map = Info.attribute_map(resource)
     attribute_types = Info.attribute_types(resource)
 
@@ -539,24 +543,25 @@ defmodule AshAge.DataLayer do
     {:ok, struct(resource, attrs)}
   end
 
-  defp decode_update_result(resource, {:ok, %{rows: []}}) do
-    {:error, NotFound.exception(resource: resource)}
+  defp decode_update_result(resource, filter, {:ok, %{rows: []}}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
   end
 
-  defp decode_update_result(resource, {:error, error}) do
+  defp decode_update_result(resource, _filter, {:error, error}) do
     {:error, UpdateFailed.exception(resource: resource, reason: redact_db_error(error))}
   end
 
   # Decodes the AGE result of a destroy's `MATCH ... DETACH DELETE n RETURN n`. At
   # least one returned vertex means a row was deleted; an empty result means the
-  # WHERE (PK + scoping filter) matched nothing and fails CLOSED as NotFound.
-  defp decode_destroy_result(_resource, {:ok, %{rows: [_ | _]}}), do: :ok
+  # WHERE (PK + scoping filter) matched nothing and fails CLOSED as `StaleRecord`
+  # (see decode_update_result/3 for why StaleRecord, not NotFound).
+  defp decode_destroy_result(_resource, _filter, {:ok, %{rows: [_ | _]}}), do: :ok
 
-  defp decode_destroy_result(resource, {:ok, %{rows: []}}) do
-    {:error, NotFound.exception(resource: resource)}
+  defp decode_destroy_result(resource, filter, {:ok, %{rows: []}}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
   end
 
-  defp decode_destroy_result(_resource, {:error, error}) do
+  defp decode_destroy_result(_resource, _filter, {:error, error}) do
     {:error, QueryFailed.exception(query: "AGE delete query", reason: redact_db_error(error))}
   end
 

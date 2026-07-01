@@ -52,7 +52,7 @@ defmodule AshAge.Integration.BackwardCompatTest do
     )
   end
 
-  test "destroy of an absent row returns NotFound (S3 0-row semantics, reaches plain resources)" do
+  test "destroy of an absent row returns StaleRecord (S3 0-row semantics, reaches plain resources)" do
     with_graph(
       "itest_s3_plain",
       fn ->
@@ -60,15 +60,16 @@ defmodule AshAge.Integration.BackwardCompatTest do
         :ok = p |> Ash.Changeset.for_destroy(:destroy, %{}) |> Ash.destroy()
 
         # Second destroy of the same (now-absent) row matches 0 rows. Pre-S3 this
-        # returned :ok unconditionally; S3 returns NotFound (mirrors update/2 and
-        # is what makes a scoping-denied destroy observable). Documented in CHANGELOG.
+        # returned :ok unconditionally; S3 returns StaleRecord — the Ash contract
+        # signal for a record-based mutation that matched nothing (what the
+        # reference ETS data layer and Ash core do). Documented in CHANGELOG.
         assert {:error, err} = p |> Ash.Changeset.for_destroy(:destroy, %{}) |> Ash.destroy()
 
         assert Enum.any?(
                  List.wrap(Map.get(err, :errors, [err])),
-                 &match?(%Ash.Error.Query.NotFound{}, &1)
+                 &match?(%Ash.Error.Changes.StaleRecord{}, &1)
                ),
-               "expected NotFound for a 0-row destroy, got: #{inspect(err)}"
+               "expected StaleRecord for a 0-row destroy, got: #{inspect(err)}"
       end,
       vlabels: ["Plain"]
     )

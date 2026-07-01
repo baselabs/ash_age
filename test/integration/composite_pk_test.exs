@@ -162,7 +162,7 @@ defmodule AshAge.Integration.CompositePkTest do
         row = create!(RenamableKey, %{key: "old-key", name: "x"})
 
         # A WHERE clause built from the CHANGED value would match zero rows (the
-        # stored row still has "old-key"), surfacing as a spurious NotFound.
+        # stored row still has "old-key"), surfacing as a spurious StaleRecord.
         {:ok, updated} =
           row
           |> Ash.Changeset.for_update(:update, %{key: "new-key", name: "y"})

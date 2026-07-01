@@ -38,11 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `AshAge.DataLayer.destroy/2` now returns `Ash.Error.Query.NotFound` when the
-  scoped match deletes no row (previously it returned `:ok` unconditionally,
-  because `DETACH DELETE` reports no matched/unmatched signal). This is required
-  for a scoping-denied delete to be observable and mirrors `update/2`; a
-  no-match / already-deleted destroy now surfaces `NotFound` instead of `:ok`.
+- `update/2` and `destroy/2` now return `Ash.Error.Changes.StaleRecord` (was
+  `Ash.Error.Query.NotFound`) when the primary-key + scoping-filter `WHERE`
+  matches no row — the Ash data-layer contract for a record-based mutation whose
+  row is gone or excluded by a filter (`NotFound` is for identifier lookups;
+  `StaleRecord` is what the reference ETS data layer and Ash core return, and what
+  Ash's bulk update/destroy paths pattern-match). `destroy/2` previously returned
+  `:ok` unconditionally on a no-match (`DETACH DELETE` gives no matched/unmatched
+  signal); it now detects the 0-row case (via `RETURN n`) and surfaces
+  `StaleRecord`, so a scoping-denied or already-deleted destroy is observable and
+  consistent with `update/2`.
 
 ### Security
 
