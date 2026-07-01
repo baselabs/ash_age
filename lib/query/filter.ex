@@ -157,6 +157,10 @@ defmodule AshAge.Query.Filter do
   defp cast_value(value), do: value
 
   defp unsupported_shape(%mod{left: %Ash.Query.Ref{attribute: %{name: name}}}), do: {mod, name}
+
+  defp unsupported_shape(%mod{left: %Ash.Query.Ref{attribute: name}}) when is_atom(name),
+    do: {mod, name}
+
   defp unsupported_shape(%mod{}), do: {mod, nil}
   defp unsupported_shape(_other), do: {:unsupported_expression, nil}
 end

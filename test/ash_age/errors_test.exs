@@ -8,6 +8,7 @@ defmodule AshAge.ErrorsTest do
   alias AshAge.Query.Filter
 
   alias Ash.Query.Function.Contains
+  alias Ash.Query.Operator.Has
   alias Ash.Query.Ref
 
   defp q, do: %Query{resource: __MODULE__, graph: :g, label: :L, repo: __MODULE__, params: %{}}
@@ -28,6 +29,14 @@ defmodule AshAge.ErrorsTest do
 
       refute Exception.message(err) =~ secret
       assert Exception.message(err) =~ "Contains"
+    end
+
+    test "still names the field when Ref.attribute is a bare atom (not a %{name: _} map)" do
+      {:error, err} =
+        Filter.translate(%Has{left: %Ref{attribute: :name}, right: "x"}, q())
+
+      assert Exception.message(err) =~ "Has"
+      assert Exception.message(err) =~ "name"
     end
   end
 
