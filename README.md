@@ -169,6 +169,28 @@ Tenant/policy filters are enforced on `update`/`destroy` (not just reads). See
 `usage-rules.md` for the graph-name encoder, the `tenant_graph` MFA override, and
 strategy trade-offs.
 
+### Telemetry
+
+Every data-layer operation emits a `:telemetry.span`:
+
+```
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+```
+
+```elixir
+:telemetry.attach(
+  "ash-age",
+  [:ash_age, :create, :stop],
+  fn _event, %{duration: d}, meta, _ -> IO.inspect({d, meta.result}) end,
+  nil
+)
+```
+
+Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums
+only (`resource`, `multitenancy`, `tenant?`, `result`, `row_count`, `direction`,
+…); never a PK/property value, error reason, Cypher, or the tenant-derived graph
+name. See `usage-rules.md` for the full per-op metadata catalog.
+
 ## Mix Tasks
 
 - **`mix ash_age.install`** — Print step-by-step setup instructions

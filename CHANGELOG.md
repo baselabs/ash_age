@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Data-layer telemetry.** Every operation emits a `:telemetry.span` — `[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]`:
+  - Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums only (`resource`, `multitenancy`, `tenant?`, `stale?`, `properties?`, `direction`, `row_count`, `batch_size`, `group_count`, `destination_count`, `result`). Never a PK/property value, error reason, Cypher/filter string, or the tenant-derived graph name.
+  - `AshAge.Telemetry` (a new dependency-free module) owns the metadata allowlist and raises on any off-allowlist key — the single enforcement point for the value-free contract.
+  - `:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`); DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`.
+  - `:telemetry` is now a declared runtime dependency (already resolved transitively via `ash`/`ecto`).
 - **Edge CRUD (S4).** Two Ash `Resource.Change` modules for creating and destroying graph edges:
   - `AshAge.Changes.CreateEdge` — creates edges via `change {AshAge.Changes.CreateEdge, edge: :name, to: :arg}`, parameterized endpoint matching, optional edge properties (values from same-named action arguments, type-serialized as vertex attributes), atomic write inside the action's transaction (0-row match or DB error rolls the vertex back). Tenant-isolated: `:context` edges are same-graph fail-closed; `:attribute` edges scope both endpoints by the tenant discriminator.
   - `AshAge.Changes.DestroyEdge` — destroys edges symmetrically, returning `Ash.Error.Changes.StaleRecord` on 0-row match (already gone or out of scope).

@@ -305,6 +305,47 @@ A 0-row destroy (edge already gone or out of scope) returns `Ash.Error.Changes.S
 
 **Atomicity:** `UNWIND` is one statement — atomic per batch (`{:error, …}` on any failure), not `:partial_success`. On the default `transaction: :batch` path (Ash wraps the batch in a transaction), a later-group failure rolls back earlier groups; under `transaction: false` a partial write is possible (same contract single-create and AshPostgres carry). A `:context` bulk with a nil tenant fails closed.
 
+## Telemetry
+
+Every data-layer operation emits a `:telemetry.span`:
+
+```
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+```
+
+Attach a handler the usual way:
+
+```elixir
+:telemetry.attach_many(
+  "ash-age-metrics",
+  [
+    [:ash_age, :create, :stop],
+    [:ash_age, :bulk_create, :stop],
+    [:ash_age, :read, :stop]
+  ],
+  fn _event, measurements, metadata, _config ->
+    # measurements: %{duration: native_time, monotonic_time: ...}
+    # metadata: value-free — see below
+  end,
+  nil
+)
+```
+
+**Metadata is value-free.** It carries schema identifiers, counts, booleans, and DSL enums only — **never** a primary-key or property value, an error reason, a Cypher/filter string, or the tenant-derived `graph` name:
+
+| Key | Ops | Meaning |
+|---|---|---|
+| `resource` | all (`:start`) | the Ash resource module |
+| `multitenancy` | all (`:start`) | `nil \| :attribute \| :context` (the strategy, not the tenant) |
+| `result` | all (`:stop`) | `:ok \| :error` |
+| `row_count` | read | rows returned |
+| `tenant?` | writes | whether the op was tenant-scoped (boolean) |
+| `stale?` | update/destroy | the 0-row not-found path (boolean) |
+| `batch_size`, `group_count` | bulk_create | rows in the batch / key-set groups |
+| `destination_count`, `direction`, `properties?` | create_edge/destroy_edge | edges written / edge direction / any properties set (`properties?` create only) |
+
+`:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`) — DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`. Its `kind`/`reason`/`stacktrace` are Erlang-standard telemetry-span data and are intentionally **outside** the value-free contract.
+
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
@@ -317,3 +358,4 @@ A 0-row destroy (edge already gone or out of scope) returns `Ash.Error.Changes.S
 - Sort, limit, offset
 - Bulk create: `UNWIND` grouping, order-preserving, atomic-per-batch
 - Edges: create/destroy via `AshAge.Changes.{CreateEdge, DestroyEdge}`, properties, `:both` direction
+- Telemetry: value-free `[:ash_age, <op>, :start | :stop | :exception]` spans on every operation
