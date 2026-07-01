@@ -64,6 +64,12 @@ MyResource
 `AshAge.Errors.UnsupportedFilter` reports the operator and field only;
 create/update/query failures report the SQLSTATE code (and constraint name) only.
 
+**Query parameter values still reach your Ecto/Postgrex logs at `:debug`.**
+Parameterization (required for injection safety) passes attribute and primary-key
+values as bound `$1` JSON params — Ecto's default logger prints those params,
+by design, at the `:debug` level. If primary-key or attribute values must never
+reach application logs, run the AGE-backed repo at `:info` or higher in production.
+
 ## AGE Limitations
 
 **NOT supported (returns {:error, UnsupportedFilter}):**
@@ -84,6 +90,17 @@ create/update/query failures report the SQLSTATE code (and constraint name) only
 - collect() IS supported (despite some docs claiming otherwise)
 - OPTIONAL MATCH works for simple patterns but bugs with multi-pattern
 - datetime() function not supported (use application-side timestamp conversion)
+
+**Binary attribute upgrade caveat:** base64 encoding for `:binary`/`Ash.Type.Binary`
+attributes is type-gated but not tagged/versioned. A `:binary` value written before
+this round-trip existed (an ash_age version predating the base64 fix) that happens
+to be syntactically valid base64 (only `[A-Za-z0-9+/=]`, length a multiple of 4)
+will decode to different bytes on read after upgrading. This does not affect
+AshCloak ciphertext — high-entropy encrypted bytes are essentially never valid
+UTF-8, so `Jason.encode!` always crashed on write before this fix, meaning no such
+legacy ciphertext exists. It can affect a `:binary` attribute that stored plain
+ASCII/UTF-8 content pre-upgrade. If you have pre-existing `:binary` data, verify or
+backfill it before relying on read-time decoding.
 
 ## Migration Patterns
 
