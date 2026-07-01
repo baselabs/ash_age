@@ -52,6 +52,12 @@ defmodule AshAge.DataLayer do
         type: {:list, :atom},
         default: [],
         doc: "List of attribute names to exclude from AGE vertex properties"
+      ],
+      tenant_graph: [
+        type: :mfa,
+        doc:
+          "MFA applied as `apply(m, f, [tenant | a])` returning the AGE graph name " <>
+            "for a :context tenant. Defaults to a built-in collision-free encoder."
       ]
     ],
     entities: [
