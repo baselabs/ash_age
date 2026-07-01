@@ -1,6 +1,8 @@
 defmodule AshAge.DataLayer.ValidateEdgeTest do
   use ExUnit.Case, async: true
 
+  alias AshAge.DataLayer.Info
+
   # Spark verifier errors raised inside the `@after_verify` hook are converted
   # to stderr diagnostics by Elixir/Spark rather than propagated as exceptions,
   # so `assert_raise` around an inline `defmodule` cannot catch them (Spark
@@ -108,7 +110,7 @@ defmodule AshAge.DataLayer.ValidateEdgeTest do
       end
     end
 
-    [edge] = AshAge.DataLayer.Info.edges(AshAge.DataLayer.ValidateEdgeTest.GoodEdge)
+    [edge] = Info.edges(AshAge.DataLayer.ValidateEdgeTest.GoodEdge)
     assert edge.label == :RELATES
     assert edge.properties == [:weight]
   end
