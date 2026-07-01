@@ -224,118 +224,146 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def create(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    props = changeset_to_properties(resource, changeset)
+        props = changeset_to_properties(resource, changeset)
 
-    # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
-    # map in CREATE is not supported. Must use CREATE + SET pattern instead.
-    set_clauses = set_clauses(props)
+        # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
+        # map in CREATE is not supported. Must use CREATE + SET pattern instead.
+        set_clauses = set_clauses(props)
 
-    cypher =
-      if set_clauses == "" do
-        "CREATE (n:#{label}) RETURN n"
-      else
-        "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
-      end
+        cypher =
+          if set_clauses == "" do
+            "CREATE (n:#{label}) RETURN n"
+          else
+            "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
+          end
 
-    {sql, pg_params} = Parameterized.build(graph, cypher, props)
+        {sql, pg_params} = Parameterized.build(graph, cypher, props)
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = Info.attribute_map(resource)
-        attribute_types = Info.attribute_types(resource)
+        case SQL.query(repo, sql, pg_params) do
+          {:ok, %{rows: [[vertex_text]]}} ->
+            attribute_map = Info.attribute_map(resource)
+            attribute_types = Info.attribute_types(resource)
 
-        attrs =
-          vertex_text
-          |> Agtype.decode()
-          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+            attrs =
+              vertex_text
+              |> Agtype.decode()
+              |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
 
-        {:ok, struct(resource, attrs)}
+            {:ok, struct(resource, attrs)}
 
-      {:error, error} ->
+          {:error, error} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: redact_db_error(error)
+             )}
+        end
+
+      {:error, :tenant_required} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
 
   @impl true
   def update(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    changed_attrs = changeset_to_properties(resource, changeset)
-    set_clauses = set_clauses(changed_attrs)
+        changed_attrs = changeset_to_properties(resource, changeset)
+        set_clauses = set_clauses(changed_attrs)
 
-    # Match on the resource's full primary key (composite or non-:id supported).
-    # `changed_attrs` are reserved so a match param never clobbers a SET param.
-    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
+        # Match on the resource's full primary key (composite or non-:id supported).
+        # `changed_attrs` are reserved so a match param never clobbers a SET param.
+        {where_clause, match_params} =
+          pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
 
-    cypher = """
-    MATCH (n:#{label})
-    WHERE #{where_clause}
-    SET #{set_clauses}
-    RETURN n
-    """
+        cypher = """
+        MATCH (n:#{label})
+        WHERE #{where_clause}
+        SET #{set_clauses}
+        RETURN n
+        """
 
-    params = Map.merge(changed_attrs, match_params)
-    {sql, pg_params} = Parameterized.build(graph, cypher, params)
+        params = Map.merge(changed_attrs, match_params)
+        {sql, pg_params} = Parameterized.build(graph, cypher, params)
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = Info.attribute_map(resource)
-        attribute_types = Info.attribute_types(resource)
+        case SQL.query(repo, sql, pg_params) do
+          {:ok, %{rows: [[vertex_text]]}} ->
+            attribute_map = Info.attribute_map(resource)
+            attribute_types = Info.attribute_types(resource)
 
-        attrs =
-          vertex_text
-          |> Agtype.decode()
-          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+            attrs =
+              vertex_text
+              |> Agtype.decode()
+              |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
 
-        {:ok, struct(resource, attrs)}
+            {:ok, struct(resource, attrs)}
 
-      {:ok, %{rows: []}} ->
-        {:error, NotFound.exception(resource: resource)}
+          {:ok, %{rows: []}} ->
+            {:error, NotFound.exception(resource: resource)}
 
-      {:error, error} ->
+          {:error, error} ->
+            {:error,
+             UpdateFailed.exception(
+               resource: resource,
+               reason: redact_db_error(error)
+             )}
+        end
+
+      {:error, :tenant_required} ->
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
 
   @impl true
   def destroy(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
+        {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
 
-    cypher = """
-    MATCH (n:#{label})
-    WHERE #{where_clause}
-    DETACH DELETE n
-    """
+        cypher = """
+        MATCH (n:#{label})
+        WHERE #{where_clause}
+        DETACH DELETE n
+        """
 
-    {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
+        {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, _} ->
-        :ok
+        case SQL.query(repo, sql, pg_params) do
+          {:ok, _} ->
+            :ok
 
-      {:error, error} ->
+          {:error, error} ->
+            {:error,
+             QueryFailed.exception(
+               query: "AGE delete query",
+               reason: redact_db_error(error)
+             )}
+        end
+
+      {:error, :tenant_required} ->
         {:error,
          QueryFailed.exception(
            query: "AGE delete query",
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
@@ -397,6 +425,23 @@ defmodule AshAge.DataLayer do
   end
 
   # === Helpers ===
+
+  @doc false
+  # Resolves the AGE graph for a write. Gated on the multitenancy STRATEGY, not on
+  # `changeset.to_tenant` presence — `to_tenant` is populated for `:attribute`
+  # resources too, so keying off it would misroute `:attribute` writes. For
+  # `:context`, a nil/blank tenant FAILS CLOSED — there is no global graph, and
+  # falling through to the base graph would be a silent cross-tenant write.
+  def write_graph(resource, changeset) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :context do
+      case Map.get(changeset, :to_tenant) do
+        blank when blank in [nil, ""] -> {:error, :tenant_required}
+        tenant -> {:ok, AshAge.Multitenancy.graph_name(resource, tenant)}
+      end
+    else
+      {:ok, Info.graph(resource)}
+    end
+  end
 
   @doc false
   # Builds the `n.key = $key` SET fragment, validating every property key as an

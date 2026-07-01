@@ -233,4 +233,11 @@ defmodule AshAge.MultitenancyTest do
       assert tenanted.graph == "t_acme"
     end
   end
+
+  describe "write_graph/2 (write-path graph resolution)" do
+    test "non-:context resource uses the base graph" do
+      assert AshAge.DataLayer.write_graph(AshAge.MultitenancyTest.PlainResource, %{to_tenant: nil}) ==
+               {:ok, :mt_encoder_test}
+    end
+  end
 end
