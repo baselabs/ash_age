@@ -24,6 +24,7 @@ defmodule AshAge.Changes.CreateEdge do
   use Ash.Resource.Change
 
   alias Ash.Error.Changes.InvalidRelationship
+  alias AshAge.Changes.EdgeCypher
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
@@ -40,14 +41,14 @@ defmodule AshAge.Changes.CreateEdge do
   @doc false
   def run(changeset, record, opts) do
     resource = changeset.resource
-    edge = fetch_edge!(resource, Keyword.fetch!(opts, :edge))
+    edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
     dest_ids = destination_ids(changeset, opts)
     props = edge_properties(changeset, edge)
 
     case DataLayer.write_graph(resource, changeset) do
       {:ok, graph} ->
-        tenant = tenant_spec(resource, edge, changeset)
-        src_key = source_key(resource, record)
+        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
+        src_key = EdgeCypher.source_key(resource, record)
         create_all(record, dest_ids, resource, edge, graph, src_key, props, tenant)
 
       {:error, :tenant_required} ->
@@ -95,14 +96,14 @@ defmodule AshAge.Changes.CreateEdge do
   # Pure cypher builder -- unit-tested. `src_key` is a map of source PK field
   # (string) => value. `tenant` is nil or {src_attr, dest_attr, value}.
   def build_create(resource, edge, src_key, dest_id, props, tenant) do
-    src_label = validated_label(resource)
-    dest_label = validated_label(edge.destination)
+    src_label = EdgeCypher.validated_label(resource)
+    dest_label = EdgeCypher.validated_label(edge.destination)
     edge_label = Migration.validate_identifier!(edge.label)
-    dest_pk = destination_pk!(edge.destination)
+    dest_pk = EdgeCypher.destination_pk!(edge.destination)
 
-    {src_where, src_params} = source_where(src_key)
+    {src_where, src_params} = EdgeCypher.source_where(src_key)
     dest_where = "b.#{dest_pk} = $dst"
-    {tenant_where, tenant_params} = tenant_where(tenant)
+    {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
     {prop_set, prop_params} = property_set(props)
 
     arrow =
@@ -134,60 +135,6 @@ defmodule AshAge.Changes.CreateEdge do
   # still succeeds -- the edge is optional).
   def destination_ids(changeset, opts) do
     List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
-  end
-
-  defp fetch_edge!(resource, name) do
-    case Enum.find(Info.edges(resource), &(&1.name == name)) do
-      %AshAge.Edge{} = edge -> edge
-      nil -> raise ArgumentError, "no `edge #{inspect(name)}` declared on #{inspect(resource)}"
-    end
-  end
-
-  defp validated_label(resource), do: resource |> Info.label() |> Migration.validate_identifier!()
-
-  defp destination_pk!(resource) do
-    case Ash.Resource.Info.primary_key(resource) do
-      [single] -> single |> to_string() |> Migration.validate_identifier!()
-      _ -> raise ArgumentError, "edge destinations must have a single-attribute primary key"
-    end
-  end
-
-  defp source_key(resource, record) do
-    resource
-    |> Ash.Resource.Info.primary_key()
-    |> Map.new(fn f -> {to_string(f), Map.get(record, f)} end)
-  end
-
-  defp source_where(src_key) do
-    {clauses, params} =
-      Enum.reduce(src_key, {[], %{}}, fn {field, value}, {clauses, params} ->
-        field = Migration.validate_identifier!(field)
-        key = "src_#{field}"
-        {["a.#{field} = $#{key}" | clauses], Map.put(params, key, value)}
-      end)
-
-    {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
-  end
-
-  defp tenant_spec(resource, edge, changeset) do
-    if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute do
-      {Ash.Resource.Info.multitenancy_attribute(resource),
-       Ash.Resource.Info.multitenancy_attribute(edge.destination), changeset.to_tenant}
-    else
-      nil
-    end
-  end
-
-  defp tenant_where(nil), do: {"", %{}}
-
-  defp tenant_where({src_attr, dest_attr, value}) do
-    src_attr = src_attr |> to_string() |> Migration.validate_identifier!()
-    dest = if dest_attr, do: dest_attr |> to_string() |> Migration.validate_identifier!()
-
-    clause =
-      " AND a.#{src_attr} = $tenant" <> if(dest, do: " AND b.#{dest} = $tenant", else: "")
-
-    {clause, %{"tenant" => value}}
   end
 
   @doc false
