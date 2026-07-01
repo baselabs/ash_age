@@ -145,6 +145,7 @@ defmodule AshAge.DataLayer do
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :multitenancy), do: false
+  def can?(_, :composite_primary_key), do: true
   def can?(_, _), do: false
 
   # === Required Callbacks ===
@@ -247,23 +248,21 @@ defmodule AshAge.DataLayer do
     graph = Info.graph(resource)
     label = validated_label(resource)
 
-    id = Ash.Changeset.get_attribute(changeset, :id)
     changed_attrs = changeset_to_properties(resource, changeset)
-
     set_clauses = set_clauses(changed_attrs)
 
-    # Use a match-param name that cannot collide with a changed attribute named
-    # "match_id" (which would otherwise clobber the WHERE id or vice versa).
-    match_param = unique_key(changed_attrs, "match_id")
+    # Match on the resource's full primary key (composite or non-:id supported).
+    # `changed_attrs` are reserved so a match param never clobbers a SET param.
+    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
 
     cypher = """
     MATCH (n:#{label})
-    WHERE n.id = $#{match_param}
+    WHERE #{where_clause}
     SET #{set_clauses}
     RETURN n
     """
 
-    params = Map.put(changed_attrs, match_param, id)
+    params = Map.merge(changed_attrs, match_params)
     {sql, pg_params} = Parameterized.build(graph, cypher, params)
 
     case SQL.query(repo, sql, pg_params) do
@@ -296,16 +295,15 @@ defmodule AshAge.DataLayer do
     graph = Info.graph(resource)
     label = validated_label(resource)
 
-    id = Ash.Changeset.get_attribute(changeset, :id)
+    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
 
     cypher = """
     MATCH (n:#{label})
-    WHERE n.id = $match_id
+    WHERE #{where_clause}
     DETACH DELETE n
     """
 
-    {sql, pg_params} =
-      Parameterized.build(graph, cypher, %{"match_id" => id}, [{:n, :agtype}])
+    {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
 
     case SQL.query(repo, sql, pg_params) do
       {:ok, _} ->
@@ -401,6 +399,35 @@ defmodule AshAge.DataLayer do
   # guaranteeing a param name that does not collide with a property key.
   defp unique_key(taken, base) do
     if Map.has_key?(taken, base), do: unique_key(taken, base <> "_"), else: base
+  end
+
+  # Resolves `[{pk_field, value}]` from the resource's primary key and the
+  # changeset. `get_attribute/2` returns the changed value or — for an unchanged
+  # key — the value on the record being updated/destroyed, i.e. the identity of
+  # the row to match.
+  defp pk_pairs(resource, changeset) do
+    resource
+    |> Ash.Resource.Info.primary_key()
+    |> Enum.map(fn field -> {field, Ash.Changeset.get_attribute(changeset, field)} end)
+  end
+
+  @doc false
+  # Builds the primary-key WHERE clause and its params from `[{field, value}]`
+  # pairs. Each key is validated as an AGE identifier before it is interpolated
+  # into the cypher body; values are always parameterized (referenced as
+  # `$match_<key>`). `reserved` is a map whose keys are param names already taken
+  # (e.g. changed attributes in an update SET) so a match param can never collide.
+  def pk_match_clause(pk_pairs, reserved) do
+    {clauses, params, _taken} =
+      Enum.reduce(pk_pairs, {[], %{}, reserved}, fn {field, value}, {clauses, params, taken} ->
+        key = field |> to_string() |> AshAge.Migration.validate_identifier!()
+        param = unique_key(taken, "match_#{key}")
+
+        {["n.#{key} = $#{param}" | clauses], Map.put(params, param, value),
+         Map.put(taken, param, value)}
+      end)
+
+    {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
   end
 
   defp changeset_to_properties(resource, changeset) do
