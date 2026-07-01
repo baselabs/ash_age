@@ -203,16 +203,13 @@ defmodule AshAge.DataLayer do
   def create(resource, changeset) do
     repo = Info.repo(resource)
     graph = Info.graph(resource)
-    label = Info.label(resource)
+    label = validated_label(resource)
 
     props = changeset_to_properties(resource, changeset)
 
     # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
     # map in CREATE is not supported. Must use CREATE + SET pattern instead.
-    set_clauses =
-      props
-      |> Map.keys()
-      |> Enum.map_join(", ", fn key -> "n.#{key} = $#{key}" end)
+    set_clauses = set_clauses(props)
 
     cypher =
       if set_clauses == "" do
@@ -248,24 +245,25 @@ defmodule AshAge.DataLayer do
   def update(resource, changeset) do
     repo = Info.repo(resource)
     graph = Info.graph(resource)
-    label = Info.label(resource)
+    label = validated_label(resource)
 
     id = Ash.Changeset.get_attribute(changeset, :id)
     changed_attrs = changeset_to_properties(resource, changeset)
 
-    set_clauses =
-      changed_attrs
-      |> Map.keys()
-      |> Enum.map_join(", ", fn key -> "n.#{key} = $#{key}" end)
+    set_clauses = set_clauses(changed_attrs)
+
+    # Use a match-param name that cannot collide with a changed attribute named
+    # "match_id" (which would otherwise clobber the WHERE id or vice versa).
+    match_param = unique_key(changed_attrs, "match_id")
 
     cypher = """
     MATCH (n:#{label})
-    WHERE n.id = $match_id
+    WHERE n.id = $#{match_param}
     SET #{set_clauses}
     RETURN n
     """
 
-    params = Map.put(changed_attrs, "match_id", id)
+    params = Map.put(changed_attrs, match_param, id)
     {sql, pg_params} = Parameterized.build(graph, cypher, params)
 
     case SQL.query(repo, sql, pg_params) do
@@ -296,7 +294,7 @@ defmodule AshAge.DataLayer do
   def destroy(resource, changeset) do
     repo = Info.repo(resource)
     graph = Info.graph(resource)
-    label = Info.label(resource)
+    label = validated_label(resource)
 
     id = Ash.Changeset.get_attribute(changeset, :id)
 
@@ -379,6 +377,31 @@ defmodule AshAge.DataLayer do
   end
 
   # === Helpers ===
+
+  @doc false
+  # Builds the `n.key = $key` SET fragment, validating every property key as an
+  # AGE identifier before it is interpolated into the cypher body. Values are
+  # always parameterized (referenced as `$key`), never interpolated.
+  def set_clauses(props) do
+    props
+    |> Map.keys()
+    |> Enum.map_join(", ", fn key ->
+      key = AshAge.Migration.validate_identifier!(key)
+      "n.#{key} = $#{key}"
+    end)
+  end
+
+  defp validated_label(resource) do
+    resource
+    |> Info.label()
+    |> AshAge.Migration.validate_identifier!()
+  end
+
+  # Returns `base`, or `base` with `_` appended until it is free in `taken`,
+  # guaranteeing a param name that does not collide with a property key.
+  defp unique_key(taken, base) do
+    if Map.has_key?(taken, base), do: unique_key(taken, base <> "_"), else: base
+  end
 
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)
