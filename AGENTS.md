@@ -28,7 +28,7 @@ When making changes, understand these dependency levels:
 | Type handling | `lib/type/agtype.ex`, `lib/type/cast.ex`, `lib/type/vertex.ex`, `lib/type/edge.ex`, `lib/type/path.ex` |
 | DSL/Info | `lib/data_layer/info.ex`, `lib/edge.ex`, `lib/data_layer/transformers/*` |
 | Graph lifecycle | `lib/graph.ex`, `lib/session.ex`, `lib/migration.ex` |
-| Testing | `test/support/test_repo.ex`, `test/support/test_resources.ex` |
+| Testing | `test/support/test_repo.ex`, `test/support/test_postgrex_types.ex`, `test/support/test_domain.ex`, `test/support/data_case.ex` |
 
 ## Critical Security Rules
 
@@ -71,13 +71,24 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 
 **Integration vs Unit tests:**
 - `test/ash_age/*_test.exs` — Unit tests (no PostgreSQL required)
-- `test/integration/*_test.exs` — Integration tests (require running AGE)
+- `test/integration/**/*_test.exs` — Integration tests, tagged `@moduletag :integration` (require running AGE)
+
+**Running integration tests:** they are excluded unless `AGE_DATABASE_URL` points at a
+live AGE database. `test_helper.exs` starts the test Repo (and sets `Sandbox` `:manual`
+mode) only when that variable is set; otherwise the pure-unit suite runs with no database.
+CI provides AGE and sets `AGE_DATABASE_URL`. Locally, run against an AGE container mapped
+to a free host port, e.g. `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
 
 **Async tests:** All AGE integration tests MUST use `async: false` — AGE doesn't support concurrent transactions.
 
 **Test helpers:**
-- `test/support/test_repo.ex` — Ecto.Repo with AGE setup
-- `test/support/test_resources.ex` — Sample Ash resources using AshAge.DataLayer
+- `test/support/test_repo.ex` — Ecto.Repo (Postgres adapter) for AGE
+- `test/support/test_postgrex_types.ex` — Postgrex types module registering the agtype extension
+- `test/support/test_domain.ex` — shared Ash domain (`allow_unregistered? true`) for inline test resources
+- `test/support/data_case.ex` — ExUnit case template: SQL Sandbox + `with_graph/3` (creates/drops a graph per test)
+
+Integration-test resources are defined inline in their test modules (pointing `domain:` at
+`AshAge.TestDomain`), so there is no shared `test_resources.ex`.
 
 ## Common Pitfalls
 
