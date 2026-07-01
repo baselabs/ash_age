@@ -27,6 +27,7 @@ defmodule AshAge.Cypher.Parameterized do
   @spec build(atom() | String.t(), String.t(), map(), keyword()) :: {String.t(), list()}
   def build(graph, cypher, params, return_types) do
     graph_name = validate_and_stringify_graph!(graph)
+    cypher = validate_cypher_body!(cypher)
     columns = format_return_columns(return_types)
     json_params = Jason.encode!(params)
 
@@ -51,12 +52,29 @@ defmodule AshAge.Cypher.Parameterized do
   @spec build_static(atom() | String.t(), String.t(), keyword()) :: {String.t(), list()}
   def build_static(graph, cypher, return_types) do
     graph_name = validate_and_stringify_graph!(graph)
+    cypher = validate_cypher_body!(cypher)
     columns = format_return_columns(return_types)
 
     sql =
       "SELECT * FROM ag_catalog.cypher('#{graph_name}', $$ #{cypher} $$) AS (#{columns})"
 
     {sql, []}
+  end
+
+  # Defense-in-depth: the cypher body is interpolated between AGE's `$$ ... $$`
+  # dollar-quote delimiters. Every identifier that reaches it is validated at its
+  # source (graph/label/field/property-key), but as a final centralized guard we
+  # reject any body carrying a `$$` sequence — the only way to break out of the
+  # dollar-quoted literal. This library never legitimately emits `$$` (all values
+  # are parameterized via `$1`), so this can only fire on a smuggled identifier.
+  defp validate_cypher_body!(cypher) when is_binary(cypher) do
+    if String.contains?(cypher, "$$") do
+      raise ArgumentError,
+            "Cypher body must not contain \"$$\" (would break AGE dollar-quoting): " <>
+              inspect(cypher)
+    end
+
+    cypher
   end
 
   defp validate_and_stringify_graph!(graph) when is_atom(graph) do
