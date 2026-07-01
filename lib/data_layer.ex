@@ -198,7 +198,7 @@ defmodule AshAge.DataLayer do
         {:error,
          QueryFailed.exception(
            query: "AGE read query",
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -242,7 +242,7 @@ defmodule AshAge.DataLayer do
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -289,7 +289,7 @@ defmodule AshAge.DataLayer do
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -318,7 +318,7 @@ defmodule AshAge.DataLayer do
         {:error,
          QueryFailed.exception(
            query: "AGE delete query",
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -439,6 +439,20 @@ defmodule AshAge.DataLayer do
 
     {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
   end
+
+  @doc false
+  # Redacts a Postgrex error into a value-free reason string. Postgres `DETAIL`
+  # lines echo the offending values (e.g. "Key (email)=(a@b.com) already exists"),
+  # so we surface only the SQLSTATE name (and constraint identifier when present),
+  # never the free-text message/detail/query.
+  def redact_db_error(%Postgrex.Error{postgres: %{code: code} = pg}) do
+    case Map.get(pg, :constraint) do
+      nil -> "database error (#{code})"
+      constraint -> "database error (#{code}, constraint: #{constraint})"
+    end
+  end
+
+  def redact_db_error(%Postgrex.Error{}), do: "database connection error"
 
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)

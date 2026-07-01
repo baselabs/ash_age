@@ -142,9 +142,12 @@ defmodule AshAge.Query.Filter do
     {:ok, query, "n.#{attr.name} IS NOT NULL"}
   end
 
-  # Catch-all: unsupported filter
+  # Catch-all: unsupported filter. Surface only the operator/function module and
+  # the referenced field name (both structural) — never the filtered value, which
+  # may be PII/secret.
   defp do_translate(expr, _query) do
-    {:error, UnsupportedFilter.exception(expression: inspect(expr))}
+    {operator, field} = unsupported_shape(expr)
+    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
   end
 
   # Value casting for AGE compatibility
@@ -152,4 +155,8 @@ defmodule AshAge.Query.Filter do
   defp cast_value(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
   defp cast_value(%Date{} = d), do: Date.to_iso8601(d)
   defp cast_value(value), do: value
+
+  defp unsupported_shape(%mod{left: %Ash.Query.Ref{attribute: %{name: name}}}), do: {mod, name}
+  defp unsupported_shape(%mod{}), do: {mod, nil}
+  defp unsupported_shape(_other), do: {:unsupported_expression, nil}
 end
