@@ -51,4 +51,26 @@ defmodule AshAge.Integration.BackwardCompatTest do
       vlabels: ["Plain"]
     )
   end
+
+  test "destroy of an absent row returns NotFound (S3 0-row semantics, reaches plain resources)" do
+    with_graph(
+      "itest_s3_plain",
+      fn ->
+        {:ok, p} = Plain |> Ash.Changeset.for_create(:create, %{name: "x"}) |> Ash.create()
+        :ok = p |> Ash.Changeset.for_destroy(:destroy, %{}) |> Ash.destroy()
+
+        # Second destroy of the same (now-absent) row matches 0 rows. Pre-S3 this
+        # returned :ok unconditionally; S3 returns NotFound (mirrors update/2 and
+        # is what makes a scoping-denied destroy observable). Documented in CHANGELOG.
+        assert {:error, err} = p |> Ash.Changeset.for_destroy(:destroy, %{}) |> Ash.destroy()
+
+        assert Enum.any?(
+                 List.wrap(Map.get(err, :errors, [err])),
+                 &match?(%Ash.Error.Query.NotFound{}, &1)
+               ),
+               "expected NotFound for a 0-row destroy, got: #{inspect(err)}"
+      end,
+      vlabels: ["Plain"]
+    )
+  end
 end
