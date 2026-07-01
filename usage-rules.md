@@ -125,6 +125,22 @@ test "creates vertex" do
 end
 ```
 
+### Testing against a live AGE database
+
+AGE tests hit a real database and cannot run against an in-memory adapter. Gate them
+so the rest of your suite still runs with no database:
+
+- Point tests at a live AGE via an env var (e.g. `AGE_DATABASE_URL`), and start your
+  test `Ecto.Repo` with `pool: Ecto.Adapters.SQL.Sandbox` + `after_connect: {AshAge.Session, :setup, []}`
+  only when it is set; otherwise `ExUnit.start(exclude: [:integration])`.
+- Tag AGE tests `@moduletag :integration` and run them with `async: false` (AGE does not
+  support concurrent transactions).
+- Graph/label creation is DDL and is **not** rolled back by the Sandbox transaction —
+  create each test's graph (unique name) on an unboxed connection and `drop_graph/2` it
+  afterward for isolation, rather than relying on transactional rollback.
+- Run locally against a throwaway AGE container mapped to a free host port, e.g.
+  `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
+
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
