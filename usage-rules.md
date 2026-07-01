@@ -59,6 +59,11 @@ MyResource
   AshAge.Cypher.Parameterized.build(graph, cypher, %{"param" => value})
   ```
 
+**Error messages are redacted:** AshAge never puts filtered values or PostgreSQL
+`DETAIL` lines (which echo row values) into error messages or logs.
+`AshAge.Errors.UnsupportedFilter` reports the operator and field only;
+create/update/query failures report the SQLSTATE code (and constraint name) only.
+
 ## AGE Limitations
 
 **NOT supported (returns {:error, UnsupportedFilter}):**
@@ -144,6 +149,8 @@ so the rest of your suite still runs with no database:
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
+- Primary keys: single-attribute (`:id` or any attribute name) and composite
+- Binary attributes: `:binary` / `Ash.Type.Binary` (and AshCloak-encrypted fields) round-trip via base64
 - Transactions: `:transact` with `rollback/2`
 - Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
 - Boolean expressions: `and`, `or`, `not`

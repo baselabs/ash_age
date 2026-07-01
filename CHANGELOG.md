@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AshAge.Cypher.Parameterized.build/*` now reject any Cypher body containing a
     `$$` sequence — a final centralized guard against breaking out of AGE's
     dollar-quoted literal.
+- Error messages no longer leak filtered values or database row contents.
+  `AshAge.Errors.UnsupportedFilter` now reports only the operator and referenced
+  field name (never the filtered value). `CreateFailed`/`QueryFailed`/`UpdateFailed`
+  surface only the PostgreSQL SQLSTATE code (and constraint name), never the
+  Postgres `DETAIL` line that echoes offending values. A regression test pins the
+  never-interpolate guarantee: values reach Cypher only as the `$1` parameter.
 
 ### Fixed
 
@@ -33,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-existent `AshAge.Type.Agtype.Extension`; the correct module is
   `AshAge.Postgrex.AgtypeExtension`. Fixed in the install task, the `AshAge`
   moduledoc, and the README.
+- `AshAge.DataLayer.update/2` and `destroy/2` derive their match predicate from
+  `Ash.Resource.Info.primary_key/1`, so resources with a composite primary key or
+  a single non-`:id` primary key match the correct rows. Both previously hardcoded
+  `WHERE n.id = $…`, silently matching the wrong rows or nothing.
+- `:binary` attributes (including AshCloak-encrypted fields) no longer crash
+  `Jason.encode!` on create/update. Binary values are base64-encoded for AGE
+  storage and decoded back on read; plaintext strings are untouched.
 
 ### Added
 
@@ -52,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AshAge.Cypher.Parameterized`, `AshAge.Query`, `AshAge.Query.Filter`,
   `AshAge.Type.Agtype`, `AshAge.Type.Cast`, and `AshAge.DataLayer.set_clauses/1`
   (47 new tests, no database required).
+- `AshAge.DataLayer` declares `can?(_, :composite_primary_key) == true`, so
+  resources with a composite primary key now compile and CRUD correctly.
 
 ## [0.2.6] - 2026-02-14
 
