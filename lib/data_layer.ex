@@ -194,7 +194,7 @@ defmodule AshAge.DataLayer do
 
         {:ok, records}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          QueryFailed.exception(
            query: "AGE read query",
@@ -238,7 +238,7 @@ defmodule AshAge.DataLayer do
 
         {:ok, struct(resource, attrs)}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
@@ -285,7 +285,7 @@ defmodule AshAge.DataLayer do
       {:ok, %{rows: []}} ->
         {:error, NotFound.exception(resource: resource)}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          UpdateFailed.exception(
            resource: resource,
@@ -314,7 +314,7 @@ defmodule AshAge.DataLayer do
       {:ok, _} ->
         :ok
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          QueryFailed.exception(
            query: "AGE delete query",
@@ -456,6 +456,12 @@ defmodule AshAge.DataLayer do
   end
 
   def redact_db_error(%Postgrex.Error{}), do: "database connection error"
+
+  # Any other error term (e.g. %DBConnection.ConnectionError{} when the pool is
+  # exhausted or the connection drops) is redacted to a value-free generic reason
+  # rather than crashing the callback with a CaseClauseError — a crash would
+  # surface a stacktrace that can echo the query or its bound values.
+  def redact_db_error(_other), do: "database error"
 
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)

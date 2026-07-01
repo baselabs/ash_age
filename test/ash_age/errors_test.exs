@@ -59,5 +59,14 @@ defmodule AshAge.ErrorsTest do
       assert DataLayer.redact_db_error(%Postgrex.Error{message: "connection refused"}) ==
                "database connection error"
     end
+
+    test "redacts a non-Postgrex error term without leaking its message or crashing" do
+      # A connection-level failure surfaces as e.g. %DBConnection.ConnectionError{},
+      # not %Postgrex.Error{} — it must still be redacted, never crash the callback.
+      reason = DataLayer.redact_db_error(%RuntimeError{message: "SECRET-ssn-999"})
+
+      refute reason =~ "SECRET-ssn-999"
+      assert reason == "database error"
+    end
   end
 end
