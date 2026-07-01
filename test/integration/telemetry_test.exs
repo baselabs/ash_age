@@ -133,4 +133,100 @@ defmodule AshAge.Integration.TelemetryTest do
       vlabels: ["Thing"]
     )
   end
+
+  defmodule Person do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_tel_edge)
+      repo(AshAge.TestRepo)
+      label(:Person)
+
+      edge :friend do
+        label(:FRIEND)
+        destination(Person)
+        properties([:since])
+      end
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+      attribute(:name, :string, public?: true)
+    end
+
+    relationships do
+      has_many(:friend, Person, destination_attribute: :id)
+    end
+
+    actions do
+      defaults([:read, :create])
+      default_accept([:name])
+
+      update :add_friend do
+        require_atomic?(false)
+        argument(:friend_id, :uuid, allow_nil?: false)
+        argument(:since, :string)
+        change({AshAge.Changes.CreateEdge, edge: :friend, to: :friend_id})
+      end
+
+      update :remove_friend do
+        require_atomic?(false)
+        argument(:friend_id, :uuid, allow_nil?: false)
+        change({AshAge.Changes.DestroyEdge, edge: :friend, to: :friend_id})
+      end
+
+      update :bad_edge do
+        require_atomic?(false)
+        argument(:friend_id, :uuid, allow_nil?: false)
+        change({AshAge.Changes.CreateEdge, edge: :nonexistent, to: :friend_id})
+      end
+    end
+  end
+
+  test "create_edge/destroy_edge emit value-free spans; a bad edge emits :exception" do
+    with_graph(
+      "itest_tel_edge",
+      fn ->
+        attach([:create_edge, :destroy_edge])
+        {:ok, a} = Ash.create(Person, %{name: "a"})
+        {:ok, b} = Ash.create(Person, %{name: "b"})
+
+        {:ok, _} =
+          a
+          |> Ash.Changeset.for_update(:add_friend, %{friend_id: b.id, since: "2026"})
+          |> Ash.update()
+
+        assert_received {:tel, [:ash_age, :create_edge, :stop], _, meta}
+        assert meta.result == :ok and meta.destination_count == 1
+        assert meta.direction == :outgoing and meta.properties? == true
+        assert_value_free(meta)
+
+        {:ok, _} =
+          a |> Ash.Changeset.for_update(:remove_friend, %{friend_id: b.id}) |> Ash.update()
+
+        assert_received {:tel, [:ash_age, :destroy_edge, :stop], _, d_meta}
+        assert d_meta.result == :ok and d_meta.destination_count == 1
+        assert_value_free(d_meta)
+
+        # A config-error raise (undeclared edge) inside the span surfaces
+        # :exception before the raise propagates. `EdgeCypher.fetch_edge!/2`
+        # raises an ArgumentError; Ash wraps an after_action-hook raise in an
+        # Ash.Error.Unknown, so the top-level match is on the wrapped error --
+        # the value-free :exception event (kind: :error) is what this asserts.
+        attach([:create_edge])
+
+        assert_raise Ash.Error.Unknown, fn ->
+          a |> Ash.Changeset.for_update(:bad_edge, %{friend_id: b.id}) |> Ash.update()
+        end
+
+        assert_received {:tel, [:ash_age, :create_edge, :exception], _, ex_meta}
+        assert ex_meta.kind == :error
+      end,
+      vlabels: ["Person"],
+      elabels: ["FRIEND"]
+    )
+  end
 end

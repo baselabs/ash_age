@@ -24,6 +24,7 @@ defmodule AshAge.Changes.DestroyEdge do
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
+  alias AshAge.Telemetry
   alias Ecto.Adapters.SQL
 
   @impl true
@@ -36,19 +37,32 @@ defmodule AshAge.Changes.DestroyEdge do
   @doc false
   def run(changeset, record, opts) do
     resource = changeset.resource
-    edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
-    dest_ids = List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
+    start = %{resource: resource, multitenancy: Ash.Resource.Info.multitenancy_strategy(resource)}
 
-    case DataLayer.write_graph(resource, changeset) do
-      {:ok, graph} ->
-        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-        src_key = EdgeCypher.source_key(resource, record)
-        destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
+    Telemetry.span(:destroy_edge, start, fn ->
+      edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
+      dest_ids = List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
 
-      {:error, :tenant_required} ->
-        {:error,
-         InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
-    end
+      result =
+        case DataLayer.write_graph(resource, changeset) do
+          {:ok, graph} ->
+            tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
+            src_key = EdgeCypher.source_key(resource, record)
+            destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
+
+          {:error, :tenant_required} ->
+            {:error,
+             InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
+        end
+
+      {result,
+       %{
+         destination_count: length(dest_ids),
+         direction: edge.direction,
+         tenant?: not is_nil(changeset.to_tenant),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
   end
 
   # Removes one edge per destination id, halting (and returning the error so Ash

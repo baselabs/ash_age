@@ -29,6 +29,7 @@ defmodule AshAge.Changes.CreateEdge do
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
+  alias AshAge.Telemetry
   alias Ecto.Adapters.SQL
 
   @impl true
@@ -41,20 +42,34 @@ defmodule AshAge.Changes.CreateEdge do
   @doc false
   def run(changeset, record, opts) do
     resource = changeset.resource
-    edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
-    dest_ids = destination_ids(changeset, opts)
-    props = edge_properties(changeset, edge)
+    start = %{resource: resource, multitenancy: Ash.Resource.Info.multitenancy_strategy(resource)}
 
-    case DataLayer.write_graph(resource, changeset) do
-      {:ok, graph} ->
-        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-        src_key = EdgeCypher.source_key(resource, record)
-        create_all(record, dest_ids, resource, edge, graph, src_key, props, tenant)
+    Telemetry.span(:create_edge, start, fn ->
+      edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
+      dest_ids = destination_ids(changeset, opts)
+      props = edge_properties(changeset, edge)
 
-      {:error, :tenant_required} ->
-        {:error,
-         InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
-    end
+      result =
+        case DataLayer.write_graph(resource, changeset) do
+          {:ok, graph} ->
+            tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
+            src_key = EdgeCypher.source_key(resource, record)
+            create_all(record, dest_ids, resource, edge, graph, src_key, props, tenant)
+
+          {:error, :tenant_required} ->
+            {:error,
+             InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
+        end
+
+      {result,
+       %{
+         destination_count: length(dest_ids),
+         direction: edge.direction,
+         properties?: map_size(props) > 0,
+         tenant?: not is_nil(changeset.to_tenant),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
   end
 
   # Writes one edge per destination id, halting (and returning the error so Ash
