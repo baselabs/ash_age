@@ -103,6 +103,9 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.EnsureLabelled,
       AshAge.DataLayer.Transformers.ValidateLabelFormat,
       AshAge.DataLayer.Transformers.DefaultRelate
+    ],
+    verifiers: [
+      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr
     ]
 
   # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
