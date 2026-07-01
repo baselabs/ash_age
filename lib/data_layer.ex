@@ -105,6 +105,7 @@ defmodule AshAge.DataLayer do
   alias AshAge.DataLayer.Info
   alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
   alias AshAge.Query.Filter
+  alias AshAge.Telemetry
   alias AshAge.Type.{Agtype, Cast}
   alias Ecto.Adapters.SQL
   alias Ecto.Schema.Metadata
@@ -192,6 +193,13 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
+    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = run_query_body(query, resource)
+      {result, %{row_count: row_count(result), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  defp run_query_body(%AshAge.Query{} = query, resource) do
     {cypher, params} = AshAge.Query.to_cypher(query)
 
     result =
@@ -233,6 +241,14 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def create(resource, changeset) do
+    Telemetry.span(:create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_create(resource, changeset)
+      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  # do_create/2 is the current create/2 body, renamed verbatim (unchanged).
+  defp do_create(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -299,25 +315,53 @@ defmodule AshAge.DataLayer do
     # tagged back to their originating changeset (Ash maps records to changesets
     # by `__metadata__.bulk_create_index`, NOT by positional order).
     entries = Enum.map(changesets, fn cs -> {cs, changeset_to_properties(resource, cs)} end)
+    start = %{resource: resource, multitenancy: strategy(resource)}
 
-    # Resolve the graph exactly as single-create does (via write_graph/2), so the
-    # fail-closed nil-:context-tenant behavior is identical. Ash batches by tenant,
-    # so every changeset in a batch shares one graph; resolve off the first.
-    case bulk_graph(resource, entries) do
-      {:ok, graph} ->
-        do_bulk_create(resource, graph, entries, opts)
+    Telemetry.span(:bulk_create, start, fn ->
+      # Resolve the graph exactly as single-create does (via write_graph/2), so the
+      # fail-closed nil-:context-tenant behavior is identical. Ash batches by tenant,
+      # so every changeset in a batch shares one graph; resolve off the first.
+      result =
+        case bulk_graph(resource, entries) do
+          {:ok, graph} ->
+            do_bulk_create(resource, graph, entries, opts)
 
-      {:error, :tenant_required} ->
-        {:error,
-         CreateFailed.exception(
-           resource: resource,
-           reason: "multitenancy tenant required for :context write"
-         )}
-    end
+          {:error, :tenant_required} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: "multitenancy tenant required for :context write"
+             )}
+        end
+
+      {result,
+       %{
+         batch_size: length(entries),
+         group_count: length(group_bulk_entries(entries)),
+         tenant?: bulk_tenant?(entries),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
   end
+
+  defp bulk_tenant?([]), do: false
+  defp bulk_tenant?([{changeset, _} | _]), do: tenant?(changeset)
 
   @impl true
   def update(resource, changeset) do
+    Telemetry.span(:update, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_update(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_update(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -362,6 +406,19 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def destroy(resource, changeset) do
+    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_destroy(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_destroy(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -788,4 +845,13 @@ defmodule AshAge.DataLayer do
     |> group_bulk_entries()
     |> Enum.map(fn {keys, entries} -> {keys, Enum.map(entries, fn {_cs, props} -> props end)} end)
   end
+
+  # === Telemetry span helpers (value-free metadata only) ===
+
+  defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
+  defp tenant?(changeset), do: not is_nil(Map.get(changeset, :to_tenant))
+  defp row_count({:ok, records}), do: length(records)
+  defp row_count(_), do: 0
+  defp stale?({:error, %StaleRecord{}}), do: true
+  defp stale?(_), do: false
 end
