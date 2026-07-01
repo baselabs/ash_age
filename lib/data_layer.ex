@@ -160,6 +160,7 @@ defmodule AshAge.DataLayer do
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
+  def can?(_, :changeset_filter), do: true
   def can?(_, _), do: false
 
   # === Required Callbacks ===
@@ -288,36 +289,23 @@ defmodule AshAge.DataLayer do
         {where_clause, match_params} =
           pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
 
-        cypher = """
-        MATCH (n:#{label})
-        WHERE #{where_clause}
-        SET #{set_clauses}
-        RETURN n
-        """
+        case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
+          {:ok, full_where, params} ->
+            cypher = """
+            MATCH (n:#{label})
+            WHERE #{full_where}
+            SET #{set_clauses}
+            RETURN n
+            """
 
-        params = Map.merge(changed_attrs, match_params)
-        {sql, pg_params} = Parameterized.build(graph, cypher, params)
+            {sql, pg_params} = Parameterized.build(graph, cypher, params)
+            decode_update_result(resource, SQL.query(repo, sql, pg_params))
 
-        case SQL.query(repo, sql, pg_params) do
-          {:ok, %{rows: [[vertex_text]]}} ->
-            attribute_map = Info.attribute_map(resource)
-            attribute_types = Info.attribute_types(resource)
-
-            attrs =
-              vertex_text
-              |> Agtype.decode()
-              |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
-
-            {:ok, struct(resource, attrs)}
-
-          {:ok, %{rows: []}} ->
-            {:error, NotFound.exception(resource: resource)}
-
-          {:error, error} ->
+          {:error, _} ->
             {:error,
              UpdateFailed.exception(
                resource: resource,
-               reason: redact_db_error(error)
+               reason: "unsupported scoping filter on update"
              )}
         end
 
@@ -339,23 +327,28 @@ defmodule AshAge.DataLayer do
 
         {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
 
-        cypher = """
-        MATCH (n:#{label})
-        WHERE #{where_clause}
-        DETACH DELETE n
-        """
+        case changeset_where(changeset, where_clause, match_params) do
+          {:ok, full_where, params} ->
+            # `RETURN n` makes AGE echo each deleted vertex so we can distinguish a
+            # real deletion from a no-match. Without it, `DETACH DELETE n` returns
+            # zero rows whether or not anything matched — which would silently
+            # report success for a scoping-denied (cross-tenant) delete. An empty
+            # result therefore fails CLOSED as NotFound, mirroring update/2.
+            cypher = """
+            MATCH (n:#{label})
+            WHERE #{full_where}
+            DETACH DELETE n
+            RETURN n
+            """
 
-        {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
+            {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:n, :agtype}])
+            decode_destroy_result(resource, SQL.query(repo, sql, pg_params))
 
-        case SQL.query(repo, sql, pg_params) do
-          {:ok, _} ->
-            :ok
-
-          {:error, error} ->
+          {:error, _} ->
             {:error,
              QueryFailed.exception(
                query: "AGE delete query",
-               reason: redact_db_error(error)
+               reason: "unsupported scoping filter on destroy"
              )}
         end
 
@@ -503,6 +496,68 @@ defmodule AshAge.DataLayer do
       end)
 
     {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
+  end
+
+  @doc false
+  # Translates changeset.filter (the tenant/policy scoping Ash attaches for
+  # update/destroy) into an additional WHERE fragment, AND-ed with the PK match,
+  # reusing the read path's Filter translator. Fails CLOSED on an untranslatable
+  # filter — never silently drops scoping. `params` already holds the SET/match
+  # params, so the accumulator's $paramN counter starts past them. Public (like
+  # `write_graph/2`) so the fail-closed deny path is unit-testable without a DB.
+  def changeset_where(changeset, base_where, params) do
+    case changeset.filter do
+      nil ->
+        {:ok, base_where, params}
+
+      filter ->
+        case Filter.translate(filter, %AshAge.Query{params: params}) do
+          {:ok, %AshAge.Query{params: params}, ""} ->
+            {:ok, base_where, params}
+
+          {:ok, %AshAge.Query{params: params}, clause} ->
+            {:ok, base_where <> " AND " <> clause, params}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  # Decodes the AGE result of an update's `MATCH ... SET ... RETURN n`. A returned
+  # vertex is the updated row; an empty result means the WHERE (PK + scoping
+  # filter) matched nothing and fails CLOSED as NotFound.
+  defp decode_update_result(resource, {:ok, %{rows: [[vertex_text]]}}) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    attrs =
+      vertex_text
+      |> Agtype.decode()
+      |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+
+    {:ok, struct(resource, attrs)}
+  end
+
+  defp decode_update_result(resource, {:ok, %{rows: []}}) do
+    {:error, NotFound.exception(resource: resource)}
+  end
+
+  defp decode_update_result(resource, {:error, error}) do
+    {:error, UpdateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  # Decodes the AGE result of a destroy's `MATCH ... DETACH DELETE n RETURN n`. At
+  # least one returned vertex means a row was deleted; an empty result means the
+  # WHERE (PK + scoping filter) matched nothing and fails CLOSED as NotFound.
+  defp decode_destroy_result(_resource, {:ok, %{rows: [_ | _]}}), do: :ok
+
+  defp decode_destroy_result(resource, {:ok, %{rows: []}}) do
+    {:error, NotFound.exception(resource: resource)}
+  end
+
+  defp decode_destroy_result(_resource, {:error, error}) do
+    {:error, QueryFailed.exception(query: "AGE delete query", reason: redact_db_error(error))}
   end
 
   @doc false

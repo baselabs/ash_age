@@ -245,6 +245,61 @@ defmodule AshAge.MultitenancyTest do
     test "the data layer advertises multitenancy support" do
       assert AshAge.DataLayer.can?(nil, :multitenancy)
     end
+
+    test "the data layer advertises changeset_filter support" do
+      # Without this, Ash.Changeset.filter/2 silently DROPS the tenant/policy
+      # scoping filter on update/destroy (the cross-tenant write vuln).
+      assert AshAge.DataLayer.can?(nil, :changeset_filter)
+    end
+  end
+
+  describe "changeset_where/3 fail-closed" do
+    test "a nil filter passes through unchanged (non-multitenant / no scoping)" do
+      assert AshAge.DataLayer.changeset_where(
+               %{filter: nil},
+               "n.id = $match_id",
+               %{"match_id" => 1}
+             ) == {:ok, "n.id = $match_id", %{"match_id" => 1}}
+    end
+
+    test "a translatable filter is AND-ed onto the PK match, params preserved" do
+      # An Eq operator the read-path translator supports → scoping clause appended,
+      # its parameter seeded past the existing match param (counter starts at 2).
+      filter = %Ash.Filter{
+        resource: nil,
+        expression: %Ash.Query.Operator.Eq{
+          left: %Ash.Query.Ref{attribute: %{name: :org_id}},
+          right: "org_a"
+        }
+      }
+
+      assert {:ok, where, params} =
+               AshAge.DataLayer.changeset_where(
+                 %{filter: filter},
+                 "n.id = $match_id",
+                 %{"match_id" => 1}
+               )
+
+      assert where == "n.id = $match_id AND n.org_id = $param2"
+      assert params == %{"match_id" => 1, "param2" => "org_a"}
+    end
+
+    test "an untranslatable filter fails CLOSED (error, never silently unscoped)" do
+      # A genuine Ash operator struct the translator has no clause for. The guarantee
+      # is: rather than drop the scoping and run an unscoped WHERE, changeset_where
+      # surfaces the error so update/destroy return a redacted failure.
+      filter = %Ash.Filter{
+        resource: nil,
+        expression: %Ash.Query.Function.Contains{
+          arguments: [%Ash.Query.Ref{attribute: %{name: :name}}, "x"]
+        }
+      }
+
+      assert match?(
+               {:error, _},
+               AshAge.DataLayer.changeset_where(%{filter: filter}, "n.id = $match_id", %{})
+             )
+    end
   end
 
   describe "write_graph/2 fail-closed for :context" do
