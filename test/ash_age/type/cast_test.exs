@@ -55,12 +55,12 @@ defmodule AshAge.Type.CastTest do
       assert Cast.vertex_to_resource_attrs(:not_a_vertex, %{}, %{}) == %{}
     end
 
-    test "decodes a base64 string back to bytes for a :binary attribute" do
+    test "decodes a tagged base64 string back to bytes for a :binary attribute" do
       raw = <<0, 255, 16, 128, 1>>
 
       attrs =
         Cast.vertex_to_resource_attrs(
-          vertex(%{"payload" => Base.encode64(raw)}),
+          vertex(%{"payload" => "$age64$" <> Base.encode64(raw)}),
           %{payload: "payload"},
           %{payload: :binary}
         )
@@ -72,11 +72,41 @@ defmodule AshAge.Type.CastTest do
       raw = <<9, 9, 9>>
 
       attrs =
-        Cast.vertex_to_resource_attrs(vertex(%{"b" => Base.encode64(raw)}), %{b: "b"}, %{
-          b: Ash.Type.Binary
-        })
+        Cast.vertex_to_resource_attrs(
+          vertex(%{"b" => "$age64$" <> Base.encode64(raw)}),
+          %{b: "b"},
+          %{b: Ash.Type.Binary}
+        )
 
       assert attrs.b == raw
+    end
+
+    test "round-trips through encode_binary/1 (the write-side seam)" do
+      raw = <<7, 8, 9, 255, 0>>
+
+      attrs =
+        Cast.vertex_to_resource_attrs(
+          vertex(%{"payload" => Cast.encode_binary(raw)}),
+          %{payload: "payload"},
+          %{payload: :binary}
+        )
+
+      assert attrs.payload == raw
+    end
+
+    test "leaves an UNTAGGED valid-base64 :binary value as-is (no false-decode of legacy/external data)" do
+      # A value that is syntactically valid base64 but was NOT written by ash_age
+      # (no "$age64$" tag) must pass through unchanged — never guess-decoded.
+      legacy = Base.encode64(<<1, 2, 3>>)
+
+      attrs =
+        Cast.vertex_to_resource_attrs(
+          vertex(%{"payload" => legacy}),
+          %{payload: "payload"},
+          %{payload: :binary}
+        )
+
+      assert attrs.payload == legacy
     end
 
     test "leaves a non-base64 :binary value as-is (legacy-data safety)" do

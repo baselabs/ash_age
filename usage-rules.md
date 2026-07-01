@@ -91,16 +91,15 @@ reach application logs, run the AGE-backed repo at `:info` or higher in producti
 - OPTIONAL MATCH works for simple patterns but bugs with multi-pattern
 - datetime() function not supported (use application-side timestamp conversion)
 
-**Binary attribute upgrade caveat:** base64 encoding for `:binary`/`Ash.Type.Binary`
-attributes is type-gated but not tagged/versioned. A `:binary` value written before
-this round-trip existed (an ash_age version predating the base64 fix) that happens
-to be syntactically valid base64 (only `[A-Za-z0-9+/=]`, length a multiple of 4)
-will decode to different bytes on read after upgrading. This does not affect
-AshCloak ciphertext — high-entropy encrypted bytes are essentially never valid
-UTF-8, so `Jason.encode!` always crashed on write before this fix, meaning no such
-legacy ciphertext exists. It can affect a `:binary` attribute that stored plain
-ASCII/UTF-8 content pre-upgrade. If you have pre-existing `:binary` data, verify or
-backfill it before relying on read-time decoding.
+**Binary attributes use a self-identifying wire format.** Values for
+`:binary`/`Ash.Type.Binary` attributes are stored as `"$age64$" <> base64(value)`.
+The `$age64$` tag makes read-back deterministic: a stored string is base64-decoded
+**only** when it carries the tag, so a value ash_age did not encode — legacy data
+written by a version predating this format, or a property populated out-of-band —
+is returned verbatim and never guess-decoded, even if it happens to be syntactically
+valid base64. AshCloak-encrypted fields round-trip transparently. (`$` is outside
+the base64 alphabet, so the tag cannot collide with the encoded body; values reach
+Cypher only as the `$1` JSON parameter, so the tag never touches query syntax.)
 
 ## Migration Patterns
 

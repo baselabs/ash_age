@@ -44,8 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a single non-`:id` primary key match the correct rows. Both previously hardcoded
   `WHERE n.id = $…`, silently matching the wrong rows or nothing.
 - `:binary` attributes (including AshCloak-encrypted fields) no longer crash
-  `Jason.encode!` on create/update. Binary values are base64-encoded for AGE
-  storage and decoded back on read; plaintext strings are untouched.
+  `Jason.encode!` on create/update. Binary values are stored in a self-identifying
+  wire format (`"$age64$" <> base64(value)`) and decoded back on read; plaintext
+  strings are untouched. The `$age64$` tag makes decoding deterministic — a value
+  ash_age did not encode (legacy or out-of-band data) is returned verbatim, never
+  guess-decoded, even if it is syntactically valid base64.
 
 ### Added
 

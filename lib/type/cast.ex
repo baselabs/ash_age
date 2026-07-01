@@ -29,6 +29,21 @@ defmodule AshAge.Type.Cast do
     Ash.Type.Binary
   ]
 
+  # Wire-format tag prefixing every ash_age-encoded binary value. Its purpose is
+  # to make read-back deterministic: a stored string carries the tag iff ash_age
+  # base64-encoded it, so decoding is never a guess. Legacy or externally-written
+  # values (no tag) are returned verbatim — a value that merely *looks* like
+  # base64 is never silently decoded. `$` is outside both base64 alphabets, so the
+  # tag can never collide with the encoded body. Values reach Cypher only as the
+  # `$1` JSON parameter, so the `$` in the tag never touches query syntax.
+  @binary_tag "$age64$"
+
+  @doc false
+  # Encodes a raw binary value for AGE storage: tag + base64. Used by
+  # AshAge.DataLayer.serialize_value/2 on the write path (the encode counterpart
+  # of the `@binary_tag`-prefixed coerce clause below).
+  def encode_binary(value) when is_binary(value), do: @binary_tag <> Base.encode64(value)
+
   @doc """
   Converts a vertex to a map of resource attributes.
 
@@ -84,11 +99,19 @@ defmodule AshAge.Type.Cast do
     coerce_naive_datetime(value)
   end
 
-  defp coerce_value(value, type) when is_binary(value) and type in @binary_types do
-    case Base.decode64(value) do
+  defp coerce_value(@binary_tag <> encoded, type) when type in @binary_types do
+    case Base.decode64(encoded) do
       {:ok, decoded} -> decoded
-      :error -> value
+      # A tagged value that fails to decode is corrupt/unexpected; return it as
+      # stored rather than crash the read path.
+      :error -> @binary_tag <> encoded
     end
+  end
+
+  # Untagged binary-typed value: legacy (pre-tag) or externally written. Return
+  # it verbatim — never guess-decode a string that merely looks like base64.
+  defp coerce_value(value, type) when is_binary(value) and type in @binary_types do
+    value
   end
 
   defp coerce_value(value, _type), do: value

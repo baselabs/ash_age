@@ -477,14 +477,16 @@ defmodule AshAge.DataLayer do
 
   @doc false
   # Serializes an attribute value for AGE storage. Binary-typed values are
-  # base64-encoded so raw (non-UTF-8) bytes survive `Jason.encode!`; the branch is
-  # type-gated so plaintext `:string` values (also Elixir binaries) are untouched.
+  # tagged + base64-encoded (via `AshAge.Type.Cast.encode_binary/1`, the single
+  # source of truth for the wire format) so raw (non-UTF-8) bytes survive
+  # `Jason.encode!` and read-back is deterministic; the branch is type-gated so
+  # plaintext `:string` values (also Elixir binaries) are untouched.
   def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
   def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
   def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
 
   def serialize_value(value, type) when is_binary(value) and type in @binary_types,
-    do: Base.encode64(value)
+    do: Cast.encode_binary(value)
 
   def serialize_value(value, _type), do: value
 end

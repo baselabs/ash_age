@@ -64,19 +64,22 @@ defmodule AshAge.DataLayerTest do
   end
 
   describe "serialize_value/2" do
-    test "base64-encodes a :binary value so Jason can encode it (crash fix)" do
+    test "tags and base64-encodes a :binary value so Jason can encode it (crash fix)" do
       raw = <<0, 255, 16, 128, 1>>
       encoded = DataLayer.serialize_value(raw, :binary)
 
       assert is_binary(encoded)
-      assert Base.decode64(encoded) == {:ok, raw}
-      # The defect: Jason.encode! raises on the raw binary; the base64 form must not.
+      # Self-identifying wire format: the "$age64$" tag marks a value ash_age
+      # encoded, so read-back is deterministic — never a guess-decode of legacy
+      # or externally-written data. The literal is pinned here on purpose.
+      assert encoded == "$age64$" <> Base.encode64(raw)
+      # The defect: Jason.encode! raises on the raw binary; the tagged form must not.
       assert is_binary(Jason.encode!(%{"payload" => encoded}))
     end
 
     test "handles the Ash.Type.Binary module type form as well" do
       raw = <<1, 2, 3>>
-      assert Base.decode64(DataLayer.serialize_value(raw, Ash.Type.Binary)) == {:ok, raw}
+      assert DataLayer.serialize_value(raw, Ash.Type.Binary) == "$age64$" <> Base.encode64(raw)
     end
 
     test "leaves a plaintext :string value untouched (not base64-encoded)" do
