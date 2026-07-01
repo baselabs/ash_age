@@ -86,6 +86,11 @@ defmodule AshAge.DataLayer do
             type: :atom,
             required: true,
             doc: "Destination resource module"
+          ],
+          properties: [
+            type: {:list, :atom},
+            default: [],
+            doc: "Optional edge property keys, set from same-named action arguments."
           ]
         ]
       }
@@ -111,7 +116,8 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.DefaultRelate
     ],
     verifiers: [
-      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr
+      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
+      AshAge.DataLayer.Verifiers.ValidateEdge
     ]
 
   # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
