@@ -1,8 +1,8 @@
 defmodule AshAge.NeverInterpolateTest do
   @moduledoc """
   Regression guarantee: user values reach Cypher ONLY as the `$1` JSON parameter
-  of `ag_catalog.cypher(...)`, never interpolated into the query body. Covers both
-  the read (filter) and write (create SET) paths.
+  of `ag_catalog.cypher(...)`, never interpolated into the query body. Covers the
+  read (filter), create (SET), and update/destroy (primary-key WHERE) paths.
   """
   use ExUnit.Case, async: true
 
@@ -47,6 +47,19 @@ defmodule AshAge.NeverInterpolateTest do
     refute clauses =~ @secret
 
     {sql, [json]} = Parameterized.build(:g, "CREATE (n:L) SET #{clauses} RETURN n", props)
+    refute sql =~ @secret
+    assert json =~ @secret
+  end
+
+  test "an update/destroy primary-key match value appears only in the $1 params, never in the SQL body" do
+    {where_clause, params} = DataLayer.pk_match_clause([{:id, @secret}], %{})
+
+    refute where_clause =~ @secret
+    assert @secret in Map.values(params)
+
+    {sql, [json]} =
+      Parameterized.build(:g, "MATCH (n:L) WHERE #{where_clause} RETURN n", params)
+
     refute sql =~ @secret
     assert json =~ @secret
   end
