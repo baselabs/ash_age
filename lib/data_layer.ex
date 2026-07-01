@@ -174,6 +174,14 @@ defmodule AshAge.DataLayer do
   end
 
   @impl true
+  def set_tenant(resource, %AshAge.Query{} = query, tenant) do
+    # Fires only for :context (Ash guards `set_tenant` with the strategy). The
+    # resolved name is validated by AshAge.Multitenancy.graph_name/2 and
+    # re-validated at build time by Cypher.Parameterized (defense-in-depth).
+    {:ok, %{query | graph: AshAge.Multitenancy.graph_name(resource, tenant)}}
+  end
+
+  @impl true
   def run_query(%AshAge.Query{} = query, resource) do
     {cypher, params} = AshAge.Query.to_cypher(query)
 

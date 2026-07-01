@@ -217,4 +217,20 @@ defmodule AshAge.MultitenancyTest do
                AshAge.Multitenancy.graph_name(AshAge.MultitenancyTest.PlainResource, "acme")
     end
   end
+
+  describe "set_tenant/3" do
+    test "overwrites the query graph with the resolved tenant graph" do
+      query = %AshAge.Query{
+        resource: AshAge.MultitenancyTest.PlainResource,
+        graph: :mt_encoder_test,
+        label: :Plain,
+        repo: AshAge.TestRepo
+      }
+
+      {:ok, tenanted} =
+        AshAge.DataLayer.set_tenant(AshAge.MultitenancyTest.PlainResource, query, "acme")
+
+      assert tenanted.graph == "t_acme"
+    end
+  end
 end

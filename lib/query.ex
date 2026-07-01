@@ -18,7 +18,7 @@ defmodule AshAge.Query do
 
   @type t :: %__MODULE__{
           resource: module(),
-          graph: atom(),
+          graph: atom() | String.t(),
           label: atom() | String.t(),
           repo: module(),
           expression: Ash.Filter.t() | nil,
