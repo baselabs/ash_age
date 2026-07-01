@@ -105,6 +105,11 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.DefaultRelate
     ]
 
+  # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
+  # non-UTF-8 bytes (e.g. AshCloak ciphertext) survive Jason.encode!, and decoded
+  # back by AshAge.Type.Cast on read.
+  @binary_types [:binary, Ash.Type.Binary]
+
   # === Capability Declarations ===
 
   @impl true
@@ -145,6 +150,7 @@ defmodule AshAge.DataLayer do
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :multitenancy), do: false
+  def can?(_, :composite_primary_key), do: true
   def can?(_, _), do: false
 
   # === Required Callbacks ===
@@ -188,11 +194,11 @@ defmodule AshAge.DataLayer do
 
         {:ok, records}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          QueryFailed.exception(
            query: "AGE read query",
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -232,11 +238,11 @@ defmodule AshAge.DataLayer do
 
         {:ok, struct(resource, attrs)}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -247,23 +253,21 @@ defmodule AshAge.DataLayer do
     graph = Info.graph(resource)
     label = validated_label(resource)
 
-    id = Ash.Changeset.get_attribute(changeset, :id)
     changed_attrs = changeset_to_properties(resource, changeset)
-
     set_clauses = set_clauses(changed_attrs)
 
-    # Use a match-param name that cannot collide with a changed attribute named
-    # "match_id" (which would otherwise clobber the WHERE id or vice versa).
-    match_param = unique_key(changed_attrs, "match_id")
+    # Match on the resource's full primary key (composite or non-:id supported).
+    # `changed_attrs` are reserved so a match param never clobbers a SET param.
+    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
 
     cypher = """
     MATCH (n:#{label})
-    WHERE n.id = $#{match_param}
+    WHERE #{where_clause}
     SET #{set_clauses}
     RETURN n
     """
 
-    params = Map.put(changed_attrs, match_param, id)
+    params = Map.merge(changed_attrs, match_params)
     {sql, pg_params} = Parameterized.build(graph, cypher, params)
 
     case SQL.query(repo, sql, pg_params) do
@@ -281,11 +285,11 @@ defmodule AshAge.DataLayer do
       {:ok, %{rows: []}} ->
         {:error, NotFound.exception(resource: resource)}
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -296,26 +300,25 @@ defmodule AshAge.DataLayer do
     graph = Info.graph(resource)
     label = validated_label(resource)
 
-    id = Ash.Changeset.get_attribute(changeset, :id)
+    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
 
     cypher = """
     MATCH (n:#{label})
-    WHERE n.id = $match_id
+    WHERE #{where_clause}
     DETACH DELETE n
     """
 
-    {sql, pg_params} =
-      Parameterized.build(graph, cypher, %{"match_id" => id}, [{:n, :agtype}])
+    {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
 
     case SQL.query(repo, sql, pg_params) do
       {:ok, _} ->
         :ok
 
-      {:error, %Postgrex.Error{} = error} ->
+      {:error, error} ->
         {:error,
          QueryFailed.exception(
            query: "AGE delete query",
-           reason: Exception.message(error)
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -403,19 +406,87 @@ defmodule AshAge.DataLayer do
     if Map.has_key?(taken, base), do: unique_key(taken, base <> "_"), else: base
   end
 
+  # Resolves `[{pk_field, value}]` from the resource's primary key and the
+  # changeset's ORIGINAL data — the identity of the row being updated/destroyed.
+  # `get_data/2` (not `get_attribute/2`) is deliberate: a primary-key attribute
+  # can be writable and included in an update's `accept` list, in which case
+  # `get_attribute/2` would return the PENDING (new) value, and the WHERE clause
+  # would match zero rows (the stored row still has the old value) instead of
+  # matching the row being renamed.
+  defp pk_pairs(resource, changeset) do
+    resource
+    |> Ash.Resource.Info.primary_key()
+    |> Enum.map(fn field -> {field, Ash.Changeset.get_data(changeset, field)} end)
+  end
+
+  @doc false
+  # Builds the primary-key WHERE clause and its params from `[{field, value}]`
+  # pairs. Each key is validated as an AGE identifier before it is interpolated
+  # into the cypher body; values are always parameterized (referenced as
+  # `$match_<key>`). `reserved` is a map whose keys are param names already taken
+  # (e.g. changed attributes in an update SET) so a match param can never collide.
+  def pk_match_clause([], _reserved) do
+    raise ArgumentError,
+          "AshAge requires a primary key to match on for update/destroy, but the resource declares none"
+  end
+
+  def pk_match_clause(pk_pairs, reserved) do
+    {clauses, params, _taken} =
+      Enum.reduce(pk_pairs, {[], %{}, reserved}, fn {field, value}, {clauses, params, taken} ->
+        key = field |> to_string() |> AshAge.Migration.validate_identifier!()
+        param = unique_key(taken, "match_#{key}")
+
+        {["n.#{key} = $#{param}" | clauses], Map.put(params, param, value),
+         Map.put(taken, param, value)}
+      end)
+
+    {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
+  end
+
+  @doc false
+  # Redacts a Postgrex error into a value-free reason string. Postgres `DETAIL`
+  # lines echo the offending values (e.g. "Key (email)=(a@b.com) already exists"),
+  # so we surface only the SQLSTATE name (and constraint identifier when present),
+  # never the free-text message/detail/query.
+  def redact_db_error(%Postgrex.Error{postgres: %{code: code} = pg}) do
+    case Map.get(pg, :constraint) do
+      nil -> "database error (#{code})"
+      constraint -> "database error (#{code}, constraint: #{constraint})"
+    end
+  end
+
+  def redact_db_error(%Postgrex.Error{}), do: "database connection error"
+
+  # Any other error term (e.g. %DBConnection.ConnectionError{} when the pool is
+  # exhausted or the connection drops) is redacted to a value-free generic reason
+  # rather than crashing the callback with a CaseClauseError — a crash would
+  # surface a stacktrace that can echo the query or its bound values.
+  def redact_db_error(_other), do: "database error"
+
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)
+    types = Info.attribute_types(resource)
 
     changeset.attributes
     |> Enum.reject(fn {key, _} -> key in skip end)
     |> Enum.map(fn {key, value} ->
-      {Atom.to_string(key), serialize_value(value)}
+      {Atom.to_string(key), serialize_value(value, Map.get(types, key))}
     end)
     |> Map.new()
   end
 
-  defp serialize_value(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp serialize_value(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
-  defp serialize_value(%Date{} = d), do: Date.to_iso8601(d)
-  defp serialize_value(value), do: value
+  @doc false
+  # Serializes an attribute value for AGE storage. Binary-typed values are
+  # tagged + base64-encoded (via `AshAge.Type.Cast.encode_binary/1`, the single
+  # source of truth for the wire format) so raw (non-UTF-8) bytes survive
+  # `Jason.encode!` and read-back is deterministic; the branch is type-gated so
+  # plaintext `:string` values (also Elixir binaries) are untouched.
+  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
+  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
+  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
+
+  def serialize_value(value, type) when is_binary(value) and type in @binary_types,
+    do: Cast.encode_binary(value)
+
+  def serialize_value(value, _type), do: value
 end

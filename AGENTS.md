@@ -50,6 +50,10 @@ User-provided graph names, labels, and property names must pass through `validat
 
 Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to prevent `ag_catalog.schema_migrations` from shadowing Ecto's `public.schema_migrations`.
 
+**5. NEVER echo raw values in errors or logs**
+
+Filtered values and PostgreSQL error `DETAIL` lines can carry PII/secrets. Errors carry structure only — `UnsupportedFilter` the operator + field, DB failures the SQLSTATE code (+ constraint). Redact at the boundary with `AshAge.DataLayer.redact_db_error/1`; never `inspect` a filtered value or embed `Exception.message(%Postgrex.Error{})` in an error.
+
 ## Common Patterns
 
 ### Adding a New Filter Operator
@@ -107,6 +111,7 @@ Integration-test resources are defined inline in their test modules (pointing `d
 ## Version History
 
 Key changes that affect agent behavior:
+- Unreleased (S2): Composite / non-`:id` primary keys in update/destroy (matched on the row's ORIGINAL key, so renaming a writable PK works). `:binary`/AshCloak round-trip via a self-identifying `"$age64$"`-tagged base64 wire format (`AshAge.Type.Cast.encode_binary/1` is the single source of truth; untagged/legacy values pass through undecoded). Error-message value redaction (operator/field + SQLSTATE only; non-Postgrex errors also redacted, never crash).
 - v0.2.5: Removed phantom references to non-existent modules (`traversal.ex`, `telemetry`) and features (`traverse`, `neighbors`, `find_path`, depth limits) from all docs. Updated README install version.
 - v0.2.4: Fixed UUID primary key overwrite by AGE integer ID (`Map.put` → `Map.put_new`). Removed `NULL` third arg from static Cypher queries (AGE rejects it).
 - v0.2.3: Added Postgrex wire protocol length prefix to `AgtypeExtension` encode/decode — required for proper parameter framing.

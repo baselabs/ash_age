@@ -59,6 +59,17 @@ MyResource
   AshAge.Cypher.Parameterized.build(graph, cypher, %{"param" => value})
   ```
 
+**Error messages are redacted:** AshAge never puts filtered values or PostgreSQL
+`DETAIL` lines (which echo row values) into error messages or logs.
+`AshAge.Errors.UnsupportedFilter` reports the operator and field only;
+create/update/query failures report the SQLSTATE code (and constraint name) only.
+
+**Query parameter values still reach your Ecto/Postgrex logs at `:debug`.**
+Parameterization (required for injection safety) passes attribute and primary-key
+values as bound `$1` JSON params — Ecto's default logger prints those params,
+by design, at the `:debug` level. If primary-key or attribute values must never
+reach application logs, run the AGE-backed repo at `:info` or higher in production.
+
 ## AGE Limitations
 
 **NOT supported (returns {:error, UnsupportedFilter}):**
@@ -79,6 +90,16 @@ MyResource
 - collect() IS supported (despite some docs claiming otherwise)
 - OPTIONAL MATCH works for simple patterns but bugs with multi-pattern
 - datetime() function not supported (use application-side timestamp conversion)
+
+**Binary attributes use a self-identifying wire format.** Values for
+`:binary`/`Ash.Type.Binary` attributes are stored as `"$age64$" <> base64(value)`.
+The `$age64$` tag makes read-back deterministic: a stored string is base64-decoded
+**only** when it carries the tag, so a value ash_age did not encode — legacy data
+written by a version predating this format, or a property populated out-of-band —
+is returned verbatim and never guess-decoded, even if it happens to be syntactically
+valid base64. AshCloak-encrypted fields round-trip transparently. (`$` is outside
+the base64 alphabet, so the tag cannot collide with the encoded body; values reach
+Cypher only as the `$1` JSON parameter, so the tag never touches query syntax.)
 
 ## Migration Patterns
 
@@ -144,6 +165,8 @@ so the rest of your suite still runs with no database:
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
+- Primary keys: single-attribute (`:id` or any attribute name) and composite
+- Binary attributes: `:binary` / `Ash.Type.Binary` (and AshCloak-encrypted fields) round-trip via base64
 - Transactions: `:transact` with `rollback/2`
 - Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
 - Boolean expressions: `and`, `or`, `not`
