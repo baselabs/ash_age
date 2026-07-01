@@ -65,6 +65,37 @@ defmodule AshAge.Integration.CompositePkTest do
     end
   end
 
+  defmodule RenamableKey do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_s2_renamable_key
+      repo AshAge.TestRepo
+      label :RenamableKey
+    end
+
+    attributes do
+      attribute :key, :string, primary_key?: true, allow_nil?: false, public?: true
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:key, :name]
+      defaults [:read, :destroy]
+
+      create :create do
+        accept [:key, :name]
+      end
+
+      update :update do
+        accept [:key, :name]
+      end
+    end
+  end
+
   defp create!(resource, attrs) do
     resource |> Ash.Changeset.for_create(:create, attrs) |> Ash.create!()
   end
@@ -121,6 +152,27 @@ defmodule AshAge.Integration.CompositePkTest do
         assert [] == Ash.read!(Coded)
       end,
       vlabels: ["Coded"]
+    )
+  end
+
+  test "update renaming a writable, accepted primary-key attribute matches the ORIGINAL row (not the new value)" do
+    with_graph(
+      "itest_s2_renamable_key",
+      fn ->
+        row = create!(RenamableKey, %{key: "old-key", name: "x"})
+
+        # A WHERE clause built from the CHANGED value would match zero rows (the
+        # stored row still has "old-key"), surfacing as a spurious NotFound.
+        {:ok, updated} =
+          row
+          |> Ash.Changeset.for_update(:update, %{key: "new-key", name: "y"})
+          |> Ash.update()
+
+        assert updated.key == "new-key"
+        assert updated.name == "y"
+        assert [%{key: "new-key", name: "y"}] = Ash.read!(RenamableKey)
+      end,
+      vlabels: ["RenamableKey"]
     )
   end
 end

@@ -407,13 +407,16 @@ defmodule AshAge.DataLayer do
   end
 
   # Resolves `[{pk_field, value}]` from the resource's primary key and the
-  # changeset. `get_attribute/2` returns the changed value or — for an unchanged
-  # key — the value on the record being updated/destroyed, i.e. the identity of
-  # the row to match.
+  # changeset's ORIGINAL data — the identity of the row being updated/destroyed.
+  # `get_data/2` (not `get_attribute/2`) is deliberate: a primary-key attribute
+  # can be writable and included in an update's `accept` list, in which case
+  # `get_attribute/2` would return the PENDING (new) value, and the WHERE clause
+  # would match zero rows (the stored row still has the old value) instead of
+  # matching the row being renamed.
   defp pk_pairs(resource, changeset) do
     resource
     |> Ash.Resource.Info.primary_key()
-    |> Enum.map(fn field -> {field, Ash.Changeset.get_attribute(changeset, field)} end)
+    |> Enum.map(fn field -> {field, Ash.Changeset.get_data(changeset, field)} end)
   end
 
   @doc false
