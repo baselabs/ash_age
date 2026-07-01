@@ -9,9 +9,9 @@ defmodule AshAge.Integration.DataLayerRoundtripTest do
       data_layer: AshAge.DataLayer
 
     age do
-      graph(:itest_roundtrip)
-      repo(AshAge.TestRepo)
-      label(:Person)
+      graph :itest_roundtrip
+      repo AshAge.TestRepo
+      label :Person
     end
 
     attributes do
@@ -26,18 +26,22 @@ defmodule AshAge.Integration.DataLayerRoundtripTest do
   end
 
   test "creates and reads back a vertex through the data layer" do
-    with_graph("itest_roundtrip", [vlabels: ["Person"]], fn ->
-      {:ok, created} =
-        Person
-        |> Ash.Changeset.for_create(:create, %{name: "Ada"})
-        |> Ash.create()
+    with_graph(
+      "itest_roundtrip",
+      fn ->
+        {:ok, created} =
+          Person
+          |> Ash.Changeset.for_create(:create, %{name: "Ada"})
+          |> Ash.create()
 
-      assert created.name == "Ada"
-      assert is_binary(created.id)
+        assert created.name == "Ada"
+        assert is_binary(created.id)
 
-      [read] = Ash.read!(Person)
-      assert read.id == created.id
-      assert read.name == "Ada"
-    end)
+        [read] = Ash.read!(Person)
+        assert read.id == created.id
+        assert read.name == "Ada"
+      end,
+      vlabels: ["Person"]
+    )
   end
 end
