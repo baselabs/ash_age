@@ -105,6 +105,11 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.DefaultRelate
     ]
 
+  # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
+  # non-UTF-8 bytes (e.g. AshCloak ciphertext) survive Jason.encode!, and decoded
+  # back by AshAge.Type.Cast on read.
+  @binary_types [:binary, Ash.Type.Binary]
+
   # === Capability Declarations ===
 
   @impl true
@@ -437,17 +442,26 @@ defmodule AshAge.DataLayer do
 
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)
+    types = Info.attribute_types(resource)
 
     changeset.attributes
     |> Enum.reject(fn {key, _} -> key in skip end)
     |> Enum.map(fn {key, value} ->
-      {Atom.to_string(key), serialize_value(value)}
+      {Atom.to_string(key), serialize_value(value, Map.get(types, key))}
     end)
     |> Map.new()
   end
 
-  defp serialize_value(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp serialize_value(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
-  defp serialize_value(%Date{} = d), do: Date.to_iso8601(d)
-  defp serialize_value(value), do: value
+  @doc false
+  # Serializes an attribute value for AGE storage. Binary-typed values are
+  # base64-encoded so raw (non-UTF-8) bytes survive `Jason.encode!`; the branch is
+  # type-gated so plaintext `:string` values (also Elixir binaries) are untouched.
+  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
+  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
+  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
+
+  def serialize_value(value, type) when is_binary(value) and type in @binary_types,
+    do: Base.encode64(value)
+
+  def serialize_value(value, _type), do: value
 end

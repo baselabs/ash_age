@@ -54,5 +54,40 @@ defmodule AshAge.Type.CastTest do
     test "returns an empty map for non-vertex input" do
       assert Cast.vertex_to_resource_attrs(:not_a_vertex, %{}, %{}) == %{}
     end
+
+    test "decodes a base64 string back to bytes for a :binary attribute" do
+      raw = <<0, 255, 16, 128, 1>>
+
+      attrs =
+        Cast.vertex_to_resource_attrs(
+          vertex(%{"payload" => Base.encode64(raw)}),
+          %{payload: "payload"},
+          %{payload: :binary}
+        )
+
+      assert attrs.payload == raw
+    end
+
+    test "decodes for the Ash.Type.Binary module type form too" do
+      raw = <<9, 9, 9>>
+
+      attrs =
+        Cast.vertex_to_resource_attrs(vertex(%{"b" => Base.encode64(raw)}), %{b: "b"}, %{
+          b: Ash.Type.Binary
+        })
+
+      assert attrs.b == raw
+    end
+
+    test "leaves a non-base64 :binary value as-is (legacy-data safety)" do
+      attrs =
+        Cast.vertex_to_resource_attrs(
+          vertex(%{"payload" => "not base64 !!!"}),
+          %{payload: "payload"},
+          %{payload: :binary}
+        )
+
+      assert attrs.payload == "not base64 !!!"
+    end
   end
 end

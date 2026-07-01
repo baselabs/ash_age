@@ -62,4 +62,30 @@ defmodule AshAge.DataLayerTest do
       end
     end
   end
+
+  describe "serialize_value/2" do
+    test "base64-encodes a :binary value so Jason can encode it (crash fix)" do
+      raw = <<0, 255, 16, 128, 1>>
+      encoded = DataLayer.serialize_value(raw, :binary)
+
+      assert is_binary(encoded)
+      assert Base.decode64(encoded) == {:ok, raw}
+      # The defect: Jason.encode! raises on the raw binary; the base64 form must not.
+      assert is_binary(Jason.encode!(%{"payload" => encoded}))
+    end
+
+    test "handles the Ash.Type.Binary module type form as well" do
+      raw = <<1, 2, 3>>
+      assert Base.decode64(DataLayer.serialize_value(raw, Ash.Type.Binary)) == {:ok, raw}
+    end
+
+    test "leaves a plaintext :string value untouched (not base64-encoded)" do
+      assert DataLayer.serialize_value("hello", :string) == "hello"
+    end
+
+    test "serializes datetimes to ISO8601 independent of the declared type" do
+      assert DataLayer.serialize_value(~U[2026-06-30 12:00:00Z], :utc_datetime) ==
+               "2026-06-30T12:00:00Z"
+    end
+  end
 end

@@ -24,6 +24,11 @@ defmodule AshAge.Type.Cast do
     Ash.Type.NaiveDatetime
   ]
 
+  @binary_types [
+    :binary,
+    Ash.Type.Binary
+  ]
+
   @doc """
   Converts a vertex to a map of resource attributes.
 
@@ -77,6 +82,13 @@ defmodule AshAge.Type.Cast do
 
   defp coerce_value(value, type) when is_binary(value) and type in @naive_datetime_types do
     coerce_naive_datetime(value)
+  end
+
+  defp coerce_value(value, type) when is_binary(value) and type in @binary_types do
+    case Base.decode64(value) do
+      {:ok, decoded} -> decoded
+      :error -> value
+    end
   end
 
   defp coerce_value(value, _type), do: value
