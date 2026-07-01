@@ -55,5 +55,11 @@ defmodule AshAge.DataLayerTest do
         DataLayer.pk_match_clause([{String.to_atom("id = 1 //"), "x"}], %{})
       end
     end
+
+    test "raises when the resource declares no primary key (empty match is not valid Cypher)" do
+      assert_raise ArgumentError, ~r/requires a primary key/, fn ->
+        DataLayer.pk_match_clause([], %{})
+      end
+    end
   end
 end

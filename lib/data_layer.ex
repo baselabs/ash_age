@@ -417,6 +417,11 @@ defmodule AshAge.DataLayer do
   # into the cypher body; values are always parameterized (referenced as
   # `$match_<key>`). `reserved` is a map whose keys are param names already taken
   # (e.g. changed attributes in an update SET) so a match param can never collide.
+  def pk_match_clause([], _reserved) do
+    raise ArgumentError,
+          "AshAge requires a primary key to match on for update/destroy, but the resource declares none"
+  end
+
   def pk_match_clause(pk_pairs, reserved) do
     {clauses, params, _taken} =
       Enum.reduce(pk_pairs, {[], %{}, reserved}, fn {field, value}, {clauses, params, taken} ->
