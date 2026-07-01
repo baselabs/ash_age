@@ -24,6 +24,12 @@ def deps do
 end
 ```
 
+### Compatibility
+
+Tested against **Apache AGE 1.6.0 on PostgreSQL 16** (the `apache/age:release_PG16_1.6.0`
+image, pinned by digest in CI). Other PostgreSQL majors with a matching AGE build are
+expected to work but are not covered by CI.
+
 ## Usage
 
 See `lib/ash_age.ex` for full documentation.
@@ -35,13 +41,13 @@ See `lib/ash_age.ex` for full documentation.
 2. Register Postgrex types for AGE's `agtype`:
 
 ```elixir
-defmodule MyApp.PostgrexTypes do
-  Postgrex.Types.define(
-    MyApp.PostgrexTypes,
-    [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
-    []
-  )
-end
+# Postgrex.Types.define/3 defines the module itself — call it at the top level
+# of the file (no `defmodule` wrapper of the same name).
+Postgrex.Types.define(
+  MyApp.PostgrexTypes,
+  [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
+  []
+)
 ```
 
 3. Configure your Repo with the AGE session hook and types module:

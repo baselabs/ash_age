@@ -33,3 +33,6 @@ priv/plts/
 /.agent/
 /.aider/
 
+# Superpowers lifecycle artifacts (specs, plans, handoffs, reviews) — local only, never tracked
+/docs/superpowers/
+

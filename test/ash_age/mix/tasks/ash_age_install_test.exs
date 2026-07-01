@@ -8,7 +8,7 @@ defmodule Mix.Tasks.AshAge.InstallTest do
       text = Install.instructions()
       assert text =~ "Postgrex Types"
       assert text =~ "Postgrex.Types.define"
-      assert text =~ "AshAge.Type.Agtype.Extension"
+      assert text =~ "AshAge.Postgrex.AgtypeExtension"
     end
 
     test "includes repo config step" do

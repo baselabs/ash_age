@@ -8,13 +8,13 @@ defmodule AshAge do
 
   Create a Postgrex types module so AGE's `agtype` is understood by Ecto:
 
-      defmodule MyApp.PostgrexTypes do
-        Postgrex.Types.define(
-          MyApp.PostgrexTypes,
-          [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
-          []
-        )
-      end
+      # `Postgrex.Types.define/3` defines the module itself — call it at the top
+      # level of the file (no `defmodule` wrapper of the same name).
+      Postgrex.Types.define(
+        MyApp.PostgrexTypes,
+        [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
+        []
+      )
 
   Then reference it in your Repo config:
 

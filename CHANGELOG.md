@@ -26,9 +26,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AshAge.DataLayer.update/2` no longer risks a parameter collision when a resource
   has an attribute literally named `match_id`; the internal match parameter now uses
   a name guaranteed not to clash with a changed attribute.
+- Setup docs no longer show a Postgrex types snippet that fails to compile:
+  `Postgrex.Types.define/3` defines the module itself, so it is now called at the
+  top level (a `defmodule` wrapper of the same name raises "cannot define module …
+  currently being defined"). The `mix ash_age.install` output also referenced a
+  non-existent `AshAge.Type.Agtype.Extension`; the correct module is
+  `AshAge.Postgrex.AgtypeExtension`. Fixed in the install task, the `AshAge`
+  moduledoc, and the README.
 
 ### Added
 
+- Live-AGE integration-test harness: a test `Ecto.Repo`, a Postgrex agtype types
+  module, `AshAge.TestDomain`, and `AshAge.DataCase` (Ecto SQL Sandbox + AGE
+  session with a `with_graph/3` helper). Integration tests are tagged
+  `:integration` and run only when `AGE_DATABASE_URL` is set; the pure-unit suite
+  still runs with no database.
+- Feasibility probes verifying AGE 1.6.0 behavior later work depends on: bulk
+  `UNWIND … SET n.k = row.k` (supported), parameterized `MATCH (a),(b) … CREATE
+  (a)-[:REL]->(b)` (supported), and that `ag_catalog.cypher()` honors `FORCE`
+  row-level security under a non-superuser role with a GUC-keyed policy
+  (supported — confirms DB-enforced tenant isolation on AGE is viable).
+- CI pins the Apache AGE service image by digest (`release_PG16_1.6.0`, AGE 1.6.0
+  / PostgreSQL 16) and runs the integration lane against it.
 - Unit test coverage for the previously untested query-building path:
   `AshAge.Cypher.Parameterized`, `AshAge.Query`, `AshAge.Query.Filter`,
   `AshAge.Type.Agtype`, `AshAge.Type.Cast`, and `AshAge.DataLayer.set_clauses/1`
