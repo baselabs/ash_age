@@ -158,7 +158,7 @@ defmodule AshAge.DataLayer do
   def can?(_, :bulk_create), do: false
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
-  def can?(_, :multitenancy), do: false
+  def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
   def can?(_, _), do: false
 

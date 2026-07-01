@@ -240,4 +240,46 @@ defmodule AshAge.MultitenancyTest do
                {:ok, :mt_encoder_test}
     end
   end
+
+  describe "can?/2 multitenancy capability" do
+    test "the data layer advertises multitenancy support" do
+      assert AshAge.DataLayer.can?(nil, :multitenancy)
+    end
+  end
+
+  describe "write_graph/2 fail-closed for :context" do
+    defmodule CtxResource do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:mt_ctx_base)
+        repo(AshAge.TestRepo)
+      end
+
+      multitenancy do
+        strategy(:context)
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+      end
+    end
+
+    test "a :context write with a nil tenant fails closed (never the base graph)" do
+      assert AshAge.DataLayer.write_graph(CtxResource, %{to_tenant: nil}) ==
+               {:error, :tenant_required}
+    end
+
+    test "a :context write with a blank tenant fails closed" do
+      assert AshAge.DataLayer.write_graph(CtxResource, %{to_tenant: ""}) ==
+               {:error, :tenant_required}
+    end
+
+    test "a :context write with a real tenant resolves the tenant graph" do
+      assert AshAge.DataLayer.write_graph(CtxResource, %{to_tenant: "acme"}) == {:ok, "t_acme"}
+    end
+  end
 end
