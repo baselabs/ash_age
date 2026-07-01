@@ -24,15 +24,26 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
   test "P3: cypher() honors FORCE RLS + GUC under a non-superuser role" do
     with_graph(@graph, [vlabels: ["Doc"]], fn ->
       # Seed two tenants as the graph owner (owner writes bypass RLS by design here).
-      exec(~s|SELECT * FROM ag_catalog.cypher('#{@graph}', $$ CREATE (n:Doc {tenant:'t1', body:'a'}) $$) AS (v agtype)|)
-      exec(~s|SELECT * FROM ag_catalog.cypher('#{@graph}', $$ CREATE (n:Doc {tenant:'t2', body:'b'}) $$) AS (v agtype)|)
+      exec(
+        ~s|SELECT * FROM ag_catalog.cypher('#{@graph}', $$ CREATE (n:Doc {tenant:'t1', body:'a'}) $$) AS (v agtype)|
+      )
+
+      exec(
+        ~s|SELECT * FROM ag_catalog.cypher('#{@graph}', $$ CREATE (n:Doc {tenant:'t2', body:'b'}) $$) AS (v agtype)|
+      )
 
       # Tenant discriminator as a generated column + FORCE RLS + symmetric GUC policy.
-      exec(~s|ALTER TABLE #{@graph}."Doc" ADD COLUMN tenant_id text GENERATED ALWAYS AS (btrim(ag_catalog.agtype_access_operator(properties, '"tenant"'::agtype)::text, '"')) STORED|)
+      exec(
+        ~s|ALTER TABLE #{@graph}."Doc" ADD COLUMN tenant_id text GENERATED ALWAYS AS (btrim(ag_catalog.agtype_access_operator(properties, '"tenant"'::agtype)::text, '"')) STORED|
+      )
+
       exec(~s|ALTER TABLE #{@graph}."Doc" ENABLE ROW LEVEL SECURITY|)
       exec(~s|ALTER TABLE #{@graph}."Doc" FORCE ROW LEVEL SECURITY|)
       exec(~s|DROP POLICY IF EXISTS tenant_isol ON #{@graph}."Doc"|)
-      exec(~s|CREATE POLICY tenant_isol ON #{@graph}."Doc" USING (tenant_id = current_setting('ash_age.tenant_id', true)) WITH CHECK (tenant_id = current_setting('ash_age.tenant_id', true))|)
+
+      exec(
+        ~s|CREATE POLICY tenant_isol ON #{@graph}."Doc" USING (tenant_id = current_setting('ash_age.tenant_id', true)) WITH CHECK (tenant_id = current_setting('ash_age.tenant_id', true))|
+      )
 
       # Non-superuser role (superusers bypass RLS even under FORCE).
       exec(~s|DROP ROLE IF EXISTS #{@role}|)
@@ -61,7 +72,9 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
 
   defp count_docs do
     %{rows: [[n]]} =
-      exec(~s|SELECT count(*) FROM ag_catalog.cypher('#{@graph}', $$ MATCH (n:Doc) RETURN n $$) AS (v agtype)|)
+      exec(
+        ~s|SELECT count(*) FROM ag_catalog.cypher('#{@graph}', $$ MATCH (n:Doc) RETURN n $$) AS (v agtype)|
+      )
 
     n
   end

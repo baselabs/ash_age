@@ -11,6 +11,8 @@ defmodule AshAge.DataCase do
   """
   use ExUnit.CaseTemplate
 
+  alias Ecto.Adapters.SQL
+
   using do
     quote do
       alias AshAge.TestRepo
@@ -19,8 +21,8 @@ defmodule AshAge.DataCase do
   end
 
   setup tags do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(AshAge.TestRepo, shared: not tags[:async])
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    pid = SQL.Sandbox.start_owner!(AshAge.TestRepo, shared: not tags[:async])
+    on_exit(fn -> SQL.Sandbox.stop_owner(pid) end)
     :ok
   end
 
@@ -34,7 +36,7 @@ defmodule AshAge.DataCase do
     vlabels = Keyword.get(opts, :vlabels, [])
     elabels = Keyword.get(opts, :elabels, [])
 
-    Ecto.Adapters.SQL.Sandbox.unboxed_run(AshAge.TestRepo, fn ->
+    SQL.Sandbox.unboxed_run(AshAge.TestRepo, fn ->
       exec(~s|SELECT ag_catalog.create_graph('#{graph}')|)
       Enum.each(vlabels, &exec(~s|SELECT ag_catalog.create_vlabel('#{graph}', '#{&1}')|))
       Enum.each(elabels, &exec(~s|SELECT ag_catalog.create_elabel('#{graph}', '#{&1}')|))
@@ -49,6 +51,6 @@ defmodule AshAge.DataCase do
 
   @doc "Runs a raw SQL statement on the test Repo, returning the Postgrex result."
   def exec(sql, params \\ []) do
-    Ecto.Adapters.SQL.query!(AshAge.TestRepo, sql, params)
+    SQL.query!(AshAge.TestRepo, sql, params)
   end
 end

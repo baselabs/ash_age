@@ -10,6 +10,7 @@ defmodule AshAge.Integration.Probes.EdgeCreateProbeTest do
   @moduletag :probe
 
   alias AshAge.Cypher.Parameterized
+  alias Ecto.Adapters.SQL
 
   test "P2: AGE accepts parameterized MATCH (a),(b) ... CREATE (a)-[:REL]->(b)" do
     with_graph("itest_probe_p2", [vlabels: ["Node"], elabels: ["REL"]], fn ->
@@ -20,7 +21,7 @@ defmodule AshAge.Integration.Probes.EdgeCreateProbeTest do
           %{"a" => "src", "b" => "dst"}
         )
 
-      {:ok, _} = Ecto.Adapters.SQL.query(AshAge.TestRepo, seed_sql, seed_params)
+      {:ok, _} = SQL.query(AshAge.TestRepo, seed_sql, seed_params)
 
       cypher = """
       MATCH (a:Node), (b:Node)
@@ -32,7 +33,7 @@ defmodule AshAge.Integration.Probes.EdgeCreateProbeTest do
       {sql, pg_params} =
         Parameterized.build("itest_probe_p2", cypher, %{"a" => "src", "b" => "dst"})
 
-      result = Ecto.Adapters.SQL.query(AshAge.TestRepo, sql, pg_params)
+      result = SQL.query(AshAge.TestRepo, sql, pg_params)
 
       # PASS => P2 = yes (S4 edge create uses this shape). {:error, ...} => P2 = no.
       assert {:ok, %{num_rows: 1}} = result

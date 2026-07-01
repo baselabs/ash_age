@@ -9,9 +9,9 @@ defmodule AshAge.Integration.DataLayerRoundtripTest do
       data_layer: AshAge.DataLayer
 
     age do
-      graph :itest_roundtrip
-      repo AshAge.TestRepo
-      label :Person
+      graph(:itest_roundtrip)
+      repo(AshAge.TestRepo)
+      label(:Person)
     end
 
     attributes do

@@ -10,6 +10,7 @@ defmodule AshAge.Integration.Probes.BulkUnwindProbeTest do
   @moduletag :probe
 
   alias AshAge.Cypher.Parameterized
+  alias Ecto.Adapters.SQL
 
   test "P1: AGE accepts UNWIND $rows AS row CREATE (n:Item) SET n.name = row.name" do
     with_graph("itest_probe_p1", [vlabels: ["Item"]], fn ->
@@ -17,7 +18,7 @@ defmodule AshAge.Integration.Probes.BulkUnwindProbeTest do
       params = %{"rows" => [%{"name" => "a"}, %{"name" => "b"}]}
       {sql, pg_params} = Parameterized.build("itest_probe_p1", cypher, params)
 
-      result = Ecto.Adapters.SQL.query(AshAge.TestRepo, sql, pg_params)
+      result = SQL.query(AshAge.TestRepo, sql, pg_params)
 
       # PASS => P1 = yes (S4 bulk uses UNWIND). {:error, %Postgrex.Error{}} => P1 = no.
       assert {:ok, %{num_rows: 2}} = result
