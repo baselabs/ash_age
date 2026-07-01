@@ -36,10 +36,14 @@ defmodule AshAge.Query do
   """
   @spec to_cypher(t()) :: {String.t(), map()}
   def to_cypher(%__MODULE__{} = query) do
+    # Defense-in-depth: `label` feeds the cypher body and is only otherwise
+    # validated at compile time — re-assert it here so a non-identifier can never
+    # inject Cypher or break AGE dollar-quoting.
+    label = AshAge.Migration.validate_identifier!(query.label)
     {where_parts, query} = build_where(query)
 
     parts =
-      ["MATCH (n:#{query.label})"] ++
+      ["MATCH (n:#{label})"] ++
         build_where_clause(where_parts) ++
         ["RETURN n"] ++
         build_order_by(query.sort) ++
@@ -86,6 +90,8 @@ defmodule AshAge.Query do
   defp build_order_by(sort_clauses) do
     order =
       Enum.map_join(sort_clauses, ", ", fn {field, direction} ->
+        # Field names are interpolated into the cypher body — validate as identifiers.
+        field = AshAge.Migration.validate_identifier!(field)
         dir = if direction == :desc, do: "DESC", else: "ASC"
         "n.#{field} #{dir}"
       end)
@@ -94,8 +100,16 @@ defmodule AshAge.Query do
   end
 
   defp build_skip(nil), do: []
-  defp build_skip(offset), do: ["SKIP #{offset}"]
+  defp build_skip(offset) when is_integer(offset) and offset >= 0, do: ["SKIP #{offset}"]
+
+  defp build_skip(offset) do
+    raise ArgumentError, "invalid offset: #{inspect(offset)} (expected a non-negative integer)"
+  end
 
   defp build_limit(nil), do: []
-  defp build_limit(limit), do: ["LIMIT #{limit}"]
+  defp build_limit(limit) when is_integer(limit) and limit >= 0, do: ["LIMIT #{limit}"]
+
+  defp build_limit(limit) do
+    raise ArgumentError, "invalid limit: #{inspect(limit)} (expected a non-negative integer)"
+  end
 end

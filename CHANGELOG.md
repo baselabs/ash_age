@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Defense-in-depth against Cypher/SQL injection at every identifier interpolation
+  site. All dynamic values were already parameterized; this hardens the identifiers
+  that are interpolated into the query text:
+  - `AshAge.Query.to_cypher/1` now validates the vertex `label` and every `sort`
+    field as an AGE identifier before interpolation, and requires `offset`/`limit`
+    to be non-negative integers (raising `ArgumentError` otherwise).
+  - `AshAge.DataLayer` create/update validate every property key (`SET n.key = $key`)
+    and the label as AGE identifiers.
+  - `AshAge.Cypher.Parameterized.build/*` now reject any Cypher body containing a
+    `$$` sequence — a final centralized guard against breaking out of AGE's
+    dollar-quoted literal.
+
+### Fixed
+
+- `AshAge.DataLayer.update/2` no longer risks a parameter collision when a resource
+  has an attribute literally named `match_id`; the internal match parameter now uses
+  a name guaranteed not to clash with a changed attribute.
+
+### Added
+
+- Unit test coverage for the previously untested query-building path:
+  `AshAge.Cypher.Parameterized`, `AshAge.Query`, `AshAge.Query.Filter`,
+  `AshAge.Type.Agtype`, `AshAge.Type.Cast`, and `AshAge.DataLayer.set_clauses/1`
+  (47 new tests, no database required).
+
 ## [0.2.6] - 2026-02-14
 
 ### Fixed
