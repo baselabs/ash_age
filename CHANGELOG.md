@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multitenancy (S3).** Both Ash multitenancy strategies are now supported
+  (`can?(:multitenancy) → true`):
+  - **`:attribute`** — works through Ash core (reads inject a tenant filter,
+    writes force-change the tenant). ash_age adds a fail-closed compile
+    **verifier** (`AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr`): the
+    multitenancy attribute must not appear in `age do skip [...]`, or the tenant
+    discriminator would never be written and the core-injected filter would
+    silently match nothing.
+  - **`:context` — graph-per-tenant** physical isolation. `set_tenant/3` resolves
+    a per-tenant AGE graph and threads it through reads; writes resolve it from
+    the changeset tenant and **fail closed** on a missing tenant (there is no
+    global graph). The graph name comes from a collision-free encoder
+    (`AshAge.Multitenancy.graph_name/2`): identifier-clean tenants (ULID,
+    integer, slug) pass through as `t_<tenant>`; others (e.g. a UUID) are
+    base32-encoded as `g<...>`. The two prefixes are disjoint, so distinct
+    tenants never collide. Overridable per resource via a `tenant_graph` MFA in
+    the `age` DSL block. Tenants longer than the 63-byte identifier limit fail
+    closed with a value-free error (use `tenant_graph`).
+  - `AshAge.tenant_graph/2` — public helper so a host derives the same graph name
+    query time uses.
+  - `AshAge.Migration.provision_tenant/3` — idempotent, runtime-safe (and
+    migration-safe) helper the host app calls to create a tenant's graph +
+    labels. Every graph/label is validated as an AGE identifier before use.
+  - A missing tenant graph fails **closed**: a query against an unprovisioned
+    `:context` graph surfaces a redacted database error, never silent empty
+    results.
+
+### Changed
+
+- `AshAge.DataLayer.destroy/2` now returns `Ash.Error.Query.NotFound` when the
+  scoped match deletes no row (previously it returned `:ok` unconditionally,
+  because `DETACH DELETE` reports no matched/unmatched signal). This is required
+  for a scoping-denied delete to be observable and mirrors `update/2`; a
+  no-match / already-deleted destroy now surfaces `NotFound` instead of `:ok`.
+
+### Security
+
+- **Cross-tenant write/delete closed.** ash_age now advertises
+  `can?(:changeset_filter) → true` and honors `changeset.filter` in `update`/
+  `destroy`, translating it into the Cypher `WHERE` (AND-ed with the primary-key
+  match). Previously the data layer matched mutations by primary key only and
+  silently dropped the tenant/policy scoping filter Ash attaches, so a
+  fabricated or non-tenant-scoped changeset carrying another tenant's primary
+  key could modify or delete that tenant's rows. Untranslatable filters fail
+  **closed** (the mutation is rejected, never silently unscoped). This also makes
+  `Ash.Policy` filters apply to mutations.
+
 ### Security
 
 - Defense-in-depth against Cypher/SQL injection at every identifier interpolation
