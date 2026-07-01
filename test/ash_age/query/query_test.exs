@@ -72,5 +72,17 @@ defmodule AshAge.QueryTest do
       assert ref2 == "$param2"
       assert q2.params == %{"param1" => "a", "param2" => "b"}
     end
+
+    test "skips a $paramN key already taken (no clobber on the seeded scoping path)" do
+      # On update/destroy, changeset_where seeds the params map with SET/match
+      # keys before translating changeset.filter. If a seeded key is literally
+      # `param2` (e.g. an attribute named `param2`), the counter lands on it and
+      # must SKIP, not overwrite the seeded value with the filter-scoping param.
+      seeded = %{query() | params: %{"param2" => "seeded"}}
+      {q, ref} = Query.add_param(seeded, "new")
+
+      assert ref == "$param3"
+      assert q.params == %{"param2" => "seeded", "param3" => "new"}
+    end
   end
 end

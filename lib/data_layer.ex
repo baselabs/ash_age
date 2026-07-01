@@ -52,6 +52,12 @@ defmodule AshAge.DataLayer do
         type: {:list, :atom},
         default: [],
         doc: "List of attribute names to exclude from AGE vertex properties"
+      ],
+      tenant_graph: [
+        type: :mfa,
+        doc:
+          "MFA applied as `apply(m, f, [tenant | a])` returning the AGE graph name " <>
+            "for a :context tenant. Defaults to a built-in collision-free encoder."
       ]
     ],
     entities: [
@@ -88,7 +94,7 @@ defmodule AshAge.DataLayer do
 
   @behaviour Ash.DataLayer
 
-  alias Ash.Error.Query.NotFound
+  alias Ash.Error.Changes.StaleRecord
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
@@ -103,6 +109,9 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.EnsureLabelled,
       AshAge.DataLayer.Transformers.ValidateLabelFormat,
       AshAge.DataLayer.Transformers.DefaultRelate
+    ],
+    verifiers: [
+      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr
     ]
 
   # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
@@ -149,8 +158,9 @@ defmodule AshAge.DataLayer do
   def can?(_, :bulk_create), do: false
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
-  def can?(_, :multitenancy), do: false
+  def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
+  def can?(_, :changeset_filter), do: true
   def can?(_, _), do: false
 
   # === Required Callbacks ===
@@ -162,6 +172,14 @@ defmodule AshAge.DataLayer do
     repo = Info.repo(resource)
 
     %AshAge.Query{resource: resource, graph: graph, label: label, repo: repo}
+  end
+
+  @impl true
+  def set_tenant(resource, %AshAge.Query{} = query, tenant) do
+    # Fires only for :context (Ash guards `set_tenant` with the strategy). The
+    # resolved name is validated by AshAge.Multitenancy.graph_name/2 and
+    # re-validated at build time by Cypher.Parameterized (defense-in-depth).
+    {:ok, %{query | graph: AshAge.Multitenancy.graph_name(resource, tenant)}}
   end
 
   @impl true
@@ -207,118 +225,139 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def create(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    props = changeset_to_properties(resource, changeset)
+        props = changeset_to_properties(resource, changeset)
 
-    # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
-    # map in CREATE is not supported. Must use CREATE + SET pattern instead.
-    set_clauses = set_clauses(props)
+        # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
+        # map in CREATE is not supported. Must use CREATE + SET pattern instead.
+        set_clauses = set_clauses(props)
 
-    cypher =
-      if set_clauses == "" do
-        "CREATE (n:#{label}) RETURN n"
-      else
-        "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
-      end
+        cypher =
+          if set_clauses == "" do
+            "CREATE (n:#{label}) RETURN n"
+          else
+            "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
+          end
 
-    {sql, pg_params} = Parameterized.build(graph, cypher, props)
+        {sql, pg_params} = Parameterized.build(graph, cypher, props)
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = Info.attribute_map(resource)
-        attribute_types = Info.attribute_types(resource)
+        case SQL.query(repo, sql, pg_params) do
+          {:ok, %{rows: [[vertex_text]]}} ->
+            attribute_map = Info.attribute_map(resource)
+            attribute_types = Info.attribute_types(resource)
 
-        attrs =
-          vertex_text
-          |> Agtype.decode()
-          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+            attrs =
+              vertex_text
+              |> Agtype.decode()
+              |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
 
-        {:ok, struct(resource, attrs)}
+            {:ok, struct(resource, attrs)}
 
-      {:error, error} ->
+          {:error, error} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: redact_db_error(error)
+             )}
+        end
+
+      {:error, :tenant_required} ->
         {:error,
          CreateFailed.exception(
            resource: resource,
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
 
   @impl true
   def update(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    changed_attrs = changeset_to_properties(resource, changeset)
-    set_clauses = set_clauses(changed_attrs)
+        changed_attrs = changeset_to_properties(resource, changeset)
+        set_clauses = set_clauses(changed_attrs)
 
-    # Match on the resource's full primary key (composite or non-:id supported).
-    # `changed_attrs` are reserved so a match param never clobbers a SET param.
-    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), changed_attrs)
+        # Match on the resource's full primary key (composite or non-:id supported).
+        # `changed_attrs` are reserved so a match param never clobbers a SET param.
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk, changed_attrs)
 
-    cypher = """
-    MATCH (n:#{label})
-    WHERE #{where_clause}
-    SET #{set_clauses}
-    RETURN n
-    """
+        case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
+          {:ok, full_where, params} ->
+            cypher = """
+            MATCH (n:#{label})
+            WHERE #{full_where}
+            SET #{set_clauses}
+            RETURN n
+            """
 
-    params = Map.merge(changed_attrs, match_params)
-    {sql, pg_params} = Parameterized.build(graph, cypher, params)
+            {sql, pg_params} = Parameterized.build(graph, cypher, params)
+            decode_update_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, %{rows: [[vertex_text]]}} ->
-        attribute_map = Info.attribute_map(resource)
-        attribute_types = Info.attribute_types(resource)
+          {:error, _} ->
+            {:error,
+             UpdateFailed.exception(
+               resource: resource,
+               reason: "unsupported scoping filter on update"
+             )}
+        end
 
-        attrs =
-          vertex_text
-          |> Agtype.decode()
-          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
-
-        {:ok, struct(resource, attrs)}
-
-      {:ok, %{rows: []}} ->
-        {:error, NotFound.exception(resource: resource)}
-
-      {:error, error} ->
+      {:error, :tenant_required} ->
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
 
   @impl true
   def destroy(resource, changeset) do
-    repo = Info.repo(resource)
-    graph = Info.graph(resource)
-    label = validated_label(resource)
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
 
-    {where_clause, match_params} = pk_match_clause(pk_pairs(resource, changeset), %{})
+        pk = pk_pairs(resource, changeset)
+        {where_clause, match_params} = pk_match_clause(pk, %{})
 
-    cypher = """
-    MATCH (n:#{label})
-    WHERE #{where_clause}
-    DETACH DELETE n
-    """
+        case changeset_where(changeset, where_clause, match_params) do
+          {:ok, full_where, params} ->
+            # `RETURN n` makes AGE echo each deleted vertex so we can distinguish a
+            # real deletion from a no-match. Without it, `DETACH DELETE n` returns
+            # zero rows whether or not anything matched — which would silently
+            # report success for a scoping-denied (cross-tenant) delete. An empty
+            # result therefore fails CLOSED as StaleRecord, mirroring update/2.
+            cypher = """
+            MATCH (n:#{label})
+            WHERE #{full_where}
+            DETACH DELETE n
+            RETURN n
+            """
 
-    {sql, pg_params} = Parameterized.build(graph, cypher, match_params, [{:n, :agtype}])
+            {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:n, :agtype}])
+            decode_destroy_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
 
-    case SQL.query(repo, sql, pg_params) do
-      {:ok, _} ->
-        :ok
+          {:error, _} ->
+            {:error,
+             QueryFailed.exception(
+               query: "AGE delete query",
+               reason: "unsupported scoping filter on destroy"
+             )}
+        end
 
-      {:error, error} ->
+      {:error, :tenant_required} ->
         {:error,
          QueryFailed.exception(
            query: "AGE delete query",
-           reason: redact_db_error(error)
+           reason: "multitenancy tenant required for :context write"
          )}
     end
   end
@@ -382,6 +421,23 @@ defmodule AshAge.DataLayer do
   # === Helpers ===
 
   @doc false
+  # Resolves the AGE graph for a write. Gated on the multitenancy STRATEGY, not on
+  # `changeset.to_tenant` presence — `to_tenant` is populated for `:attribute`
+  # resources too, so keying off it would misroute `:attribute` writes. For
+  # `:context`, a nil/blank tenant FAILS CLOSED — there is no global graph, and
+  # falling through to the base graph would be a silent cross-tenant write.
+  def write_graph(resource, changeset) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :context do
+      case Map.get(changeset, :to_tenant) do
+        blank when blank in [nil, ""] -> {:error, :tenant_required}
+        tenant -> {:ok, AshAge.Multitenancy.graph_name(resource, tenant)}
+      end
+    else
+      {:ok, Info.graph(resource)}
+    end
+  end
+
+  @doc false
   # Builds the `n.key = $key` SET fragment, validating every property key as an
   # AGE identifier before it is interpolated into the cypher body. Values are
   # always parameterized (referenced as `$key`), never interpolated.
@@ -441,6 +497,72 @@ defmodule AshAge.DataLayer do
       end)
 
     {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
+  end
+
+  @doc false
+  # Translates changeset.filter (the tenant/policy scoping Ash attaches for
+  # update/destroy) into an additional WHERE fragment, AND-ed with the PK match,
+  # reusing the read path's Filter translator. Fails CLOSED on an untranslatable
+  # filter — never silently drops scoping. `params` already holds the SET/match
+  # params, so the accumulator's $paramN counter starts past them. Public (like
+  # `write_graph/2`) so the fail-closed deny path is unit-testable without a DB.
+  def changeset_where(changeset, base_where, params) do
+    case changeset.filter do
+      nil ->
+        {:ok, base_where, params}
+
+      filter ->
+        case Filter.translate(filter, %AshAge.Query{params: params}) do
+          {:ok, %AshAge.Query{params: params}, ""} ->
+            {:ok, base_where, params}
+
+          {:ok, %AshAge.Query{params: params}, clause} ->
+            {:ok, base_where <> " AND " <> clause, params}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  # Decodes the AGE result of an update's `MATCH ... SET ... RETURN n`. A returned
+  # vertex is the updated row; an empty result means the WHERE (PK + scoping
+  # filter) matched nothing — the record is gone or a filter excluded it, which is
+  # `StaleRecord` per the Ash data-layer contract (NotFound is for identifier
+  # lookups; StaleRecord is the record-mutation signal, and Ash's bulk paths
+  # pattern-match it). Mirrors the reference ETS data layer.
+  defp decode_update_result(resource, _filter, {:ok, %{rows: [[vertex_text]]}}) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    attrs =
+      vertex_text
+      |> Agtype.decode()
+      |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+
+    {:ok, struct(resource, attrs)}
+  end
+
+  defp decode_update_result(resource, filter, {:ok, %{rows: []}}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
+  end
+
+  defp decode_update_result(resource, _filter, {:error, error}) do
+    {:error, UpdateFailed.exception(resource: resource, reason: redact_db_error(error))}
+  end
+
+  # Decodes the AGE result of a destroy's `MATCH ... DETACH DELETE n RETURN n`. At
+  # least one returned vertex means a row was deleted; an empty result means the
+  # WHERE (PK + scoping filter) matched nothing and fails CLOSED as `StaleRecord`
+  # (see decode_update_result/3 for why StaleRecord, not NotFound).
+  defp decode_destroy_result(_resource, _filter, {:ok, %{rows: [_ | _]}}), do: :ok
+
+  defp decode_destroy_result(resource, filter, {:ok, %{rows: []}}) do
+    {:error, StaleRecord.exception(resource: resource, filter: filter)}
+  end
+
+  defp decode_destroy_result(_resource, _filter, {:error, error}) do
+    {:error, QueryFailed.exception(query: "AGE delete query", reason: redact_db_error(error))}
   end
 
   @doc false

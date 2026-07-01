@@ -70,6 +70,82 @@ values as bound `$1` JSON params — Ecto's default logger prints those params,
 by design, at the `:debug` level. If primary-key or attribute values must never
 reach application logs, run the AGE-backed repo at `:info` or higher in production.
 
+## Multitenancy
+
+AshAge supports both Ash multitenancy strategies.
+
+**`:attribute` (recommended default, high tenant cardinality).** One graph,
+tenant-filtered on a discriminator attribute. Ash core does the work: reads inject
+the tenant filter, writes force-change the attribute. Declare it normally:
+
+```elixir
+multitenancy do
+  strategy :attribute
+  attribute :org_id
+end
+```
+
+- **Do NOT list the multitenancy attribute in `age do skip [...]`** — AshAge fails
+  compilation if you do (skipping it means the tenant discriminator is never
+  written, so the tenant filter would silently match nothing).
+- **Do NOT put the multitenancy attribute in an action's `accept`** — pass the
+  tenant via `tenant:`; Ash sets/scopes it. (Listing it in `accept` makes Ash's
+  required-input check reject the create.)
+- Index the discriminator for selective tenant reads:
+  `create_vertex_index("my_graph", "MyLabel", "org_id")`.
+
+**`:context` = graph-per-tenant (physical isolation).** Each tenant gets its own
+AGE graph (the schema-per-tenant analog). Declare `strategy :context` (no
+attribute):
+
+```elixir
+multitenancy do
+  strategy :context
+end
+```
+
+- The graph name is derived from the tenant by a collision-free encoder: an
+  identifier-clean tenant (ULID, integer, slug) becomes `t_<tenant>`; anything
+  else (e.g. a UUID with hyphens) is base32-encoded as `g<...>`. A tenant longer
+  than the 63-byte PostgreSQL identifier limit (~38 bytes for a hyphenated/UUID
+  tenant) **fails closed** — supply a `tenant_graph` MFA to map long tenants.
+- Override the mapping per resource:
+
+  ```elixir
+  age do
+    graph :unused_base   # required by the DSL; the tenant graph replaces it
+    repo MyApp.Repo
+    tenant_graph {MyApp.Tenancy, :graph_for, []}   # apply(m, f, [tenant | a]) → identifier
+  end
+  ```
+
+- **Provision each tenant's graph before use** (host-owned; AshAge never creates
+  graphs at request time). Use the SAME graph name AshAge resolves at query time:
+
+  ```elixir
+  graph = AshAge.tenant_graph(MyApp.Doc, tenant)
+  AshAge.Migration.provision_tenant(MyApp.Repo, graph, vlabels: ["Doc"], elabels: ["LINKS"])
+  ```
+
+  `provision_tenant/3` is idempotent and works at runtime (tenant onboarding) or
+  inside a migration. A query against an unprovisioned tenant graph **fails closed**
+  with a redacted database error — never silent empty results.
+- A `:context` write with a nil/blank tenant fails closed (there is no global
+  graph). Cross-graph writes in a single transaction (two differently-tenanted
+  `:context` resources) are undefined — out of scope.
+
+**Mutation scoping.** For `:attribute` (and any `Ash.Policy` filter), the tenant/
+policy filter is applied to `update`/`destroy` WHERE clauses, not just reads —
+a changeset carrying another tenant's primary key cannot modify or delete that
+tenant's rows. A scoping-denied `destroy` returns `Ash.Error.Query.NotFound`
+(a no-match / already-deleted destroy therefore returns `NotFound`, not `:ok`).
+
+**Choosing a strategy.** `:attribute` scales to many tenants in one graph (index
+the discriminator) and is the default recommendation. `:context` gives physical
+isolation at the cost of one PostgreSQL schema per tenant (catalog/planning cost
+grows with tenant count) — prefer it for strong-isolation, moderate-cardinality
+tenancy.
+
 ## AGE Limitations
 
 **NOT supported (returns {:error, UnsupportedFilter}):**
@@ -165,6 +241,7 @@ so the rest of your suite still runs with no database:
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
+- Multitenancy: `:attribute` (single graph, tenant-filtered) and `:context` (graph-per-tenant); `changeset.filter` scoping honored on update/destroy
 - Primary keys: single-attribute (`:id` or any attribute name) and composite
 - Binary attributes: `:binary` / `Ash.Type.Binary` (and AshCloak-encrypted fields) round-trip via base64
 - Transactions: `:transact` with `rollback/2`

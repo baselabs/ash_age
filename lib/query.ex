@@ -18,7 +18,7 @@ defmodule AshAge.Query do
 
   @type t :: %__MODULE__{
           resource: module(),
-          graph: atom(),
+          graph: atom() | String.t(),
           label: atom() | String.t(),
           repo: module(),
           expression: Ash.Filter.t() | nil,
@@ -58,8 +58,17 @@ defmodule AshAge.Query do
   """
   @spec add_param(t(), term()) :: {t(), String.t()}
   def add_param(%__MODULE__{params: params} = query, value) do
-    key = "param#{map_size(params) + 1}"
+    key = next_param_key(params, map_size(params) + 1)
     {%{query | params: Map.put(params, key, value)}, "$#{key}"}
+  end
+
+  # Returns the next free `paramN` key, skipping any already taken. On the
+  # update/destroy scoping path the params map is pre-seeded with SET-attribute
+  # and `match_<pk>` keys; a resource attribute literally named `paramN` must
+  # neither clobber nor be clobbered by a filter-scoping param.
+  defp next_param_key(params, n) do
+    key = "param#{n}"
+    if Map.has_key?(params, key), do: next_param_key(params, n + 1), else: key
   end
 
   defp build_where(query) do

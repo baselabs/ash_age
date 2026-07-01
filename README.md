@@ -107,6 +107,23 @@ defmodule MyApp.MyEntity do
 end
 ```
 
+### Multitenancy
+
+Both Ash strategies are supported. **`:attribute`** (one graph, tenant-filtered)
+works through Ash core — just declare `multitenancy do strategy :attribute;
+attribute :org_id end` (don't list the attribute in `age do skip` or an action's
+`accept`). **`:context`** gives graph-per-tenant physical isolation: declare
+`strategy :context`, then provision each tenant's graph up front —
+
+```elixir
+graph = AshAge.tenant_graph(MyApp.Entity, tenant)
+AshAge.Migration.provision_tenant(MyApp.Repo, graph, vlabels: ["Entity"])
+```
+
+Tenant/policy filters are enforced on `update`/`destroy` (not just reads). See
+`usage-rules.md` for the graph-name encoder, the `tenant_graph` MFA override, and
+strategy trade-offs.
+
 ## Mix Tasks
 
 - **`mix ash_age.install`** — Print step-by-step setup instructions
