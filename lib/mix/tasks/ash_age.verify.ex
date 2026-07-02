@@ -11,17 +11,23 @@ defmodule Mix.Tasks.AshAge.Verify do
   1. The AGE extension is installed
   2. The search_path includes `ag_catalog`
   3. (Optional) A specific graph exists
+  4. (Optional) A resource's label table has a matching tenant RLS policy (drift check)
 
   ## Options
 
   - `-r`, `--repo` — The repo to verify against
   - `-g`, `--graph` — A graph name to check for existence
+  - `--resource` — A resource module (e.g. `MyApp.Doc`) whose `rls_guc` RLS policy
+    is checked against the DB: `row level security` must be enabled on the label
+    table and a policy predicate must reference both the tenant property and the
+    GUC. A mismatch is drift between the DSL and the DB.
 
   ## Examples
 
       $ mix ash_age.verify
       $ mix ash_age.verify --graph my_graph
       $ mix ash_age.verify -r MyApp.Repo -g my_graph
+      $ mix ash_age.verify --resource MyApp.Doc
   """
 
   use Mix.Task
@@ -43,7 +49,8 @@ defmodule Mix.Tasks.AshAge.Verify do
         results = [
           check_age_extension(repo),
           check_search_path(repo),
-          check_graph(repo, opts[:graph])
+          check_graph(repo, opts[:graph]),
+          check_rls(repo, opts[:resource])
         ]
 
         failures = Enum.count(results, &(&1 == :error))
@@ -51,7 +58,10 @@ defmodule Mix.Tasks.AshAge.Verify do
         Mix.shell().info("")
 
         if failures > 0 do
-          Mix.shell().error("#{failures} check(s) failed. See above for details.")
+          # Per-check guidance was already printed above; raise so the task exits
+          # non-zero (CI/precommit fail closed). Mix.shell().error alone writes to
+          # stderr but leaves the exit status 0 — a drift a pipeline can't see.
+          Mix.raise("#{failures} check(s) failed. See above for details.")
         else
           Mix.shell().info("All checks passed!")
         end
@@ -61,7 +71,7 @@ defmodule Mix.Tasks.AshAge.Verify do
   @doc false
   def parse_args!(args) do
     OptionParser.parse!(args,
-      strict: [repo: :string, graph: :string],
+      strict: [repo: :string, graph: :string, resource: :string],
       aliases: [r: :repo, g: :graph]
     )
   end
@@ -121,6 +131,89 @@ defmodule Mix.Tasks.AshAge.Verify do
       Mix.shell().error("  ✗ Graph #{inspect(graph_name)} does NOT exist")
       Mix.shell().info("    Create it via migration: create_age_graph(#{inspect(graph_name)})")
       :error
+    end
+  end
+
+  defp check_rls(_repo, nil), do: :ok
+
+  defp check_rls(repo, resource_str) do
+    # Resolve/validate the module BEFORE any Info/Ash.Resource.Info accessor — those
+    # raise `ArgumentError: not a Spark DSL module` on a typo'd or non-resource name,
+    # which would surface a raw stacktrace AND short-circuit the other checks. Fail as
+    # a clean :error so it flows through the normal aggregation + Mix.raise instead.
+    module = Module.concat([resource_str])
+
+    if ash_age_resource?(module) do
+      do_check_rls(repo, module, resource_str)
+    else
+      Mix.shell().error("  ✗ --resource #{resource_str}: not a loadable AshAge resource module")
+      :error
+    end
+  end
+
+  # Clean signal for an ash_age resource: loaded + a Spark/Ash.Resource DSL module
+  # (so `data_layer/1` won't raise) + its data layer is `AshAge.DataLayer`.
+  defp ash_age_resource?(module) do
+    Code.ensure_loaded?(module) and Spark.Dsl.is?(module, Ash.Resource) and
+      Ash.Resource.Info.data_layer(module) == AshAge.DataLayer
+  end
+
+  defp do_check_rls(repo, resource, resource_str) do
+    guc = AshAge.DataLayer.Info.rls_guc(resource)
+
+    cond do
+      is_nil(guc) ->
+        Mix.shell().info("  · #{resource_str} does not declare rls_guc (RLS check skipped)")
+        :ok
+
+      rls_policy_matches?(repo, resource_derived_args(resource, guc)) ->
+        Mix.shell().info("  ✓ #{resource_str}: RLS enabled with a matching tenant policy")
+        :ok
+
+      true ->
+        Mix.shell().error(
+          "  ✗ #{resource_str}: rls_guc set but the label table lacks a matching RLS policy"
+        )
+
+        Mix.shell().info(
+          "    Run AshAge.Migration.enable_tenant_rls(repo, #{resource_str}) in a migration"
+        )
+
+        :error
+    end
+  end
+
+  # Derives (graph, label, tenant_property, guc) from the resource DSL — the SAME
+  # four values `AshAge.Migration.enable_tenant_rls/2` uses to WRITE the policy, so
+  # the check and the writer agree by construction.
+  defp resource_derived_args(resource, guc) do
+    graph = to_string(AshAge.DataLayer.Info.graph(resource))
+    label = to_string(AshAge.DataLayer.Info.label(resource))
+    prop = to_string(Ash.Resource.Info.multitenancy_attribute(resource))
+    {graph, label, prop, guc}
+  end
+
+  @doc false
+  # Drift check: TRUE iff the label table (schema=`graph`, table=`label`) has ROW
+  # LEVEL SECURITY enabled AND at least one policy whose USING predicate text
+  # references BOTH the tenant property and the GUC. Postgres normalizes the policy
+  # expression in `pg_policies.qual`; an `AshAge.Migration.rls_ddl` policy's qual
+  # contains `'<guc>'` (the current_setting arg) and `'"<prop>"'` (the agtype
+  # accessor key) — both LIKE-match here. A missing table, disabled RLS, or a policy
+  # that references neither/only-one → FALSE (drift). Public (@doc false) so the
+  # live integration test can assert match-vs-drift directly.
+  def rls_policy_matches?(repo, {graph, label, prop, guc}) do
+    query = """
+    SELECT c.relrowsecurity, coalesce(bool_or(p.qual LIKE '%' || $3 || '%' AND p.qual LIKE '%' || $4 || '%'), false)
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_policies p ON p.schemaname = n.nspname AND p.tablename = c.relname
+    WHERE n.nspname = $1 AND c.relname = $2
+    GROUP BY c.relrowsecurity
+    """
+
+    case SQL.query(repo, query, [graph, label, prop, guc]) do
+      {:ok, %{rows: [[true, true]]}} -> true
+      _ -> false
     end
   end
 end
