@@ -25,7 +25,6 @@ defmodule AshAge.Changes.CreateEdge do
 
   alias Ash.Error.Changes.InvalidRelationship
   alias AshAge.Changes.EdgeCypher
-  alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
@@ -86,25 +85,30 @@ defmodule AshAge.Changes.CreateEdge do
 
   defp create_one(resource, edge, graph, src_key, dest_id, props, tenant) do
     {cypher, params} = build_create(resource, edge, src_key, dest_id, props, tenant)
-    {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:e, :agtype}])
 
-    case SQL.query(Info.repo(resource), sql, pg_params) do
-      {:ok, %{num_rows: n}} when n >= 1 ->
-        {:ok, :created}
+    case EdgeCypher.safe_build(graph, cypher, params, [{:e, :agtype}]) do
+      {:error, message} ->
+        {:error, InvalidRelationship.exception(relationship: edge.name, message: message)}
 
-      {:ok, %{num_rows: 0}} ->
-        {:error,
-         InvalidRelationship.exception(
-           relationship: edge.name,
-           message: "destination not found in the source's graph/tenant scope"
-         )}
+      {:ok, {sql, pg_params}} ->
+        case SQL.query(Info.repo(resource), sql, pg_params) do
+          {:ok, %{num_rows: n}} when n >= 1 ->
+            {:ok, :created}
 
-      {:error, error} ->
-        {:error,
-         InvalidRelationship.exception(
-           relationship: edge.name,
-           message: DataLayer.redact_db_error(error)
-         )}
+          {:ok, %{num_rows: 0}} ->
+            {:error,
+             InvalidRelationship.exception(
+               relationship: edge.name,
+               message: "destination not found in the source's graph/tenant scope"
+             )}
+
+          {:error, error} ->
+            {:error,
+             InvalidRelationship.exception(
+               relationship: edge.name,
+               message: DataLayer.redact_db_error(error)
+             )}
+        end
     end
   end
 

@@ -8,9 +8,32 @@ defmodule AshAge.Changes.EdgeCypher do
   # `tenant_where/1` would be a cross-tenant write hole). Same dependency level
   # as its callers (above the data layer): imports `Info` (L3) / `Migration` (L0).
 
+  alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
   alias AshAge.Type.Cast
+
+  @doc false
+  # Wraps Parameterized.build so a non-JSON-encodable property/param fails closed
+  # as a value-free tuple instead of a raised Jason.EncodeError (whose message
+  # embeds the bytes — AGENTS.md rule 5).
+  def safe_build(graph, cypher, params, return_types) do
+    {:ok, Parameterized.build(graph, cypher, params, return_types)}
+  rescue
+    _e in Jason.EncodeError ->
+      {:error, "edge parameters not JSON-encodable (raw binary in a non-binary-typed value?)"}
+
+    # A struct value with no Jason.Encoder impl (e.g. a Regex in an edge property)
+    # raises Protocol.UndefinedError — NOT EncodeError — with the value inspected
+    # into the message. Redact only the Jason-protocol case; any other protocol
+    # error is an unrelated bug and must not be masked.
+    e in Protocol.UndefinedError ->
+      if e.protocol == Jason.Encoder do
+        {:error, "edge parameters not JSON-encodable (raw binary in a non-binary-typed value?)"}
+      else
+        reraise(e, __STACKTRACE__)
+      end
+  end
 
   @doc false
   # Resolves the named edge on the resource, raising if it isn't declared.

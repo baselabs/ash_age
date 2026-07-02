@@ -20,7 +20,6 @@ defmodule AshAge.Changes.DestroyEdge do
   alias Ash.Error.Changes.InvalidRelationship
   alias Ash.Error.Changes.StaleRecord
   alias AshAge.Changes.EdgeCypher
-  alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
@@ -79,25 +78,30 @@ defmodule AshAge.Changes.DestroyEdge do
 
   defp destroy_one(resource, edge, graph, src_key, dest_id, tenant) do
     {cypher, params} = build_destroy(resource, edge, src_key, dest_id, tenant)
-    {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:r, :agtype}])
 
-    case SQL.query(Info.repo(resource), sql, pg_params) do
-      {:ok, %{num_rows: n}} when n >= 1 ->
-        {:ok, :destroyed}
+    case EdgeCypher.safe_build(graph, cypher, params, [{:r, :agtype}]) do
+      {:error, message} ->
+        {:error, InvalidRelationship.exception(relationship: edge.name, message: message)}
 
-      {:ok, %{num_rows: 0}} ->
-        {:error,
-         StaleRecord.exception(
-           resource: resource,
-           filter: DataLayer.redacted_filter(Map.put(src_key, "dst", dest_id))
-         )}
+      {:ok, {sql, pg_params}} ->
+        case SQL.query(Info.repo(resource), sql, pg_params) do
+          {:ok, %{num_rows: n}} when n >= 1 ->
+            {:ok, :destroyed}
 
-      {:error, error} ->
-        {:error,
-         InvalidRelationship.exception(
-           relationship: edge.name,
-           message: DataLayer.redact_db_error(error)
-         )}
+          {:ok, %{num_rows: 0}} ->
+            {:error,
+             StaleRecord.exception(
+               resource: resource,
+               filter: DataLayer.redacted_filter(Map.put(src_key, "dst", dest_id))
+             )}
+
+          {:error, error} ->
+            {:error,
+             InvalidRelationship.exception(
+               relationship: edge.name,
+               message: DataLayer.redact_db_error(error)
+             )}
+        end
     end
   end
 
