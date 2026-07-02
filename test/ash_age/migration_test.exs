@@ -138,4 +138,26 @@ defmodule AshAge.MigrationTest do
       end
     end
   end
+
+  describe "validate_guc!/1" do
+    test "accepts a namespaced (dotted) custom GUC name" do
+      assert AshAge.Migration.validate_guc!("ash_age.tenant_id") == "ash_age.tenant_id"
+      assert AshAge.Migration.validate_guc!("app.tenant") == "app.tenant"
+      assert AshAge.Migration.validate_guc!("a_b.c_d1") == "a_b.c_d1"
+    end
+
+    test "rejects a bare (non-namespaced) name — Postgres custom GUCs require a dot" do
+      assert_raise ArgumentError, ~r/invalid GUC name/, fn ->
+        AshAge.Migration.validate_guc!("tenant_id")
+      end
+    end
+
+    test "rejects injection / whitespace / multi-dot" do
+      for bad <- ["ash_age.tenant'; DROP", "ash age.t", "a.b.c", "ash_age.", ".tenant", ""] do
+        assert_raise ArgumentError, ~r/invalid GUC name/, fn ->
+          AshAge.Migration.validate_guc!(bad)
+        end
+      end
+    end
+  end
 end

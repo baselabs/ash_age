@@ -166,6 +166,21 @@ defmodule AshAge.Migration do
     validate_identifier!(Atom.to_string(name))
   end
 
+  @doc false
+  # Validates a PostgreSQL custom GUC name (`namespace.name`). Postgres requires a
+  # dot for a custom (unreserved) parameter; both segments follow identifier rules.
+  # Raises a value-free ArgumentError (fail-closed) — the GUC feeds `set_config`/
+  # policy DDL. The runtime `set_config` binds it as a parameter too (defense-in-depth).
+  def validate_guc!(name) when is_binary(name) do
+    unless Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\z/, name) do
+      raise ArgumentError,
+            "invalid GUC name: #{inspect(name)}. Expected a namespaced custom GUC " <>
+              "like \"ash_age.tenant_id\" (two identifier segments joined by a single dot)."
+    end
+
+    name
+  end
+
   @doc """
   Idempotently provisions a tenant's AGE graph and its vertex/edge labels at
   runtime (host-invoked in a tenant-onboarding flow, or from a migration).

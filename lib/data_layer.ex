@@ -58,6 +58,12 @@ defmodule AshAge.DataLayer do
         doc:
           "MFA applied as `apply(m, f, [tenant | a])` returning the AGE graph name " <>
             "for a :context tenant. Defaults to a built-in collision-free encoder."
+      ],
+      rls_guc: [
+        type: :string,
+        doc:
+          "Opt into DB-enforced RLS: the PostgreSQL custom GUC (e.g. \"ash_age.tenant_id\") " <>
+            "ash_age sets per read/write so RLS policies scope by tenant. `:attribute` only."
       ]
     ],
     entities: [
