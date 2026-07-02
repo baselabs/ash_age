@@ -47,29 +47,49 @@ defmodule AshAge.Changes.CreateEdge do
     Telemetry.span(:create_edge, start, fn ->
       edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
       dest_ids = destination_ids(changeset, opts)
-      props = edge_properties(changeset, edge)
 
-      result =
-        case DataLayer.write_graph(resource, changeset) do
-          {:ok, graph} ->
-            tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-            src_key = EdgeCypher.source_key(resource, record)
-            create_all(record, dest_ids, resource, edge, graph, src_key, props, tenant)
+      {result, properties?} =
+        case edge_properties(changeset, edge) do
+          {:ok, props} ->
+            {write_edges(changeset, record, resource, edge, dest_ids, props), map_size(props) > 0}
 
-          {:error, :tenant_required} ->
-            {:error,
-             InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
+          {:error, key} ->
+            {sensitive_property_error(edge, key), false}
         end
 
       {result,
        %{
          destination_count: length(dest_ids),
          direction: edge.direction,
-         properties?: map_size(props) > 0,
+         properties?: properties?,
          tenant?: not is_nil(changeset.to_tenant),
          result: Telemetry.result_tag(result)
        }}
     end)
+  end
+
+  defp write_edges(changeset, record, resource, edge, dest_ids, props) do
+    case DataLayer.write_graph(resource, changeset) do
+      {:ok, graph} ->
+        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
+        src_key = EdgeCypher.source_key(resource, record)
+        create_all(record, dest_ids, resource, edge, graph, src_key, props, tenant)
+
+      {:error, :tenant_required} ->
+        {:error,
+         InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
+    end
+  end
+
+  # Value-free by construction: names the KEY only, never the value.
+  defp sensitive_property_error(edge, key) do
+    {:error,
+     InvalidRelationship.exception(
+       relationship: edge.name,
+       message:
+         "sensitive property #{inspect(key)} requires a binary-storage-typed " <>
+           "declared action argument (value withheld)"
+     )}
   end
 
   # Writes one edge per destination id, halting (and returning the error so Ash
@@ -171,17 +191,32 @@ defmodule AshAge.Changes.CreateEdge do
   # value from the same-named action argument, rejects unset (nil) properties (so
   # an optional property that wasn't supplied is NOT written as an explicit null,
   # matching single-create vertex sparse semantics), and routes every value
-  # through `DataLayer.serialize_value/2` by its declared argument type -- so a
+  # through `Cast.serialize_value/2` by its DECLARED argument type -- so a
   # `:binary` property is `$age64$`-tagged and a datetime/date becomes ISO8601,
-  # byte-identical in fidelity to how vertex attributes are stored.
+  # byte-identical in fidelity to how vertex attributes are stored. Returns
+  # `{:error, key}` (fail closed) when a key classified `sensitive` on the
+  # source resource has no binary-storage-typed declared argument backing it --
+  # an undeclared (`set_argument`-injected) or plaintext argument would
+  # otherwise store the classified datum untagged on the edge. This is the
+  # runtime half of ValidateSensitive R4.
   def edge_properties(changeset, edge) do
     arg_types = argument_types(changeset)
+    sensitive = Info.sensitive(changeset.resource)
 
     edge.properties
     |> Enum.map(fn key -> {key, Ash.Changeset.get_argument(changeset, key)} end)
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new(fn {key, value} ->
-      {key, DataLayer.serialize_value(value, Map.get(arg_types, key))}
+    |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      type = Map.get(arg_types, key)
+
+      # Deliberately constraints-blind (unlike the verifier's
+      # binary_storage?(type, constraints)) to stay aligned with the encoder
+      # Cast.serialize_value/2 -- the divergence direction is fail-closed.
+      if key in sensitive and not Cast.binary_storage?(type) do
+        {:halt, {:error, key}}
+      else
+        {:cont, {:ok, Map.put(acc, key, Cast.serialize_value(value, type))}}
+      end
     end)
   end
 
