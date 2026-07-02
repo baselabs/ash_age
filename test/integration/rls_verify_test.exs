@@ -108,6 +108,24 @@ defmodule AshAge.Integration.RlsVerifyTest do
         exec(~s|DROP POLICY not_tenant ON #{@graph}."#{@label}"|)
         exec(~s|ALTER TABLE #{@graph}."#{@label}" DISABLE ROW LEVEL SECURITY|)
 
+        # ENABLE without FORCE + a FULLY-matching tenant policy is STILL drift: the
+        # table OWNER bypasses a merely-ENABLEd policy (fact F), so a guard that
+        # accepts ENABLE-only would greenlight an owner-bypassable table — the exact
+        # "RLS silently no-ops" hazard the feature warns about. The policy below
+        # references BOTH the property and the GUC (so the qual substring match
+        # passes); only the missing FORCE makes it drift.
+        exec(~s|ALTER TABLE #{@graph}."#{@label}" ENABLE ROW LEVEL SECURITY|)
+
+        exec(
+          ~s|CREATE POLICY enable_only ON #{@graph}."#{@label}" USING (btrim(ag_catalog.agtype_access_operator(properties, '"#{@prop}"'::agtype)::text, '"') = current_setting('#{@guc}', true))|
+        )
+
+        refute Verify.rls_policy_matches?(TestRepo, args),
+               "expected DRIFT (ENABLE without FORCE — the table owner bypasses RLS), but the guard reported a match"
+
+        exec(~s|DROP POLICY enable_only ON #{@graph}."#{@label}"|)
+        exec(~s|ALTER TABLE #{@graph}."#{@label}" DISABLE ROW LEVEL SECURITY|)
+
         # --- POSITIVE / MATCH: after the resource-derived enable_tenant_rls. ---
         :ok = AshAge.Migration.enable_tenant_rls(TestRepo, Doc)
 

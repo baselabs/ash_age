@@ -195,20 +195,27 @@ defmodule Mix.Tasks.AshAge.Verify do
 
   @doc false
   # Drift check: TRUE iff the label table (schema=`graph`, table=`label`) has ROW
-  # LEVEL SECURITY enabled AND at least one policy whose USING predicate text
-  # references BOTH the tenant property and the GUC. Postgres normalizes the policy
-  # expression in `pg_policies.qual`; an `AshAge.Migration.rls_ddl` policy's qual
-  # contains `'<guc>'` (the current_setting arg) and `'"<prop>"'` (the agtype
-  # accessor key) — both LIKE-match here. A missing table, disabled RLS, or a policy
-  # that references neither/only-one → FALSE (drift). Public (@doc false) so the
-  # live integration test can assert match-vs-drift directly.
+  # LEVEL SECURITY both ENABLEd AND FORCEd AND at least one policy whose USING
+  # predicate text references BOTH the tenant property and the GUC. Postgres
+  # normalizes the policy expression in `pg_policies.qual`; an
+  # `AshAge.Migration.rls_ddl` policy's qual contains `'<guc>'` (the current_setting
+  # arg) and `'"<prop>"'` (the agtype accessor key) — both LIKE-match here. A missing
+  # table, disabled RLS, or a policy that references neither/only-one → FALSE (drift).
+  #
+  # FORCE is load-bearing, not cosmetic: with ENABLE alone the table OWNER bypasses
+  # RLS (fact F), so an ENABLE-only table is the exact "RLS silently no-ops" hazard
+  # this guard exists to catch — hence `relrowsecurity AND relforcerowsecurity`.
+  # `enable_tenant_rls` always emits BOTH, so requiring FORCE keeps the check and the
+  # writer in agreement by construction. Public (@doc false) so the live integration
+  # test can assert match-vs-drift directly.
   def rls_policy_matches?(repo, {graph, label, prop, guc}) do
     query = """
-    SELECT c.relrowsecurity, coalesce(bool_or(p.qual LIKE '%' || $3 || '%' AND p.qual LIKE '%' || $4 || '%'), false)
+    SELECT c.relrowsecurity AND c.relforcerowsecurity,
+           coalesce(bool_or(p.qual LIKE '%' || $3 || '%' AND p.qual LIKE '%' || $4 || '%'), false)
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     LEFT JOIN pg_policies p ON p.schemaname = n.nspname AND p.tablename = c.relname
     WHERE n.nspname = $1 AND c.relname = $2
-    GROUP BY c.relrowsecurity
+    GROUP BY c.relrowsecurity, c.relforcerowsecurity
     """
 
     case SQL.query(repo, query, [graph, label, prop, guc]) do
