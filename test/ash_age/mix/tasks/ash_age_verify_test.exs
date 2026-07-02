@@ -30,6 +30,11 @@ defmodule Mix.Tasks.AshAge.VerifyTest do
       assert opts[:graph] == "test_graph"
     end
 
+    test "parse_args! accepts --resource" do
+      assert {opts, _} = Verify.parse_args!(["--resource", "MyApp.Doc"])
+      assert opts[:resource] == "MyApp.Doc"
+    end
+
     test "raises on unknown options" do
       assert_raise OptionParser.ParseError, fn ->
         Verify.parse_args!(["--unknown", "value"])

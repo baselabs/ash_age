@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DB-enforced RLS (S6).** Opt-in `:attribute`-only PostgreSQL Row-Level Security,
+  a defense-in-depth read-confidentiality backstop beneath Ash's app-layer tenant
+  filter:
+  ```elixir
+  age do
+    graph :my_graph
+    repo MyApp.Repo
+    rls_guc "ash_age.tenant_id"
+  end
+  ```
+  - `AshAge.DataLayer.Info.rls_guc/1` reads the DSL option; a compile-time verifier
+    (`AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr`) requires `:attribute`
+    multitenancy and rejects `global? true` (a global read sets no GUC, so RLS would
+    hide every row).
+  - `AshAge.Migration.enable_tenant_rls/2` (resource-derived) and `/5` (explicit
+    graph/label/tenant-property/GUC) emit `ENABLE`/`FORCE ROW LEVEL SECURITY`, a
+    functional btree index on the tenant discriminator, and a fail-closed expression
+    policy over `properties` (`current_setting(guc, true) <> '' AND <discriminator> =
+    current_setting(guc, true)`) — **never** a `GENERATED ALWAYS ... STORED` column.
+  - All five CRUD callbacks (`read`, `create`, `update`, `destroy`, `bulk_create`)
+    and traversal (`AshAge.ManualRelationships.Traverse`) route through a new
+    `with_rls/4` wrapper: off (no `rls_guc`) is a no-op; on, it `set_config`s the GUC
+    inside `repo.transaction` (pinning one connection) before running the operation,
+    and fails closed with `:rls_tenant_required` on a blank/nil tenant before any
+    query runs. `unwrap_rls/2` normalizes the result back to the data-layer contract.
+    A new `rls?` key joins the value-free telemetry metadata allowlist.
+  - `AshAge.with_tenant_rls/4` — the auditable way to tenant-scope raw
+    `AshAge.cypher/5` calls: runs `fun` inside a transaction with the GUC
+    `set_config`'d on the same pinned connection.
+  - `mix ash_age.verify --resource MyApp.Doc` detects RLS drift (RLS not enabled,
+    or a policy that doesn't reference both the tenant property and the GUC) and now
+    **exits non-zero** on any failing check (previously always exited 0).
+  - **Three load-bearing AGE constraints this design is built around** (each
+    verified live against `apache/age:release_PG16_1.6.0`):
+    1. A `GENERATED ALWAYS ... STORED` column on an AGE label table **segfaults
+       every `cypher()` write** (signal 11, crash + recovery) — the RLS predicate
+       must be a live expression over `properties`, never a generated column.
+    2. AGE `cypher()` **CREATE bypasses `WITH CHECK`** — a cross-tenant INSERT is
+       **not** RLS-denied at the database. RLS is read/target-side only; the
+       `:attribute` app-layer force-set (Ash core) remains the actual write
+       barrier.
+    3. RLS (including `FORCE ROW LEVEL SECURITY`) is **silently skipped for
+       superusers and roles with `BYPASSRLS`** — the application's DB role must be
+       a non-superuser without `BYPASSRLS`, or the policy never applies with no
+       error signal.
+  - For `:attribute` resources, RLS's row-scoping is redundant to (jointly enforced
+    with) Ash's own tenant WHERE filter — RLS's distinct value is the DB-enforced
+    read-confidentiality backstop beneath the app layer, not a replacement for it.
 - **Traversal (S5).** `AshAge.ManualRelationships.Traverse` — bounded variable-length
   graph traversal exposed as an Ash manual relationship:
   ```elixir

@@ -31,6 +31,7 @@ When making changes, understand these dependency levels:
 | Type handling | `lib/type/agtype.ex`, `lib/type/cast.ex`, `lib/type/vertex.ex`, `lib/type/edge.ex`, `lib/type/path.ex` |
 | DSL/Info | `lib/data_layer/info.ex`, `lib/edge.ex`, `lib/data_layer/transformers/*`, `lib/data_layer/verifiers/*` |
 | Multitenancy | `lib/multitenancy.ex` (graph-name encoder), `lib/data_layer/verifiers/validate_multitenancy_attr.ex`, `AshAge.tenant_graph/2`, `AshAge.Migration.provision_tenant/3` |
+| RLS (S6) | `AshAge.DataLayer.with_rls/4` + `unwrap_rls/2` (`lib/data_layer.ex`), `AshAge.DataLayer.Info.rls_guc/1` (`lib/data_layer/info.ex`), `AshAge.Migration.enable_tenant_rls/2,5` + `rls_ddl/4` + `validate_guc!/1` (`lib/migration.ex`), `lib/data_layer/verifiers/validate_multitenancy_attr.ex` (rls_guc invariants), `AshAge.with_tenant_rls/4` (`lib/ash_age.ex`), `mix ash_age.verify --resource` drift check (`lib/mix/tasks/ash_age.verify.ex`) |
 | Telemetry | `lib/telemetry.ex` (value-free `[:ash_age, <op>]` span wrapper + metadata allowlist) |
 | Graph lifecycle | `lib/graph.ex`, `lib/session.ex`, `lib/migration.ex` |
 | Testing | `test/support/test_repo.ex`, `test/support/test_postgrex_types.ex`, `test/support/test_domain.ex`, `test/support/data_case.ex` |
@@ -58,6 +59,20 @@ Session.setup sets: `public, ag_catalog, "$user"` — public MUST come first to 
 **5. NEVER echo raw values in errors or logs**
 
 Filtered values and PostgreSQL error `DETAIL` lines can carry PII/secrets. Errors carry structure only — `UnsupportedFilter` the operator + field, DB failures the SQLSTATE code (+ constraint). Redact at the boundary with `AshAge.DataLayer.redact_db_error/1`; never `inspect` a filtered value or embed `Exception.message(%Postgrex.Error{})` in an error.
+
+**6. RLS is a read-side backstop, NOT the write barrier — and requires a non-superuser DB role**
+
+`rls_guc` enforcement (`with_rls/4`, `enable_tenant_rls/2,5`) is defense-in-depth
+*beneath* Ash's app-layer `:attribute` tenant filter, not a replacement for it. AGE
+`cypher()` `CREATE` **bypasses `WITH CHECK`** — a cross-tenant INSERT is not
+RLS-denied at the database, so never treat RLS as the mechanism preventing a
+cross-tenant write; that barrier is the `:attribute` force-set Ash core already
+performs. RLS's job is DB-enforced read-confidentiality (and update/destroy
+WHERE-targeting) for a connection whose GUC is wrong or unset. It only works when
+the application's DB role is a **non-superuser without `BYPASSRLS`** — RLS
+(`FORCE ROW LEVEL SECURITY` included) is silently skipped for superusers and
+`BYPASSRLS` roles, with no error signal. Never point `rls_guc` at a resource served
+by a superuser/BYPASSRLS connection and assume it is enforced.
 
 ## Common Patterns
 
@@ -116,6 +131,32 @@ Integration-test resources are defined inline in their test modules (pointing `d
 ## Version History
 
 Key changes that affect agent behavior:
+- Unreleased (S6): DB-enforced RLS. Opt-in, `:attribute`-only defense-in-depth: a
+  `rls_guc "ash_age.tenant_id"` option in the `age` DSL block (`AshAge.DataLayer.Info.rls_guc/1`),
+  guarded by a compile-time verifier requiring `:attribute` multitenancy and rejecting
+  `global? true`. **`AshAge.Migration.enable_tenant_rls/2`** (resource-derived) and
+  **`/5`** (explicit args) emit `ENABLE`/`FORCE ROW LEVEL SECURITY`, a functional btree
+  index on the tenant discriminator, and a fail-closed **expression** policy over
+  `properties` (`current_setting(guc, true) <> '' AND <attr> = current_setting(guc, true)`)
+  — **never** a `GENERATED ALWAYS ... STORED` column (segfaults AGE `cypher()` writes on
+  this build). All five CRUD callbacks (`read`/`create`/`update`/`destroy`/`bulk_create`)
+  and traversal now route through **`AshAge.DataLayer.with_rls/4`** (`set_config`s the
+  GUC inside `repo.transaction`, pinning one connection; off is a no-op; blank/nil tenant
+  fails closed with `:rls_tenant_required` before any query) and **`unwrap_rls/2`**
+  (normalizes the result back to the data-layer contract). `rls?` joins the telemetry
+  value-free metadata allowlist. **`AshAge.with_tenant_rls/4`** is the auditable way to
+  tenant-scope raw `AshAge.cypher/5` calls. `mix ash_age.verify --resource MyApp.Doc`
+  gains a DSL-vs-DB drift check and the task now **exits non-zero** on any failing check
+  (previously always exited 0). **Read-side/write-bypass reality:** AGE `cypher()` CREATE
+  bypasses `WITH CHECK`, so RLS is a read-confidentiality (and update/destroy-targeting)
+  backstop, NOT the write barrier — the `:attribute` app-layer force-set (Ash core) is
+  the actual cross-tenant-write barrier. **Deployment constraint:** RLS is silently
+  skipped for superusers and `BYPASSRLS` roles — the app's DB role must be neither, or
+  the policy never applies with no error signal. Key files: `lib/data_layer.ex`
+  (`with_rls/4`, `unwrap_rls/2`, `set_context/3`), `lib/migration.ex`
+  (`enable_tenant_rls/2,5`, `rls_ddl/4`, `validate_guc!/1`), `lib/data_layer/info.ex`
+  (`rls_guc/1`), `lib/data_layer/verifiers/validate_multitenancy_attr.ex`,
+  `lib/mix/tasks/ash_age.verify.ex`.
 - Unreleased (S5): Traversal + raw Cypher. **`AshAge.ManualRelationships.Traverse`** — bounded variable-length graph traversal as an Ash manual relationship (`manual {AshAge.ManualRelationships.Traverse, edge_label: :LINK, direction: :outgoing|:incoming|:both, min_depth: 1, max_depth: N}`). Returns an F3 source-PK-keyed map of materialized destination records, **deduped per source in Elixir** (by dest PK — no SQL `DISTINCT`, so `row_count` stays a genuine pre-dedup fan-out signal), cardinality-aware (`:one`/`:many`), all three directions including undirected `:both`, and single + composite primary keys. `max_depth` is required and bounded (unbounded `*` forbidden). Tenancy is **fail-closed**: `:context` → per-tenant graph; `:attribute` → per-node scoping via a **fixed-length UNION expansion** (one basic-`MATCH` branch per length in `min..max`, every node `<node>.<attr> = $tenant`-scoped, `UNION ALL`-joined) — **NOT** `ALL(n IN nodes(p) …)`, which this AGE build's Cypher parser rejects (probe P-S5b = NO; the UNION shape is P-S5b-UNION = YES). **`AshAge.cypher/5`** — parameterized raw-Cypher escape hatch (`AshAge.cypher(repo, graph, cypher, params \\ %{}, return_types)`): values reach AGE only as `$` params, `graph` is identifier-checked, `$$` break-out rejected; returns uniform decoded rows (`%{col_atom => %Vertex{}/%Edge{}/%Path{}/scalar}`) or `%AshAge.Errors.QueryFailed{}`. **Decode boundary:** a bare agtype aggregate (`collect(n)`, `{k: v}`) is returned as its raw agtype string (use `UNWIND`). Tenancy is **explicit** — the `graph` you pass is the isolation boundary; opens no transaction of its own. **Telemetry:** two new ops `:traverse` and `:cypher` join the `[:ash_age, <op>, :start | :stop | :exception]` span list; `:depth` is added to the value-free metadata allowlist (`:traverse` emits `destination_count`, `row_count`, `depth`, `direction`, `result`; `:cypher` emits `row_count`, `result`). **Data-layer fixes:** (1) the `In` filter now normalizes Ash's `MapSet` right side, so `filter(x in ^list)` and nested loads through traversal work (previously raised `UnsupportedFilter`); (2) `AshAge.Type.Path` decode now parses AGE's inline `::vertex`/`::edge`-tagged path wire format (previously raised `Jason.DecodeError`; first exercised by `cypher/5`'s `RETURN p`). Probes: P-S5a = YES (UNWIND + variable-length MATCH), P-S5b = NO, P-S5b-UNION = YES, P-S5c = YES (`IN $param` binds). Key file: `lib/manual_relationships/traverse.ex`.
 - Unreleased (Telemetry): Data-layer telemetry spans. Every data-layer operation emits `[:ash_age, <op>, :start | :stop | :exception]` via `:telemetry.span` — ops are `:read`, `:create`, `:bulk_create`, `:update`, `:destroy`, `:create_edge`, `:destroy_edge`. Metadata is **value-free**: schema identifiers + counts/booleans/enums only (`resource`, `multitenancy`, `tenant?`, `stale?`, `properties?`, `direction`, `row_count`, `batch_size`, `group_count`, `destination_count`, `result`) — never a PK, property value, error reason, Cypher, or the tenant-derived `graph` name. `AshAge.Telemetry` (Level 0) owns the allowlist and RAISES on any off-allowlist key (the single R7 enforcement site). `:exception` fires only on a programmer/config raise (DB errors are returned as redacted `{:error, _}` tuples, surfacing as `:stop` with `result: :error`); its Erlang-standard `kind`/`reason`/`stacktrace` are intentionally outside the value-free contract. Pure addition — no callback return changed. (This makes real the `telemetry` reference that v0.2.5 had removed as a phantom.)
 - Unreleased (S4): Edge CRUD + bulk create. **Edges:** `AshAge.Changes.CreateEdge` and `AshAge.Changes.DestroyEdge` change modules run parameterized edge Cypher in `after_action`, inside the action's transaction, with optional edge properties (values from same-named action arguments, type-serialized identically to vertex attrs), atomic write (0-row edge → `InvalidRelationship`, rolled back; DB errors redacted), tenant-scoped endpoints (`:context` same-graph fail-closed, `:attribute` both endpoints scoped by tenant discriminator). `:both` direction stored `:outgoing`, readable via undirected match (S5 contract pinned by integration test). Destination resources require single-attribute PK. **Bulk create:** `can?(:bulk_create) → true`; `bulk_create/3` emits `UNWIND $rows AS row CREATE (n:Label) SET …` per key-set group (no null-fill divergence from single-create), order-preserving on `return_records?: true`, binary/date round-trip via `$age64$`/ISO8601, atomic-per-batch (later-group failure rolls back earlier under `transaction: :batch`, partial write possible under `transaction: false`), `:context` nil tenant fails closed. Edge-label auto-create on `CREATE` (AGE behavior, verified live by probe P4); labels provisioned via `create_edge_label/2` migration or `provision_tenant/3` `:elabels` per tenant. Key files: `lib/changes/create_edge.ex`, `lib/changes/destroy_edge.ex`, `lib/data_layer/verifiers/validate_edge.ex`.

@@ -166,6 +166,21 @@ defmodule AshAge.Migration do
     validate_identifier!(Atom.to_string(name))
   end
 
+  @doc false
+  # Validates a PostgreSQL custom GUC name (`namespace.name`). Postgres requires a
+  # dot for a custom (unreserved) parameter; both segments follow identifier rules.
+  # Raises a value-free ArgumentError (fail-closed) — the GUC feeds `set_config`/
+  # policy DDL. The runtime `set_config` binds it as a parameter too (defense-in-depth).
+  def validate_guc!(name) when is_binary(name) do
+    unless Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\z/, name) do
+      raise ArgumentError,
+            "invalid GUC name: #{inspect(name)}. Expected a namespaced custom GUC " <>
+              "like \"ash_age.tenant_id\" (two identifier segments joined by a single dot)."
+    end
+
+    name
+  end
+
   @doc """
   Idempotently provisions a tenant's AGE graph and its vertex/edge labels at
   runtime (host-invoked in a tenant-onboarding flow, or from a migration).
@@ -202,6 +217,89 @@ defmodule AshAge.Migration do
     Enum.each(elabels, &run(repo, label_ddl(graph, &1, "create_elabel")))
 
     :ok
+  end
+
+  @doc """
+  Idempotently enables DB-enforced RLS on a resource's label table (host-invoked,
+  runtime SQL). Emits ENABLE + FORCE ROW LEVEL SECURITY, a functional btree index
+  on the tenant discriminator, and an expression policy over `properties` (NOT a
+  generated column — those segfault AGE `cypher()` writes). The policy is
+  fail-closed: a blank/unset GUC (`current_setting(guc,true) = ''`) matches nothing.
+
+  Read/target-side only: AGE `cypher()` CREATE bypasses `WITH CHECK`, so cross-tenant
+  INSERT is not RLS-denied (the `:attribute` app-layer force-set owns that). The DB
+  role must be a non-superuser without BYPASSRLS or RLS silently no-ops.
+
+  Prefer `enable_tenant_rls/2`, which derives every argument from the resource DSL.
+  """
+  @spec enable_tenant_rls(module(), String.t(), String.t(), String.t(), String.t()) :: :ok
+  def enable_tenant_rls(repo, graph, label, tenant_property, guc) do
+    graph
+    |> rls_ddl(label, tenant_property, guc)
+    |> Enum.each(&run(repo, &1))
+
+    :ok
+  end
+
+  @doc """
+  Resource-derived `enable_tenant_rls`: reads graph, label, tenant property, and GUC
+  from the resource's `age`/`multitenancy` DSL. The drift-free default — the policy
+  it writes always matches what the data layer sets at runtime.
+  """
+  @spec enable_tenant_rls(module(), module()) :: :ok
+  def enable_tenant_rls(repo, resource) do
+    guc =
+      AshAge.DataLayer.Info.rls_guc(resource) ||
+        raise ArgumentError, "#{inspect(resource)} does not declare `age do rls_guc ... end`"
+
+    enable_tenant_rls(
+      repo,
+      to_string(AshAge.DataLayer.Info.graph(resource)),
+      to_string(AshAge.DataLayer.Info.label(resource)),
+      to_string(Ash.Resource.Info.multitenancy_attribute(resource)),
+      guc
+    )
+  end
+
+  @doc false
+  # Pure DDL builder (unit-tested without a DB). Every identifier is
+  # validate_identifier!-checked and the GUC validate_guc!-checked before
+  # interpolation; values never appear (the GUC is a schema name, not a value).
+  def rls_ddl(graph, label, tenant_property, guc) do
+    g = validate_identifier!(graph)
+    l = validate_identifier!(label)
+    p = validate_identifier!(tenant_property)
+    guc = validate_guc!(guc)
+
+    extract =
+      ~s|btrim(ag_catalog.agtype_access_operator(properties, '"#{p}"'::agtype)::text, '"')|
+
+    setting = "current_setting('#{guc}', true)"
+    predicate = "#{setting} <> '' AND #{extract} = #{setting}"
+
+    [
+      ~s|ALTER TABLE #{g}."#{l}" ENABLE ROW LEVEL SECURITY|,
+      ~s|ALTER TABLE #{g}."#{l}" FORCE ROW LEVEL SECURITY|,
+      """
+      CREATE INDEX IF NOT EXISTS idx_#{g}_#{l}_rls_#{p}
+      ON #{g}."#{l}" USING btree ((#{extract}))
+      """,
+      """
+      DO $do$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_policies
+          WHERE schemaname = '#{g}' AND tablename = '#{l}' AND policyname = 'ash_age_tenant_isolation'
+        ) THEN
+          EXECUTE $ddl$
+            CREATE POLICY ash_age_tenant_isolation ON #{g}."#{l}"
+              USING (#{predicate})
+              WITH CHECK (#{predicate})
+          $ddl$;
+        END IF;
+      END $do$;
+      """
+    ]
   end
 
   # Shares the shape of create_vertex_label/create_edge_label but targets a runtime

@@ -1,6 +1,9 @@
 defmodule AshAge.ManualRelationships.TraverseTest do
   use ExUnit.Case, async: true
 
+  alias Ash.Resource.Info, as: ResourceInfo
+  alias Ash.Resource.ManualRelationship.Context
+  alias AshAge.Errors.QueryFailed
   alias AshAge.ManualRelationships.Traverse
   alias AshAge.Type.Vertex
 
@@ -215,5 +218,113 @@ defmodule AshAge.ManualRelationships.TraverseTest do
 
   defmodule Fake do
     defstruct [:id, :name]
+  end
+
+  # ---- wrap_traverse_error/1 (RLS error routing: redact raw, pass built through) ----
+
+  test "wrap_traverse_error redacts a raw Postgrex error, dropping the DETAIL leak vector" do
+    # A raw DB error from SQL.query MUST be redacted. Postgres DETAIL/message echo
+    # the offending values (the real leak vector, e.g. an RLS-denied tenant_id), so
+    # populate them with a distinctive sentinel and prove it is DROPPED — only the
+    # value-free SQLSTATE name surfaces. redact_db_error/1 reads only postgres.code
+    # (+ constraint), never message/detail, so both sentinel fields must vanish.
+    raw = %Postgrex.Error{
+      message: "SECRET-LEAK-msg-9f2 row violates row-level security policy",
+      postgres: %{
+        code: :insufficient_privilege,
+        message: "SECRET-LEAK-msg-9f2 row violates row-level security policy",
+        detail: "Key (tenant_id)=(SECRET-LEAK-abc123) is not visible."
+      }
+    }
+
+    assert %QueryFailed{query: "AGE traversal", reason: reason} =
+             Traverse.wrap_traverse_error(raw)
+
+    # SQLSTATE still surfaces (value-free), but neither DETAIL nor message leaks.
+    assert reason == "database error (insufficient_privilege)"
+    refute reason =~ "SECRET-LEAK-abc123"
+    refute reason =~ "SECRET-LEAK-msg-9f2"
+    refute reason =~ "tenant_id"
+    refute reason =~ "Postgrex"
+  end
+
+  test "wrap_traverse_error passes an already-built exception through unchanged" do
+    # unwrap_rls/2 returns a fully-built %QueryFailed{} for the blank-tenant /
+    # set_config-rollback sentinels; wrap_traverse_error MUST NOT re-wrap or
+    # re-redact it — the exception is forwarded verbatim.
+    built = QueryFailed.exception(query: "RLS-scoped operation", reason: "tenant required")
+
+    assert Traverse.wrap_traverse_error(built) == built
+  end
+
+  # ---- RLS routing (fail-closed, DB-free) ----
+
+  # An :attribute source declaring rls_guc. rls_guc requires :attribute (S6
+  # verifier), so a blank context.tenant fails closed BEFORE any query — no DB.
+  defmodule RlsSource do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:traverse_rls)
+      repo(AshAge.TestRepo)
+      rls_guc("ash_age.tenant_id")
+    end
+
+    multitenancy do
+      strategy(:attribute)
+      attribute(:tenant_id)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+      attribute(:tenant_id, :uuid, public?: true)
+    end
+
+    relationships do
+      has_many :descendants, __MODULE__ do
+        public?(true)
+
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :LINK, direction: :outgoing, max_depth: 2, min_depth: 1}
+        )
+      end
+    end
+  end
+
+  test "an rls_guc :attribute source with a blank tenant fails closed (confidentiality tripwire)" do
+    # Confidentiality tripwire on traverse's PRE-EXISTING fail-closed behavior: for
+    # an rls_guc-declaring :attribute source with a blank context.tenant, load/3
+    # returns a value-free %QueryFailed{}, no rows, and opens NO connection (this
+    # runs in the unit lane with no DB, so any SQL.query would raise a DBConnection
+    # error instead of returning this tuple). It short-circuits at resolve_tenant
+    # (attribute_scope/2 -> {:error, tenant_required()}) BEFORE the query is built
+    # and BEFORE with_rls is called — so this test does NOT exercise the with_rls
+    # layer and would pass identically with the wrap removed. It guards that a
+    # blank-tenant :attribute traversal can never touch the shared multi-tenant
+    # graph. Scope of the other two layers:
+    #   (a) the NEW with_rls-routing code's RED-capability is carried by the two
+    #       wrap_traverse_error/1 tests above (the error-normalization seam);
+    #   (b) live GUC enforcement (valid tenant -> GUC set on the pinned connection
+    #       -> RLS-scoped traversal) needs a DB and is proven in the integration
+    #       lane (Task 8). with_rls's own blank-tenant clause is structurally
+    #       unreachable from traverse (both strategies fail closed upstream), so no
+    #       DB-free unit test can isolate that layer.
+    rel = ResourceInfo.relationship(__MODULE__.RlsSource, :descendants)
+
+    records = [%{id: Ash.UUID.generate()}]
+
+    context = %Context{relationship: rel, tenant: nil}
+
+    opts = [edge_label: :LINK, direction: :outgoing, max_depth: 2, min_depth: 1]
+
+    # The reason is the resolve_tenant short-circuit's ("multitenancy tenant
+    # required"), NOT with_rls/unwrap_rls's blank-tenant reason ("... for
+    # RLS-protected ..."), confirming this path fails closed before with_rls.
+    assert {:error, %QueryFailed{reason: "multitenancy tenant required"}} =
+             Traverse.load(records, opts, context)
   end
 end

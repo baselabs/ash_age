@@ -27,6 +27,9 @@ defmodule AshAge.DataLayer.Info do
   @doc "Gets the tenant_graph MFA override for a resource, or nil."
   def tenant_graph(resource), do: Extension.get_opt(resource, [:age], :tenant_graph, nil)
 
+  @doc "Gets the RLS GUC name for a resource, or nil (RLS not enabled)."
+  def rls_guc(resource), do: Extension.get_opt(resource, [:age], :rls_guc, nil)
+
   @doc "Gets the configured edge entities for a resource."
   def edges(resource), do: Extension.get_entities(resource, [:age])
 

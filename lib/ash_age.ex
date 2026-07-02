@@ -122,8 +122,9 @@ defmodule AshAge do
     (`collect(n)`, `{k: v}`) is returned as its **raw agtype string** (aggregate
     decoding is out of scope — use Cypher `UNWIND` for collections).
   - **Tenancy is explicit:** the `graph` you pass IS the isolation boundary
-    (`:context`). This opens no transaction of its own; for RLS defense-in-depth,
-    call it inside your own tenant-GUC (`SET LOCAL`) transaction.
+    (`:context`). This opens no transaction of its own; for `:attribute` + RLS
+    defense-in-depth, wrap the call in `AshAge.with_tenant_rls/4`, which sets the
+    tenant GUC (`set_config`) on the same connection.
   """
   @spec cypher(module(), atom() | String.t(), String.t(), map(), keyword()) ::
           {:ok, [map()]} | {:error, Exception.t()}
@@ -155,6 +156,34 @@ defmodule AshAge do
 
       {result, %{row_count: row_count(result), result: Telemetry.result_tag(result)}}
     end)
+  end
+
+  @doc """
+  Runs `fun` inside a transaction with the RLS tenant GUC set (`set_config(guc,
+  tenant, true)`), so raw `cypher/5` calls inside `fun` are RLS-scoped on the same
+  connection. The one auditable way to tenant-scope the raw hatch — do not hand-roll
+  `set_config`. `guc`/`tenant` reach Postgres only as bound parameters.
+
+  Diverges from the data layer's internal RLS path in two ways a caller must know:
+
+  - **Blank/nil `tenant` does NOT fail closed.** It is `set_config`'d as-is, so the
+    RLS policy's blank-GUC guard yields "no rows visible" rather than an error —
+    a silent empty result, not a raised `:rls_tenant_required`. Pass a real tenant.
+  - **Errors propagate raw** (this uses `SQL.query!`); it does not redact DB errors,
+    unlike the data layer's internal path. The raw hatch already surfaces raw errors
+    from your own `cypher/5` calls, so the caller owns error handling here.
+  """
+  @spec with_tenant_rls(module(), String.t(), term(), (-> result)) :: result when result: var
+  def with_tenant_rls(repo, guc, tenant, fun) when is_function(fun, 0) do
+    _ = AshAge.Migration.validate_guc!(guc)
+
+    {:ok, result} =
+      repo.transaction(fn ->
+        SQL.query!(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)])
+        fun.()
+      end)
+
+    result
   end
 
   @doc false

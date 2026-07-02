@@ -138,4 +138,69 @@ defmodule AshAge.MigrationTest do
       end
     end
   end
+
+  describe "validate_guc!/1" do
+    test "accepts a namespaced (dotted) custom GUC name" do
+      assert AshAge.Migration.validate_guc!("ash_age.tenant_id") == "ash_age.tenant_id"
+      assert AshAge.Migration.validate_guc!("app.tenant") == "app.tenant"
+      assert AshAge.Migration.validate_guc!("a_b.c_d1") == "a_b.c_d1"
+    end
+
+    test "rejects a bare (non-namespaced) name — Postgres custom GUCs require a dot" do
+      assert_raise ArgumentError, ~r/invalid GUC name/, fn ->
+        AshAge.Migration.validate_guc!("tenant_id")
+      end
+    end
+
+    test "rejects injection / whitespace / multi-dot" do
+      for bad <- ["ash_age.tenant'; DROP", "ash age.t", "a.b.c", "ash_age.", ".tenant", ""] do
+        assert_raise ArgumentError, ~r/invalid GUC name/, fn ->
+          AshAge.Migration.validate_guc!(bad)
+        end
+      end
+    end
+  end
+
+  describe "rls_ddl/4 (pure policy builder)" do
+    setup do
+      %{ddl: AshAge.Migration.rls_ddl("g", "Doc", "tenant_id", "ash_age.tenant_id")}
+    end
+
+    test "enables and FORCEs row level security", %{ddl: ddl} do
+      sql = Enum.join(ddl, "\n")
+      assert sql =~ ~r/ALTER TABLE g\."Doc" ENABLE ROW LEVEL SECURITY/
+      assert sql =~ ~r/ALTER TABLE g\."Doc" FORCE ROW LEVEL SECURITY/
+    end
+
+    test "policy uses an EXPRESSION over properties (never a generated column)", %{ddl: ddl} do
+      sql = Enum.join(ddl, "\n")
+      refute sql =~ ~r/GENERATED ALWAYS AS/
+      assert sql =~ ~r/agtype_access_operator\(properties, '"tenant_id"'::agtype\)/
+    end
+
+    test "policy is fail-closed on a blank GUC (the <> '' guard) and text-compared", %{ddl: ddl} do
+      sql = Enum.join(ddl, "\n")
+      # both USING and WITH CHECK carry the guard
+      assert length(Regex.scan(~r/current_setting\('ash_age\.tenant_id', true\) <> ''/, sql)) >= 2
+      # text comparison (no ::uuid cast on the discriminator)
+      assert sql =~ ~r/btrim\(.*::text, '"'\) = current_setting\('ash_age\.tenant_id', true\)/
+      refute sql =~ ~r/::uuid/
+    end
+
+    test "creates a functional index backing the policy predicate", %{ddl: ddl} do
+      # `/s` so `.*` crosses the newline between "CREATE INDEX …" and "… USING btree"
+      # (the index element is a multi-line heredoc).
+      assert Enum.any?(ddl, &(&1 =~ ~r/CREATE INDEX IF NOT EXISTS .* USING btree/s))
+    end
+
+    test "validates every identifier and the GUC (fail-closed on injection)" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        AshAge.Migration.rls_ddl("g'; DROP", "Doc", "tenant_id", "ash_age.tenant_id")
+      end
+
+      assert_raise ArgumentError, ~r/invalid GUC name/, fn ->
+        AshAge.Migration.rls_ddl("g", "Doc", "tenant_id", "no_dot")
+      end
+    end
+  end
 end

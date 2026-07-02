@@ -146,6 +146,68 @@ isolation at the cost of one PostgreSQL schema per tenant (catalog/planning cost
 grows with tenant count) — prefer it for strong-isolation, moderate-cardinality
 tenancy.
 
+## Multitenancy — DB-enforced RLS
+
+Opt-in, `:attribute`-only defense-in-depth: PostgreSQL Row-Level Security (RLS)
+enforced by the database itself, beneath Ash's app-layer tenant filter. Declare a
+custom GUC (a PostgreSQL runtime configuration parameter) name in the `age` block:
+
+```elixir
+multitenancy do
+  strategy :attribute
+  attribute :org_id
+end
+
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  rls_guc "ash_age.tenant_id"   # opt-in; requires :attribute, incompatible with global? true
+end
+```
+
+- **Enable it in a migration** with `AshAge.Migration.enable_tenant_rls/2` (derives
+  graph/label/tenant-property/GUC from the resource DSL, so the DB policy can never
+  drift from what the data layer sets at runtime):
+
+  ```elixir
+  def up do
+    AshAge.Migration.enable_tenant_rls(MyApp.Repo, MyApp.Doc)
+  end
+  ```
+
+  This emits `ENABLE`/`FORCE ROW LEVEL SECURITY`, a functional btree index on the
+  tenant discriminator, and an expression-based policy over `properties` — **never**
+  a `GENERATED ALWAYS ... STORED` column. A stored generated column on an AGE label
+  table segfaults every `cypher()` write (crash + recovery) on this AGE build; the
+  policy predicate is a live expression instead.
+- **The DB role MUST be a non-superuser without `BYPASSRLS`.** RLS (including
+  `FORCE ROW LEVEL SECURITY`) is silently skipped for superusers and roles with
+  `BYPASSRLS` — deploy the application's connection role without that attribute, or
+  the policy never applies and you get no error, just no enforcement.
+- **Read-confidentiality backstop, not the write barrier.** `ag_catalog.cypher()`
+  `CREATE` **bypasses `WITH CHECK`** on this AGE build — a cross-tenant INSERT is
+  **not** RLS-denied at the database. The real write barrier is the `:attribute`
+  app-layer force-set Ash core already performs (the changeset's tenant attribute is
+  force-set, not attacker-controlled). RLS's distinct value is DB-enforced
+  read-confidentiality: a connection whose GUC is unset/blank or set to a different
+  tenant sees zero rows on `SELECT`, and update/destroy WHERE-targeting is likewise
+  DB-scoped. For `:attribute` resources this read-scoping is redundant to (jointly
+  enforced with) Ash's own tenant WHERE filter — RLS is the backstop beneath it, not
+  a replacement.
+- **Fail-closed on a blank/unset GUC.** The policy predicate requires
+  `current_setting(guc, true) <> ''`; an unset or empty GUC matches zero rows rather
+  than falling through to unscoped access.
+- `AshAge.with_tenant_rls/4` is the auditable way to tenant-scope raw `AshAge.cypher/5`
+  calls: it runs `fun` inside a transaction with the GUC `set_config`'d on the same
+  pinned connection. Do not hand-roll `set_config` around a raw cypher call — use this.
+- Incompatible with `global? true` (a global/tenantless read sets no GUC, so RLS
+  would hide all rows) and with `:context` multitenancy (already physical
+  isolation via graph-per-tenant) — both are compile-time verifier errors.
+- `mix ash_age.verify --resource MyApp.Doc` detects drift between the DSL's
+  `rls_guc` and the DB's actual policy (missing RLS, or a policy that doesn't
+  reference both the tenant property and the GUC), and exits non-zero on failure —
+  wire it into CI/precommit alongside the extension/search_path checks.
+
 ## AGE Limitations
 
 **NOT supported (returns {:error, UnsupportedFilter}):**

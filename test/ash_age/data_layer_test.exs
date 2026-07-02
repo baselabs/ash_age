@@ -2,6 +2,51 @@ defmodule AshAge.DataLayerTest do
   use ExUnit.Case, async: true
 
   alias AshAge.DataLayer
+  alias AshAge.Errors.QueryFailed
+  alias AshAge.Query
+
+  # A resource with NO rls_guc — RLS is off; with_rls/4 must run the fun verbatim.
+  defmodule NoRlsResource do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:data_layer_no_rls)
+      repo(AshAge.TestRepo)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+    end
+  end
+
+  # An :attribute resource declaring rls_guc — RLS is on; with_rls/4 fails closed on
+  # a blank tenant and otherwise sets the GUC inside a transaction. Satisfies the
+  # Task-2 verifier (strategy :attribute + real attribute + rls_guc + not global).
+  defmodule RlsResource do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:data_layer_rls)
+      repo(AshAge.TestRepo)
+      rls_guc("ash_age.tenant_id")
+    end
+
+    multitenancy do
+      strategy(:attribute)
+      attribute(:tenant_id)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+      attribute(:tenant_id, :uuid, public?: true)
+    end
+  end
 
   describe "set_clauses/1" do
     test "builds n.key = $key fragments with parameterized values" do
@@ -89,6 +134,59 @@ defmodule AshAge.DataLayerTest do
     test "serializes datetimes to ISO8601 independent of the declared type" do
       assert DataLayer.serialize_value(~U[2026-06-30 12:00:00Z], :utc_datetime) ==
                "2026-06-30T12:00:00Z"
+    end
+  end
+
+  describe "with_rls/4 + set_context/3 (RLS enforcement primitive)" do
+    test "RLS off (no rls_guc) runs the fun verbatim, wrapped in {:ok, _}" do
+      assert {:ok, :ran} =
+               DataLayer.with_rls(NoRlsResource, "t1", AshAge.TestRepo, fn -> :ran end)
+    end
+
+    test "RLS on + blank tenant fails closed BEFORE running the fun (no DB touch)" do
+      for blank <- [nil, ""] do
+        assert {:error, :rls_tenant_required} =
+                 DataLayer.with_rls(RlsResource, blank, AshAge.TestRepo, fn ->
+                   flunk("must not run")
+                 end)
+      end
+    end
+
+    test "unwrap_rls maps the contract to callback results" do
+      assert {:ok, :x} = DataLayer.unwrap_rls({:ok, {:ok, :x}}, RlsResource)
+      assert :ok == DataLayer.unwrap_rls({:ok, :ok}, RlsResource)
+
+      assert {:error, %QueryFailed{}} =
+               DataLayer.unwrap_rls({:error, :rls_tenant_required}, RlsResource)
+    end
+
+    test "unwrap_rls passes a built exception through unchanged" do
+      err = QueryFailed.exception(query: "q", reason: "boom")
+      assert {:error, ^err} = DataLayer.unwrap_rls({:error, err}, RlsResource)
+    end
+
+    test "unwrap_rls is total: a bare driver rollback becomes a redacted QueryFailed (no leak)" do
+      assert {:error, %QueryFailed{reason: reason}} =
+               DataLayer.unwrap_rls({:error, :rollback}, RlsResource)
+
+      # Value-free reason — must not echo the raw error term.
+      assert is_binary(reason)
+      refute reason =~ "rollback"
+    end
+
+    test "set_context/3 stashes context.private.tenant onto the query" do
+      q = %Query{resource: RlsResource, graph: :g, label: :Doc, repo: AshAge.TestRepo}
+
+      assert {:ok, %Query{tenant: "t9"}} =
+               DataLayer.set_context(RlsResource, q, %{private: %{tenant: "t9"}})
+    end
+
+    test "empty bulk_create batch on an RLS-on resource returns the pre-S6 success (not a fail-closed error)" do
+      # An empty batch has zero scoping surface (no DB touch, nothing written), so
+      # it must NOT route into with_rls's blank-tenant fail-closed. It short-circuits
+      # to the pre-S6 result `:ok` — the same as an RLS-off resource. This path is
+      # DB-free (do_bulk_create(_, _, [], _) -> :ok), so no Sandbox is required.
+      assert :ok == DataLayer.bulk_create(RlsResource, [], %{})
     end
   end
 end

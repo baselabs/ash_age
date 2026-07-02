@@ -207,6 +207,13 @@ Tenant/policy filters are enforced on `update`/`destroy` (not just reads). See
 `usage-rules.md` for the graph-name encoder, the `tenant_graph` MFA override, and
 strategy trade-offs.
 
+For `:attribute` resources, an opt-in `rls_guc` option adds PostgreSQL Row-Level
+Security as a DB-enforced read-confidentiality backstop beneath the app-layer tenant
+filter (enabled via `AshAge.Migration.enable_tenant_rls/2`). It is read/target-side
+only — AGE `cypher()` CREATE bypasses `WITH CHECK` — and requires the app's DB role
+to be a non-superuser without `BYPASSRLS`. See the "Multitenancy — DB-enforced RLS"
+section of `usage-rules.md` for the full contract.
+
 ### Telemetry
 
 Every data-layer operation emits a `:telemetry.span`:
