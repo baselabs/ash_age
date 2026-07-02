@@ -171,6 +171,26 @@ defmodule AshAge.ManualRelationships.TraverseTest do
     assert map[%{id: "a"}].id == "x"
   end
 
+  test "assemble_rows coerces a date source PK so the F3 key matches the record's %Date{} key" do
+    # AGE returns a date PK as an ISO8601 string; the in-struct source record
+    # holds a %Date{} (normal reads run Cast.coerce_value). Ash associates manual
+    # results by term equality, so the F3 key MUST be the coerced %Date{}, not the
+    # raw string — otherwise the source is silently dropped (returns []/nil).
+    rows = [[~s("2024-01-01"), node_vertex_text("x")]]
+
+    map =
+      Traverse.assemble_rows(
+        rows,
+        %{src_pkey: [:day], src_types: %{day: :date}, dest_pkey: [:id], dest: __MODULE__.Fake},
+        :many
+      )
+
+    assert Map.keys(map) == [%{day: ~D[2024-01-01]}]
+    assert map[%{day: ~D[2024-01-01]}] |> Enum.map(& &1.id) == ["x"]
+    # NOT the raw-string key (the pre-fix bug).
+    refute Map.has_key?(map, %{day: "2024-01-01"})
+  end
+
   defmodule Fake do
     defstruct [:id, :name]
   end

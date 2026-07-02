@@ -129,8 +129,16 @@ defmodule AshAge.ManualRelationships.Traverse do
       case SQL.query(Info.repo(source), sql, pg_params) do
         {:ok, %{rows: rows}} ->
           {{:ok,
-            assemble_rows(rows, %{src_pkey: src_pkey, dest_pkey: dest_pkey, dest: dest}, card)},
-           length(rows)}
+            assemble_rows(
+              rows,
+              %{
+                src_pkey: src_pkey,
+                src_types: Info.attribute_types(source),
+                dest_pkey: dest_pkey,
+                dest: dest
+              },
+              card
+            )}, length(rows)}
 
         {:error, error} ->
           {{:error,
@@ -290,8 +298,12 @@ defmodule AshAge.ManualRelationships.Traverse do
   # --- result assembly (F3 map key + dedup + cardinality; unit-tested) ---
 
   @doc false
-  def assemble_rows(rows, %{src_pkey: src_pkey, dest_pkey: dest_pkey, dest: dest}, card) do
+  def assemble_rows(rows, %{src_pkey: src_pkey, dest_pkey: dest_pkey, dest: dest} = spec, card) do
     {attr_map, attr_types} = dest_maps(dest)
+    # Source-PK attribute types coerce the decoded scalar back to the record's
+    # runtime shape (e.g. a date PK: ISO string -> %Date{}), so the F3 key ===
+    # Map.take(record, src_pkey). Absent (unit test) -> identity coercion.
+    src_types = Map.get(spec, :src_types, %{})
     n = length(src_pkey)
 
     grouped =
@@ -299,7 +311,9 @@ defmodule AshAge.ManualRelationships.Traverse do
         {src_cols, [b_col]} = Enum.split(row, n)
 
         src_key =
-          Map.new(Enum.zip(src_pkey, src_cols), fn {atom, col} -> {atom, Agtype.decode(col)} end)
+          Map.new(Enum.zip(src_pkey, src_cols), fn {atom, col} ->
+            {atom, Cast.coerce_value(Agtype.decode(col), Map.get(src_types, atom))}
+          end)
 
         b_record = decode_record(b_col, dest, attr_map, attr_types)
         Map.update(acc, src_key, [b_record], &[b_record | &1])
