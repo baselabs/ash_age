@@ -66,6 +66,95 @@ defmodule AshAge.MultitenancyTest do
       assert Ash.Resource.Info.multitenancy_strategy(AshAge.MultitenancyTest.CleanTenantResource) ==
                :attribute
     end
+
+    test "rls_guc on a :context resource fails compilation" do
+      error =
+        assert_dsl_error %Spark.Error.DslError{path: [:age, :rls_guc]} do
+          defmodule Elixir.AshAge.MultitenancyTest.RlsContextInvalid do
+            use Ash.Resource,
+              domain: AshAge.TestDomain,
+              validate_domain_inclusion?: false,
+              data_layer: AshAge.DataLayer
+
+            age do
+              graph(:verifier_rls_ctx)
+              repo(AshAge.TestRepo)
+              rls_guc("ash_age.tenant_id")
+            end
+
+            multitenancy do
+              strategy(:context)
+            end
+
+            attributes do
+              uuid_primary_key(:id)
+            end
+          end
+        end
+
+      assert error.message =~ ~r/rls_guc.*:attribute/s
+    end
+
+    test "rls_guc with global? true fails compilation" do
+      error =
+        assert_dsl_error %Spark.Error.DslError{path: [:age, :rls_guc]} do
+          defmodule Elixir.AshAge.MultitenancyTest.RlsGlobalInvalid do
+            use Ash.Resource,
+              domain: AshAge.TestDomain,
+              validate_domain_inclusion?: false,
+              data_layer: AshAge.DataLayer
+
+            age do
+              graph(:verifier_rls_global)
+              repo(AshAge.TestRepo)
+              rls_guc("ash_age.tenant_id")
+            end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:org_id)
+              global?(true)
+            end
+
+            attributes do
+              uuid_primary_key(:id)
+              attribute(:org_id, :uuid, public?: true)
+            end
+          end
+        end
+
+      assert error.message =~ ~r/rls_guc.*global/s
+    end
+
+    test "rls_guc with :attribute (non-global) compiles cleanly" do
+      refute_dsl_errors do
+        defmodule Elixir.AshAge.MultitenancyTest.RlsAttrValid do
+          use Ash.Resource,
+            domain: AshAge.TestDomain,
+            validate_domain_inclusion?: false,
+            data_layer: AshAge.DataLayer
+
+          age do
+            graph(:verifier_rls_ok)
+            repo(AshAge.TestRepo)
+            rls_guc("ash_age.tenant_id")
+          end
+
+          multitenancy do
+            strategy(:attribute)
+            attribute(:org_id)
+          end
+
+          attributes do
+            uuid_primary_key(:id)
+            attribute(:org_id, :uuid, public?: true)
+          end
+        end
+      end
+
+      assert AshAge.DataLayer.Info.rls_guc(Elixir.AshAge.MultitenancyTest.RlsAttrValid) ==
+               "ash_age.tenant_id"
+    end
   end
 
   describe "AshAge.Multitenancy.graph_name/2 default encoder" do
