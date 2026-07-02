@@ -69,9 +69,10 @@ defmodule AshAge.Cypher.Parameterized do
   # are parameterized via `$1`), so this can only fire on a smuggled identifier.
   defp validate_cypher_body!(cypher) when is_binary(cypher) do
     if String.contains?(cypher, "$$") do
-      raise ArgumentError,
-            "Cypher body must not contain \"$$\" (would break AGE dollar-quoting): " <>
-              inspect(cypher)
+      # The body is NOT echoed: this raise is not routed through the redaction
+      # boundary, and a caller that mistakenly interpolated a value into the body
+      # would otherwise leak it into logs (AGENTS.md rule 5).
+      raise ArgumentError, "Cypher body must not contain \"$$\" (would break AGE dollar-quoting)"
     end
 
     cypher
@@ -85,8 +86,14 @@ defmodule AshAge.Cypher.Parameterized do
     AshAge.Migration.validate_identifier!(graph)
   end
 
+  # `return_types` column names/types are interpolated into the outer `AS (...)`
+  # SQL, OUTSIDE AGE's `$$` dollar-quote — so on the public `AshAge.cypher/5`
+  # surface they are a caller-controlled injection vector. Validate both as AGE
+  # identifiers, the same guard applied to the graph name.
   defp format_return_columns(return_types) do
     Enum.map_join(return_types, ", ", fn {name, type} ->
+      name = name |> to_string() |> AshAge.Migration.validate_identifier!()
+      type = type |> to_string() |> AshAge.Migration.validate_identifier!()
       "#{name} #{type}"
     end)
   end

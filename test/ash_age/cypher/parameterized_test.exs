@@ -44,6 +44,35 @@ defmodule AshAge.Cypher.ParameterizedTest do
 
       assert sql =~ "AS (n agtype, e agtype)"
     end
+
+    # The $$ rejection is a raise (not a redacted {:error, _}), so its message
+    # must not echo the caller's body — a caller that mistakenly interpolates a
+    # value into the body would otherwise leak it into logs (AGENTS.md rule 5).
+    test "the $$ rejection does not echo the cypher body (no value leak)" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Parameterized.build(:g, "RETURN 'topsecret-value' $$ breakout", %{})
+        end
+
+      refute Exception.message(err) =~ "topsecret-value"
+    end
+
+    # return_types names/types are interpolated raw into the outer `AS (...)` SQL
+    # (outside AGE's $$ dollar-quote), so an unvalidated column name is a SQL
+    # injection vector on the public cypher/5 surface.
+    test "rejects a return-type column name that is not a valid identifier" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        Parameterized.build(:g, "RETURN 1", %{"a" => 1}, [
+          {:"v agtype); DROP TABLE users; --", :agtype}
+        ])
+      end
+    end
+
+    test "rejects a return-type column type that is not a valid identifier" do
+      assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+        Parameterized.build(:g, "RETURN 1", %{"a" => 1}, [{:v, :"agtype); DROP; --"}])
+      end
+    end
   end
 
   describe "build_static/2" do
