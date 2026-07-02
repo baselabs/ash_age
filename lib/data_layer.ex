@@ -203,6 +203,13 @@ defmodule AshAge.DataLayer do
     # strategies (Ash.Query.data_layer_query/2), including :attribute — where
     # set_tenant/3 never fires. Pure annotation; no query behavior changes unless
     # the resource declares rls_guc.
+    #
+    # This is the RAW query tenant (not the parse_attribute-coerced `to_tenant` the
+    # write path uses); with_rls sets the GUC to `to_string(this)`. Those coincide
+    # only within the supported tenant envelope — :string / uuid-as-string / integer,
+    # where `Ash.ToTenant` and `parse_attribute` are identity (spec §3.2). A custom
+    # `Ash.ToTenant`/`parse_attribute` would make the read GUC differ from the stored
+    # property, so RLS would hide all rows — fail-closed (empty), never a leak.
     {:ok, %{query | tenant: get_in(context, [:private, :tenant])}}
   end
 
