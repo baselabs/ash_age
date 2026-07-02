@@ -198,6 +198,15 @@ defmodule AshAge.DataLayer do
   end
 
   @impl true
+  def set_context(_resource, %AshAge.Query{} = query, context) do
+    # Captures the tenant for RLS on reads. Ash sets context.private.tenant for ALL
+    # strategies (Ash.Query.data_layer_query/2), including :attribute — where
+    # set_tenant/3 never fires. Pure annotation; no query behavior changes unless
+    # the resource declares rls_guc.
+    {:ok, %{query | tenant: get_in(context, [:private, :tenant])}}
+  end
+
+  @impl true
   def run_query(%AshAge.Query{} = query, resource) do
     Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result = run_query_body(query, resource)
@@ -850,6 +859,70 @@ defmodule AshAge.DataLayer do
     |> Enum.map(fn props -> {nil, props} end)
     |> group_bulk_entries()
     |> Enum.map(fn {keys, entries} -> {keys, Enum.map(entries, fn {_cs, props} -> props end)} end)
+  end
+
+  @doc false
+  # RLS wrapper. Off → {:ok, fun_result}. On + blank tenant → {:error,
+  # :rls_tenant_required} (fail-closed BEFORE any query). On + tenant → runs fun
+  # inside repo.transaction after set_config; the transaction PINS one connection,
+  # so the GUC and the cypher execute on the same backend. On success returns
+  # {:ok, fun_result}. Any transaction/rollback failure — a set_config rollback,
+  # a bare `{:error, :rollback}` from the driver, or a failed COMMIT — surfaces as
+  # some `{:error, _}` term that unwrap_rls/2 normalizes into a redacted
+  # {:error, %QueryFailed{}}. set_config binds both args as params (never interpolated).
+  def with_rls(resource, tenant, repo, fun) do
+    case Info.rls_guc(resource) do
+      nil ->
+        {:ok, fun.()}
+
+      _guc when tenant in [nil, ""] ->
+        {:error, :rls_tenant_required}
+
+      guc ->
+        repo.transaction(fn -> set_rls_guc_then(guc, tenant, repo, fun) end)
+    end
+  end
+
+  # Runs inside repo.transaction: set the GUC on this pinned connection, then run
+  # fun on the SAME backend. A set_config failure rolls back with a redacted error.
+  defp set_rls_guc_then(guc, tenant, repo, fun) do
+    case SQL.query(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)]) do
+      {:ok, _} ->
+        fun.()
+
+      {:error, error} ->
+        repo.rollback(
+          QueryFailed.exception(query: "RLS set_config", reason: redact_db_error(error))
+        )
+    end
+  end
+
+  @doc false
+  # Maps with_rls/4's contract to a data-layer callback result.
+  def unwrap_rls({:ok, result}, _resource), do: result
+
+  def unwrap_rls({:error, :rls_tenant_required}, resource) do
+    {:error,
+     QueryFailed.exception(
+       query: "RLS-scoped operation",
+       reason: "multitenancy tenant required for RLS-protected #{inspect(resource)}"
+     )}
+  end
+
+  def unwrap_rls({:error, %{__exception__: true} = exception}, _resource), do: {:error, exception}
+
+  # Catch-all keeps unwrap_rls/2 TOTAL. repo.transaction/2 (db_connection under
+  # ecto_sql) can return a bare `{:error, :rollback}` (or a DBConnection.TransactionError
+  # on a failed COMMIT) that matches none of the clauses above; without this, the
+  # data-layer callback would crash with FunctionClauseError and leak a stacktrace
+  # that can echo the query/values — the exact failure redact_db_error/1 guards
+  # against. The reason is static and value-free: never interpolate the raw error.
+  def unwrap_rls({:error, _other}, _resource) do
+    {:error,
+     QueryFailed.exception(
+       query: "RLS-scoped operation",
+       reason: "database error during RLS-scoped operation"
+     )}
   end
 
   # === Telemetry span helpers (value-free metadata only) ===
