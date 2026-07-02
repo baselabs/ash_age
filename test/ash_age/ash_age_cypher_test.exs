@@ -50,4 +50,25 @@ defmodule AshAge.CypherTest do
     assert decoded.v == "scalar"
     assert decoded.e.__struct__ == AshAge.Type.Edge
   end
+
+  # The injection/breakout guards live in Parameterized; these pin that the public
+  # cypher/5 surface actually routes through them (raises BEFORE any SQL.query, so
+  # no DB needed). Goes red if cypher/5 ever bypasses the validating builder.
+  test "cypher/5 rejects a $$-breakout body at the public surface (param branch)" do
+    assert_raise ArgumentError, ~r/\$\$/, fn ->
+      AshAge.cypher(:unused_repo, "g", "RETURN 1 $$ ')", %{"a" => 1}, [{:n, :agtype}])
+    end
+  end
+
+  test "cypher/5 rejects an invalid graph identifier at the public surface (static branch)" do
+    assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+      AshAge.cypher(:unused_repo, "bad graph!", "RETURN 1", %{}, [{:n, :agtype}])
+    end
+  end
+
+  test "cypher/5 rejects an invalid return-type column at the public surface" do
+    assert_raise ArgumentError, ~r/invalid AGE identifier/, fn ->
+      AshAge.cypher(:unused_repo, "g", "RETURN 1", %{}, [{:"n); DROP; --", :agtype}])
+    end
+  end
 end
