@@ -32,6 +32,7 @@ When making changes, understand these dependency levels:
 | DSL/Info | `lib/data_layer/info.ex`, `lib/edge.ex`, `lib/data_layer/transformers/*`, `lib/data_layer/verifiers/*` |
 | Multitenancy | `lib/multitenancy.ex` (graph-name encoder), `lib/data_layer/verifiers/validate_multitenancy_attr.ex`, `AshAge.tenant_graph/2`, `AshAge.Migration.provision_tenant/3` |
 | RLS (S6) | `AshAge.DataLayer.with_rls/4` + `unwrap_rls/2` (`lib/data_layer.ex`), `AshAge.DataLayer.Info.rls_guc/1` (`lib/data_layer/info.ex`), `AshAge.Migration.enable_tenant_rls/2,5` + `rls_ddl/4` + `validate_guc!/1` (`lib/migration.ex`), `lib/data_layer/verifiers/validate_multitenancy_attr.ex` (rls_guc invariants), `AshAge.with_tenant_rls/4` (`lib/ash_age.ex`), `mix ash_age.verify --resource` drift check (`lib/mix/tasks/ash_age.verify.ex`) |
+| Sensitive classification (S7) | `lib/data_layer/verifiers/validate_sensitive.ex`, `lib/data_layer/verifiers/validate_skip.ex`, `AshAge.DataLayer.Info.sensitive/1`, `AshAge.Type.Cast.binary_storage?/2` + `Cast.serialize_value/2` (the ONE predicate/encoder), runtime edge guard in `AshAge.Changes.CreateEdge.edge_properties/2` |
 | Telemetry | `lib/telemetry.ex` (value-free `[:ash_age, <op>]` span wrapper + metadata allowlist) |
 | Graph lifecycle | `lib/graph.ex`, `lib/session.ex`, `lib/migration.ex` |
 | Testing | `test/support/test_repo.ex`, `test/support/test_postgrex_types.ex`, `test/support/test_domain.ex`, `test/support/data_case.ex` |
@@ -131,6 +132,74 @@ Integration-test resources are defined inline in their test modules (pointing `d
 ## Version History
 
 Key changes that affect agent behavior:
+- Unreleased (S7): Sensitive-data classification. **`age do sensitive [:attrs] end`**
+  (`AshAge.DataLayer.Info.sensitive/1`) declares attributes that must be
+  app-side-encrypted (or excluded) before they reach the graph. **One
+  predicate/one encoder rule:** `AshAge.Type.Cast.binary_storage?/2` (via
+  `Ash.Type.storage_type/2`, builtin `:binary` and `Ash.Type.NewType` wrappers
+  alike) is the SOLE binary-storage test, and `Cast.serialize_value/2` (moved
+  to `cast.ex`, Level 2, in S7 so `Query.Filter`, Level 3, can share it) is the
+  SOLE value encoder — `AshAge.DataLayer.serialize_value/2` is now a delegating
+  shim. Every match param routes through it: filter `eq`/`not_eq`/`in`,
+  `pk_pairs` (update/destroy PK match), traversal source/dest ids, and edge
+  `src_key`/`dst` params (the destination is typed by the DESTINATION
+  RESOURCE's PK attribute, not the source's). **Range/sort rejected on binary
+  storage:** `>`/`<`/`>=`/`<=` return `UnsupportedFilter` and
+  `can?({:sort, :binary}) → false` — the `$age64$`-tagged base64 wire form does
+  not preserve byte order, so a range/sort over it would silently return wrong
+  results. **Fail-closed, value-free JSON boundary:** `encode_check/1` (and its
+  bulk counterpart `first_encode_failure/1`) pre-checks every serialized
+  property and returns the OFFENDING ATTRIBUTE NAME only; `build_and_query/5`
+  and `AshAge.Changes.EdgeCypher.safe_build/4` both wrap
+  `Parameterized.build/execute` in a `rescue` that catches BOTH
+  `Jason.EncodeError` and `Protocol.UndefinedError` (the latter fires when a
+  struct with no `Jason.Encoder` impl, e.g. a `Regex`, is nested in a param) —
+  the `Protocol.UndefinedError` clause is scoped to `e.protocol == Jason.Encoder`
+  and `reraise`s any other protocol error, so no raise crosses a callback
+  boundary carrying raw bytes into its message. **Redaction:** `redacted_filter/1`
+  now runs on every `StaleRecord` (data-layer update/destroy AND
+  `DestroyEdge`), replacing PK/endpoint values with `"<redacted>"` before Ash
+  inspects the filter into logs; `redact_db_error(:params_not_json_encodable)`
+  covers the new JSON-boundary error. **Untagged rows are read-only grace**
+  (C1 retraction): ash_age still decodes an untagged stored binary value
+  verbatim on read (legacy/external data), but every match param now sends the
+  TAGGED form, so such rows are no longer matchable/mutable through Ash — the
+  read-side contract is documented in a `cast.ex` comment; migrate by
+  rewriting the property through ash_age or storing it as `:string`.
+  **Compile + runtime verification:** `ValidateSensitive` enforces R1 (every
+  `sensitive` name is a declared attribute), R2 (binary-storage-typed or
+  `skip`ped), R3 (the multitenancy discriminator can't be `sensitive`), and R4
+  (an edge property naming a sensitive attribute needs a binary-storage-typed
+  DECLARED action argument); `ValidateSkip` makes a primary-key attribute in
+  `age skip` a compile error (previously silent perpetual `StaleRecord`). The
+  runtime R4 half lives in `AshAge.Changes.CreateEdge.edge_properties/2`: it
+  returns `{:ok, props} | {:error, key}`, halting closed when a sensitive edge
+  property's DECLARED argument isn't binary-storage-typed — this catches an
+  injected/undeclared argument the compile-time verifier can't see.
+  `ValidateMultitenancyAttr` gained a `with`-chain restructure (four checks:
+  discriminator-not-skipped, discriminator-not-binary,
+  rls_guc-requires-attribute, rls_guc-not-global) and a new binary-discriminator
+  rule — a binary-storage-typed multitenancy attribute is now a compile error,
+  since the
+  discriminator is a plaintext comparator across the vertex filter, edge
+  `$tenant` scoping, traverse per-hop scoping, and RLS text-cast paths.
+  **`sensitive` verifies TYPE SHAPE, not encryption** — a `:binary` attribute
+  holding plaintext bytes passes; encrypting is the host app's job
+  (AshCloak/Cloak). **Dependency levels unchanged:** `cast` stays Level 2
+  (→ `agtype`); it
+  gained only external `Ash.Type` calls, no new internal-module edges. Also
+  landed: `.formatter.exs` `locals_without_parens`/`export` repair
+  (`sensitive: 1`, plus drifted `tenant_graph: 1`/`rls_guc: 1`/`properties: 1`
+  from S3/S6/S4) so downstream `import_deps: [:ash_age]` consumers don't get
+  these DSL calls re-parenthesized (3aa5ccb). Key files:
+  `lib/data_layer/verifiers/validate_sensitive.ex`,
+  `lib/data_layer/verifiers/validate_skip.ex`, `lib/type/cast.ex`
+  (`binary_storage?/2`, `serialize_value/2`), `lib/data_layer.ex`
+  (`serialize_value/2` shim, `encode_check/1`, `first_encode_failure/1`,
+  `build_and_query/5`, `redacted_filter/1`, `redact_db_error/1`),
+  `lib/changes/edge_cypher.ex` (`safe_build/4`),
+  `lib/changes/create_edge.ex` (`edge_properties/2`),
+  `lib/data_layer/verifiers/validate_multitenancy_attr.ex`, `.formatter.exs`.
 - Unreleased (S6): DB-enforced RLS. Opt-in, `:attribute`-only defense-in-depth: a
   `rls_guc "ash_age.tenant_id"` option in the `age` DSL block (`AshAge.DataLayer.Info.rls_guc/1`),
   guarded by a compile-time verifier requiring `:attribute` multitenancy and rejecting

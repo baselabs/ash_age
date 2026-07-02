@@ -70,6 +70,84 @@ values as bound `$1` JSON params — Ecto's default logger prints those params,
 by design, at the `:debug` level. If primary-key or attribute values must never
 reach application logs, run the AGE-backed repo at `:info` or higher in production.
 
+## Sensitive Data
+
+ash_age stores vertex properties as JSON inside AGE. For classified values
+(PII/PHI/secrets), declare them and store ciphertext:
+
+```elixir
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  sensitive [:ssn]        # fail-closed compile check
+end
+
+attributes do
+  attribute :ssn, :binary  # holds app-side-encrypted bytes
+end
+```
+
+**What `sensitive` verifies (and what it cannot).** The compile-time verifier
+(`ValidateSensitive`) enforces a type SHAPE: every listed attribute must be
+binary-storage-typed (`Ash.Type.storage_type == :binary` — `:binary`, or
+wrappers like `Ash.Type.NewType` over `:binary`) or listed in `skip` (never
+written to the graph). It cannot verify that the bytes are actually encrypted —
+that is your application's job (AshCloak or Cloak; ash_age round-trips the
+ciphertext via the tagged `$age64$` base64 wire format). A `:binary` attribute
+holding plaintext bytes passes the verifier.
+
+**Searchable vs. maximally confidential.**
+
+- *Deterministic encryption* (same plaintext → same ciphertext) makes a field
+  equality-searchable on the graph side: `eq`, `not_eq`, and `in` filters work
+  on the ciphertext (ash_age encodes your filter value to the stored wire
+  form). Trade-off: equal values are visibly equal in the database —
+  deterministic encryption leaks equality patterns by design.
+- *Randomized encryption* (unique IV per write) maximizes confidentiality; the
+  field is NOT searchable — read and decrypt app-side.
+- Range filters (`>`, `<`, `>=`, `<=`) and `sort` on binary-storage attributes
+  are REJECTED (`UnsupportedFilter` / unsortable at query build): the stored
+  form is tagged base64, which does not preserve byte order, so a range or
+  sort would return silently wrong results.
+
+**The multitenancy discriminator stays plaintext by design.** It is a
+filter/graph selector, not secret content: Ash core injects it as a plaintext
+filter and force-set, and ash_age holds no key material. `sensitive` rejects
+the discriminator, and the verifier rejects a binary-storage-typed discriminator
+outright.
+
+**Edges.** An edge property that names a sensitive attribute must be backed by
+a binary-storage-typed DECLARED action argument — verified at compile time and
+again at runtime (an injected/undeclared argument fails the edge write closed).
+
+**Maps and lists.** JSON cannot hold raw bytes: a non-UTF-8 binary nested
+inside a `:map`/`:list` value fails closed with a value-free error naming the
+attribute (AshPostgres jsonb has the same property). Encode app-side
+(`Base.encode64`) or use a top-level `:binary` attribute.
+
+**Erasure and crypto-shred.** `destroy` runs `DETACH DELETE` — the vertex and
+every incident edge are removed. For crypto-shred, destroy the app-side key
+(per-tenant or per-record): ash_age stores only ciphertext, so key destruction
+renders stored values unrecoverable. Database backups and any AshPaperTrail
+versions retain ciphertext until they age out.
+
+**AshPaperTrail.** Point version resources at a relational data layer
+(AshPostgres) or add encrypted attributes to the version resource's ignore
+list. A version resource on `AshAge.DataLayer` stores its `changes` map as a
+vertex property, and raw ciphertext nested in that map is not JSON-encodable
+(fails closed, value-free, as above).
+
+**Ash's `sensitive?` flag.** `attribute :ssn, :binary, sensitive?: true`
+controls display/log redaction in Ash core; `age do sensitive [:ssn] end`
+controls storage shape in the graph. They are orthogonal — declare both for
+classified fields.
+
+**Externally-written binary rows (migration note).** ash_age reads untagged
+binary-typed values verbatim (read-only grace), but all match params (filters,
+primary-key match, traversal, edge endpoints) send the tagged `$age64$` form —
+untagged rows are readable but not matchable/mutable through Ash. Migrate them
+by rewriting the property through ash_age, or store such values as `:string`.
+
 ## Multitenancy
 
 AshAge supports both Ash multitenancy strategies.

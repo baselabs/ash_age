@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sensitive classification (S7).** `age do sensitive [:attrs] end` +
+  `AshAge.DataLayer.Info.sensitive/1`: fail-closed compile verifier
+  (`ValidateSensitive`) — each sensitive attribute must be binary-storage-typed
+  (app-side-encrypted bytes) or skipped; the multitenancy discriminator cannot be
+  sensitive; sensitive-named edge properties require binary-storage-typed declared
+  arguments (verified again at runtime on the edge write path).
+- `ValidateSkip` verifier: a primary-key attribute in `age skip` is now a compile error
+  (previously: every update/destroy silently returned StaleRecord).
+- usage-rules/README "Sensitive Data" guidance: searchable-vs-encrypted,
+  erasure/crypto-shred, AshPaperTrail, plaintext-discriminator rationale.
+
+### Fixed
+
+- **Sensitive data / binary-storage fixes (S7).** Filter `eq`/`not_eq`/`in`,
+  primary-key match (update/destroy), traversal ids, and edge endpoint params now
+  encode binary-storage values to the stored `$age64$` wire form — equality search
+  on encrypted (binary) attributes and binary primary keys previously never matched
+  (or raised `Jason.EncodeError`).
+- Non-JSON-encodable values (raw bytes nested in `:map`/`:list`, or a struct with no
+  `Jason.Encoder` impl nested in a param) now fail closed with a value-free error
+  naming the attribute; previously `Jason.EncodeError`/`Protocol.UndefinedError`
+  leaked the raw bytes or inspected value into the exception message.
+- `StaleRecord` errors no longer carry primary-key/endpoint values in their `filter`
+  (Ash inspects it into log messages); the filter keeps field names and replaces each
+  value with `"<redacted>"`.
+
+### Changed
+
+- **Binary-storage behavior changes (S7).** Range filters (`>`, `<`, `>=`, `<=`) on
+  binary-storage attributes return `UnsupportedFilter` (previously compared the
+  tagged-base64 stored form — silently wrong results). Sort on binary storage is
+  rejected at query build (`can?({:sort, :binary})` is false).
+- Stored binary values not written by ash_age (untagged/legacy/external) are readable
+  verbatim but no longer matchable through Ash filters or mutations (read-only grace):
+  match params now send the tagged form. Migrate such rows or store them as `:string`.
+- A binary-storage-typed multitenancy discriminator is now a compile error (it would
+  scope vertex filters, edge tenant params, traversal, and RLS paths inconsistently).
+
+### Added
+
 - **DB-enforced RLS (S6).** Opt-in `:attribute`-only PostgreSQL Row-Level Security,
   a defense-in-depth read-confidentiality backstop beneath Ash's app-layer tenant
   filter:

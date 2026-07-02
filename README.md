@@ -214,6 +214,26 @@ only — AGE `cypher()` CREATE bypasses `WITH CHECK` — and requires the app's 
 to be a non-superuser without `BYPASSRLS`. See the "Multitenancy — DB-enforced RLS"
 section of `usage-rules.md` for the full contract.
 
+### Sensitive Data
+
+Classify attributes whose plaintext must never reach the graph; store
+app-side-encrypted bytes (AshCloak/Cloak) in `:binary` attributes:
+
+```elixir
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  sensitive [:ssn]  # compile-time fail-closed: binary-storage-typed or skipped
+end
+```
+
+Deterministic ciphertext is equality-searchable (`eq`/`not_eq`/`in` — ash_age
+encodes filter values to the same encoded form it stores); range filters and
+sort on binary attributes are rejected rather than silently wrong. Erasure is
+`DETACH DELETE`; crypto-shred means destroying the app-side key. See
+`usage-rules.md` "Sensitive Data" for the full guidance (AshPaperTrail, maps,
+migration notes).
+
 ### Telemetry
 
 Every data-layer operation emits a `:telemetry.span`:
