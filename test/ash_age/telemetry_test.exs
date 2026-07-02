@@ -56,4 +56,21 @@ defmodule AshAge.TelemetryTest do
     assert Telemetry.result_tag({:ok, :rec}) == :ok
     assert Telemetry.result_tag(:ok) == :ok
   end
+
+  test ":depth is an allowed value-free metadata key (traversal bound)" do
+    assert :depth in AshAge.Telemetry.allowed_meta_keys()
+  end
+
+  test "a :traverse-shaped span with depth metadata does not raise" do
+    result =
+      AshAge.Telemetry.span(
+        :traverse,
+        %{resource: __MODULE__, multitenancy: :context, direction: :outgoing},
+        fn ->
+          {:ok, %{destination_count: 2, row_count: 3, depth: 3, result: :ok}}
+        end
+      )
+
+    assert result == :ok
+  end
 end
