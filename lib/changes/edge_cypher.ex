@@ -10,6 +10,7 @@ defmodule AshAge.Changes.EdgeCypher do
 
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
+  alias AshAge.Type.Cast
 
   @doc false
   # Resolves the named edge on the resource, raising if it isn't declared.
@@ -36,11 +37,17 @@ defmodule AshAge.Changes.EdgeCypher do
 
   @doc false
   # A map of source PK field (string) => value, read from the PERSISTED record
-  # (its original identity), not the pending changeset.
+  # (its original identity), not the pending changeset. Values are serialized by
+  # the SOURCE RESOURCE's attribute types (binary-storage → tagged) so the WHERE
+  # matches the stored wire form.
   def source_key(resource, record) do
+    types = Info.attribute_types(resource)
+
     resource
     |> Ash.Resource.Info.primary_key()
-    |> Map.new(fn f -> {to_string(f), Map.get(record, f)} end)
+    |> Map.new(fn f ->
+      {to_string(f), Cast.serialize_value(Map.get(record, f), Map.get(types, f))}
+    end)
   end
 
   @doc false
