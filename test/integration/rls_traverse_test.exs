@@ -26,6 +26,7 @@ defmodule AshAge.Integration.RlsTraverseTest do
   note in `test/ash_age/manual_relationships/traverse_test.exs`.
   """
   use AshAge.DataCase, async: false
+  import AshAge.RlsRoleHelper
   @moduletag :integration
 
   defmodule TNode do
@@ -87,24 +88,11 @@ defmodule AshAge.Integration.RlsTraverseTest do
 
         # Enable RLS via the resource-derived helper (also covers enable_tenant_rls/2).
         :ok = AshAge.Migration.enable_tenant_rls(TestRepo, TNode)
-        reset_role()
-        exec(~s|CREATE ROLE #{@role} NOLOGIN|)
-        exec(~s|GRANT USAGE ON SCHEMA ag_catalog, itest_rls_traverse TO #{@role}|)
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ag_catalog TO #{@role}|
-        )
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA itest_rls_traverse TO #{@role}|
-        )
-
-        exec(~s|GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA itest_rls_traverse TO #{@role}|)
+        create_role(@role, "itest_rls_traverse")
 
         try do
           {:ok, names} =
-            TestRepo.transaction(fn ->
-              exec(~s|SET LOCAL ROLE #{@role}|)
+            in_role_txn(@role, fn ->
               {:ok, [loaded]} = Ash.load([a], :reachable, tenant: @t1)
               loaded.reachable |> Enum.map(& &1.name) |> Enum.sort()
             end)
@@ -113,7 +101,7 @@ defmodule AshAge.Integration.RlsTraverseTest do
           # the role; x (cross-tenant) never surfaces — fail-closed under RLS+role.
           assert names == ["b"]
         after
-          reset_role()
+          reset_role(@role)
         end
       end,
       vlabels: ["TNode"],
@@ -132,11 +120,5 @@ defmodule AshAge.Integration.RlsTraverseTest do
         "MATCH (x:TNode {id: $from}), (y:TNode {id: $to}) CREATE (x)-[:LINK]->(y) RETURN 1",
         %{"from" => from_id, "to" => to_id}
       )
-  end
-
-  defp reset_role do
-    exec(
-      ~s|DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = '#{@role}') THEN EXECUTE 'DROP OWNED BY #{@role}'; EXECUTE 'DROP ROLE #{@role}'; END IF; END $$|
-    )
   end
 end

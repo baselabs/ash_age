@@ -19,6 +19,7 @@ defmodule AshAge.Integration.RlsDataLayerTest do
   + data-layer with_rls + :attribute barrier + RLS) fails closed end-to-end.
   """
   use AshAge.DataCase, async: false
+  import AshAge.RlsRoleHelper
   @moduletag :integration
 
   defmodule Doc do
@@ -71,19 +72,7 @@ defmodule AshAge.Integration.RlsDataLayerTest do
 
         # 2. Enable RLS via the resource-derived helper (also covers enable_tenant_rls/2).
         :ok = AshAge.Migration.enable_tenant_rls(TestRepo, Doc)
-        reset_role()
-        exec(~s|CREATE ROLE #{@role} NOLOGIN|)
-        exec(~s|GRANT USAGE ON SCHEMA ag_catalog, itest_rls_e2e TO #{@role}|)
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ag_catalog TO #{@role}|
-        )
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA itest_rls_e2e TO #{@role}|
-        )
-
-        exec(~s|GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA itest_rls_e2e TO #{@role}|)
+        create_role(@role, "itest_rls_e2e")
 
         try do
           # 3. Enforcement through the data layer under the role: the GUC the data
@@ -91,8 +80,7 @@ defmodule AshAge.Integration.RlsDataLayerTest do
           # reads run in their own role-pinned transaction; a returned `:ok` value
           # confirms the outer transaction committed cleanly (no poisoning).
           {:ok, :reads_ok} =
-            TestRepo.transaction(fn ->
-              exec(~s|SET LOCAL ROLE #{@role}|)
+            in_role_txn(@role, fn ->
               assert {:ok, [only]} = Doc |> Ash.Query.for_read(:read) |> Ash.read(tenant: @t1)
               assert only.body == "a"
               assert {:ok, [other]} = Doc |> Ash.Query.for_read(:read) |> Ash.read(tenant: @t2)
@@ -112,9 +100,7 @@ defmodule AshAge.Integration.RlsDataLayerTest do
           # is the security proof of the :attribute barrier (unchanged), and isolating
           # it in its own transaction keeps that rollback from poisoning the reads.
           txn_result =
-            TestRepo.transaction(fn ->
-              exec(~s|SET LOCAL ROLE #{@role}|)
-
+            in_role_txn(@role, fn ->
               struct(Doc, id: a.id, org_id: @t2, body: "a")
               |> Ash.Changeset.for_update(:update, %{body: "HACKED"}, tenant: @t2)
               |> Ash.update()
@@ -127,16 +113,10 @@ defmodule AshAge.Integration.RlsDataLayerTest do
                    &match?(%Ash.Error.Changes.StaleRecord{}, &1)
                  )
         after
-          reset_role()
+          reset_role(@role)
         end
       end,
       vlabels: ["Doc"]
-    )
-  end
-
-  defp reset_role do
-    exec(
-      ~s|DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = '#{@role}') THEN EXECUTE 'DROP OWNED BY #{@role}'; EXECUTE 'DROP ROLE #{@role}'; END IF; END $$|
     )
   end
 end

@@ -12,6 +12,7 @@ defmodule AshAge.Integration.RlsIsolationTest do
   required because the DELETE/INSERT tests mutate the seeded rows.
   """
   use AshAge.DataCase, async: false
+  import AshAge.RlsRoleHelper
   @moduletag :integration
 
   @graph "itest_rls_iso"
@@ -31,7 +32,7 @@ defmodule AshAge.Integration.RlsIsolationTest do
 
   test "unset GUC is fail-closed (the <> '' guard) — blank/missing rows never leak" do
     with_rls_doc(fn ->
-      in_role_txn(fn ->
+      in_role_txn(@role, fn ->
         # No set_config → GUC blank → 0 visible, though blank/missing-tenant rows exist.
         assert count_docs() == 0
       end)
@@ -40,7 +41,7 @@ defmodule AshAge.Integration.RlsIsolationTest do
 
   test "cross-tenant DELETE targeting is denied (USING hides t2 from t1)" do
     with_rls_doc(fn ->
-      in_role_txn(fn ->
+      in_role_txn(@role, fn ->
         set_guc(@t1)
 
         exec(
@@ -56,7 +57,7 @@ defmodule AshAge.Integration.RlsIsolationTest do
 
   test "cross-tenant INSERT is NOT denied by RLS (AGE cypher() bypasses WITH CHECK) — DOCUMENTED" do
     with_rls_doc(fn ->
-      in_role_txn(fn ->
+      in_role_txn(@role, fn ->
         set_guc(@t1)
         # AGE fact: this cross-tenant CREATE SUCCEEDS despite WITH CHECK. The :attribute
         # app-layer force-set (Ash core) is the real write barrier — RLS is read-side.
@@ -78,9 +79,7 @@ defmodule AshAge.Integration.RlsIsolationTest do
   test "AshAge.with_tenant_rls/4 (public) RLS-scopes a raw read on the role-pinned connection" do
     with_rls_doc(fn ->
       {:ok, {n1, n2, blank}} =
-        TestRepo.transaction(fn ->
-          exec(~s|SET LOCAL ROLE #{@role}|)
-
+        in_role_txn(@role, fn ->
           n1 = AshAge.with_tenant_rls(TestRepo, @guc, @t1, fn -> count_docs() end)
           n2 = AshAge.with_tenant_rls(TestRepo, @guc, @t2, fn -> count_docs() end)
           # A blank tenant does NOT fail closed in with_tenant_rls (documented) — it
@@ -120,45 +119,26 @@ defmodule AshAge.Integration.RlsIsolationTest do
 
         Enum.each(AshAge.Migration.rls_ddl(@graph, "Doc", "tenant_id", @guc), &exec/1)
 
-        reset_role()
-        exec(~s|CREATE ROLE #{@role} NOLOGIN|)
-        exec(~s|GRANT USAGE ON SCHEMA ag_catalog, #{@graph} TO #{@role}|)
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ag_catalog TO #{@role}|
-        )
-
-        exec(
-          ~s|GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA #{@graph} TO #{@role}|
-        )
-
-        exec(~s|GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA #{@graph} TO #{@role}|)
+        create_role(@role, @graph)
 
         try do
           fun.()
         after
-          reset_role()
+          reset_role(@role)
         end
       end,
       vlabels: ["Doc"]
     )
   end
 
-  defp scoped_count(tenant),
-    do:
-      in_role_txn(fn ->
+  defp scoped_count(tenant) do
+    {:ok, n} =
+      in_role_txn(@role, fn ->
         set_guc(tenant)
         count_docs()
       end)
 
-  defp in_role_txn(fun) do
-    {:ok, v} =
-      TestRepo.transaction(fn ->
-        exec(~s|SET LOCAL ROLE #{@role}|)
-        fun.()
-      end)
-
-    v
+    n
   end
 
   defp set_guc(tenant), do: exec("SELECT set_config($1, $2, true)", [@guc, tenant])
@@ -170,11 +150,5 @@ defmodule AshAge.Integration.RlsIsolationTest do
       )
 
     n
-  end
-
-  defp reset_role do
-    exec(
-      ~s|DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = '#{@role}') THEN EXECUTE 'DROP OWNED BY #{@role}'; EXECUTE 'DROP ROLE #{@role}'; END IF; END $$|
-    )
   end
 end
