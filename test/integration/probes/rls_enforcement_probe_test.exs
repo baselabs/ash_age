@@ -24,6 +24,7 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
   bypass RLS even under FORCE. AGE also rejects graph names shorter than 3 characters.
   """
   use AshAge.DataCase, async: false
+  import AshAge.RlsRoleHelper
   @moduletag :integration
   @moduletag :probe
 
@@ -57,12 +58,10 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
           ~s|CREATE POLICY tenant_isol ON #{@graph}."Doc" USING (tenant_id = current_setting('ash_age.tenant_id', true)::uuid) WITH CHECK (tenant_id = current_setting('ash_age.tenant_id', true)::uuid)|
         )
 
-        # Fresh non-superuser role (idempotent — cleans residue from any prior abrupt kill).
-        reset_role()
-        exec(~s|CREATE ROLE #{@role} NOLOGIN|)
-        exec(~s|GRANT USAGE ON SCHEMA ag_catalog, #{@graph} TO #{@role}|)
-        exec(~s|GRANT SELECT ON ALL TABLES IN SCHEMA ag_catalog TO #{@role}|)
-        exec(~s|GRANT SELECT ON ALL TABLES IN SCHEMA #{@graph} TO #{@role}|)
+        # Fresh non-superuser READ-ONLY role (idempotent — cleans residue from any
+        # prior abrupt kill). The probe seeds as the graph owner and only reads under
+        # the role, so SELECT-only is the minimal privilege it needs.
+        create_role(@role, @graph, access: :read_only)
 
         try do
           # Control: as the superuser owner, RLS is bypassed → both rows visible.
@@ -70,8 +69,8 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
 
           # Under the non-superuser role with SET LOCAL GUC = t1, cypher() applies the
           # policy → exactly one visible row, and it is the CORRECT tenant (t1, not t2).
-          TestRepo.transaction(fn ->
-            exec(~s|SET LOCAL ROLE #{@role}|)
+          # in_role_txn sets the ROLE; the GUC is SET LOCAL inside the same transaction.
+          in_role_txn(@role, fn ->
             exec(~s|SET LOCAL "ash_age.tenant_id" = '#{@t1}'|)
 
             assert count_docs() == 1
@@ -80,7 +79,7 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
             assert visible_tenant == @t1
           end)
         after
-          reset_role()
+          reset_role(@role)
         end
       end,
       vlabels: ["Doc"]
@@ -94,12 +93,5 @@ defmodule AshAge.Integration.Probes.RlsEnforcementProbeTest do
       )
 
     n
-  end
-
-  # Drops the probe role and everything granted to it, if present — cluster-global, idempotent.
-  defp reset_role do
-    exec(
-      ~s|DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = '#{@role}') THEN EXECUTE 'DROP OWNED BY #{@role}'; EXECUTE 'DROP ROLE #{@role}'; END IF; END $$|
-    )
   end
 end
