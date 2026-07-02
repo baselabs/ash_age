@@ -197,4 +197,15 @@ defmodule AshAge.DataLayerTest do
       assert AshAge.DataLayer.can?(nil, :sort)
     end
   end
+
+  describe "StaleRecord redaction + binary PK serialization (S7)" do
+    test "redacted_filter replaces every PK value with a placeholder" do
+      secret = <<0, 255, 7>>
+
+      redacted = AshAge.DataLayer.redacted_filter([{:id, secret}, {:code, "k1"}])
+
+      assert redacted == %{id: "<redacted>", code: "<redacted>"}
+      refute inspect(redacted) =~ inspect(secret)
+    end
+  end
 end

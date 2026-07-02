@@ -449,7 +449,7 @@ defmodule AshAge.DataLayer do
             """
 
             {sql, pg_params} = Parameterized.build(graph, cypher, params)
-            decode_update_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
+            decode_update_result(resource, redacted_filter(pk), SQL.query(repo, sql, pg_params))
 
           {:error, _} ->
             {:error,
@@ -511,7 +511,7 @@ defmodule AshAge.DataLayer do
             """
 
             {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:n, :agtype}])
-            decode_destroy_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
+            decode_destroy_result(resource, redacted_filter(pk), SQL.query(repo, sql, pg_params))
 
           {:error, _} ->
             {:error,
@@ -636,11 +636,27 @@ defmodule AshAge.DataLayer do
   # can be writable and included in an update's `accept` list, in which case
   # `get_attribute/2` would return the PENDING (new) value, and the WHERE clause
   # would match zero rows (the stored row still has the old value) instead of
-  # matching the row being renamed.
+  # matching the row being renamed. Values are serialized by attribute type so
+  # the match param carries the stored wire form (binary-storage → `$age64$`
+  # tag, dates → ISO8601) — a raw binary PK would otherwise never match.
   defp pk_pairs(resource, changeset) do
+    types = Info.attribute_types(resource)
+
     resource
     |> Ash.Resource.Info.primary_key()
-    |> Enum.map(fn field -> {field, Ash.Changeset.get_data(changeset, field)} end)
+    |> Enum.map(fn field ->
+      value = Ash.Changeset.get_data(changeset, field)
+      {field, Cast.serialize_value(value, Map.get(types, field))}
+    end)
+  end
+
+  @doc false
+  # StaleRecord's message inspects its `filter` into logs (Ash stale_record.ex),
+  # so the filter carries PK field NAMES only — values are redacted (they can be
+  # PII or ciphertext; AGENTS.md rule 5). Public for the unit test and for
+  # AshAge.Changes.DestroyEdge (same contract on the edge path).
+  def redacted_filter(pairs) do
+    Map.new(pairs, fn {field, _value} -> {field, "<redacted>"} end)
   end
 
   @doc false

@@ -96,6 +96,37 @@ defmodule AshAge.Integration.CompositePkTest do
     end
   end
 
+  defmodule BinKey do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_s7_binkey
+      repo AshAge.TestRepo
+      label :BinKey
+    end
+
+    attributes do
+      attribute :key, :binary, primary_key?: true, allow_nil?: false, public?: true
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:key, :name]
+      defaults [:read, :destroy]
+
+      create :create do
+        accept [:key, :name]
+      end
+
+      update :update do
+        accept [:name]
+      end
+    end
+  end
+
   defp create!(resource, attrs) do
     resource |> Ash.Changeset.for_create(:create, attrs) |> Ash.create!()
   end
@@ -173,6 +204,40 @@ defmodule AshAge.Integration.CompositePkTest do
         assert [%{key: "new-key", name: "y"}] = Ash.read!(RenamableKey)
       end,
       vlabels: ["RenamableKey"]
+    )
+  end
+
+  test "binary PK: create/read/update/destroy round-trip (S7 match-param encoding)" do
+    key = <<0, 255, 3, 128>>
+
+    with_graph(
+      "itest_s7_binkey",
+      fn ->
+        {:ok, created} =
+          BinKey |> Ash.Changeset.for_create(:create, %{key: key, name: "a"}) |> Ash.create()
+
+        assert created.key == key
+
+        # update matches the stored (tagged) form of the binary PK
+        {:ok, updated} =
+          created |> Ash.Changeset.for_update(:update, %{name: "b"}) |> Ash.update()
+
+        assert updated.name == "b"
+
+        # destroy matches too, and a re-destroy is StaleRecord with a REDACTED filter
+        assert :ok = updated |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy()
+
+        assert {:error, %Ash.Error.Invalid{errors: errors}} =
+                 updated |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy()
+
+        stale = Enum.find(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+        assert stale
+        message = Exception.message(stale)
+        refute message =~ Base.encode64(key)
+        refute String.contains?(message, key)
+        assert message =~ "<redacted>"
+      end,
+      vlabels: ["BinKey"]
     )
   end
 end
