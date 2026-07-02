@@ -118,6 +118,18 @@ defmodule AshAge.Query.Filter do
   end
 
   # IN operator
+  #
+  # Ash's `In` operator stores `right` as a MapSet (In.new/2); normalize to a
+  # list and reuse the list emission below. AGE binds `n.attr IN $param` with a
+  # JSON list (probe P-S5c); an empty MapSet → empty list → matches nothing (no
+  # guard needed).
+  defp do_translate(
+         %Ash.Query.Operator.In{left: %Ash.Query.Ref{} = ref, right: %MapSet{} = values},
+         query
+       ) do
+    do_translate(%Ash.Query.Operator.In{left: ref, right: MapSet.to_list(values)}, query)
+  end
+
   defp do_translate(
          %Ash.Query.Operator.In{left: %Ash.Query.Ref{attribute: attr}, right: values},
          query
