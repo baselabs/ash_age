@@ -136,10 +136,14 @@ defmodule AshAge do
           Parameterized.build_static(graph, cypher, return_types)
         end
 
+      # Column names are constant across the whole result set — compute once,
+      # not per row (mirrors the read path's compute-once attribute maps).
+      cols = column_names(return_types)
+
       result =
         case SQL.query(repo, sql, pg_params) do
           {:ok, %{rows: rows}} ->
-            {:ok, Enum.map(rows, &decode_cypher_row(&1, return_types))}
+            {:ok, Enum.map(rows, &decode_row(&1, cols))}
 
           {:error, error} ->
             {:error,
@@ -157,11 +161,16 @@ defmodule AshAge do
   # Decodes one SQL result row into %{column_name => decoded} using the atoms in
   # return_types positionally. Public seam for unit testing without a DB.
   def decode_cypher_row(row, return_types) do
-    # Invariant: row arity == length(return_types) — AGE's `AS (col agtype, …)`
-    # record type must match the RETURN projection or SQL.query raises upstream,
-    # so this zip never silently drops columns in practice.
-    return_types
-    |> Enum.map(fn {name, _type} -> name end)
+    decode_row(row, column_names(return_types))
+  end
+
+  defp column_names(return_types), do: Enum.map(return_types, fn {name, _type} -> name end)
+
+  # Invariant: row arity == length(cols) — AGE's `AS (col agtype, …)` record type
+  # must match the RETURN projection or SQL.query raises upstream, so this zip
+  # never silently drops columns in practice.
+  defp decode_row(row, cols) do
+    cols
     |> Enum.zip(row)
     |> Map.new(fn {name, cell} -> {name, Agtype.decode(cell)} end)
   end
