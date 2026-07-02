@@ -17,6 +17,7 @@ defmodule AshAge.DataLayer do
     repo MyApp.Repo
     label :MyLabel   # optional, defaults to module short module name
     skip [:computed]  # optional, properties to exclude from AGE
+    sensitive [:ssn]  # optional, classified attributes (binary-storage or skipped)
 
     edge :related_to do
       label :RELATES_TO
@@ -52,6 +53,15 @@ defmodule AshAge.DataLayer do
         type: {:list, :atom},
         default: [],
         doc: "List of attribute names to exclude from AGE vertex properties"
+      ],
+      sensitive: [
+        type: {:list, :atom},
+        default: [],
+        doc:
+          "Attribute names classified as sensitive. Fail-closed compile check " <>
+            "(AshAge.DataLayer.Verifiers.ValidateSensitive): each must be " <>
+            "binary-storage-typed (app-side-encrypted bytes) or listed in `skip`. " <>
+            "ash_age verifies the type SHAPE — encrypting is the host app's job."
       ],
       tenant_graph: [
         type: :mfa,

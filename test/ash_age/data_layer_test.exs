@@ -2,6 +2,7 @@ defmodule AshAge.DataLayerTest do
   use ExUnit.Case, async: true
 
   alias AshAge.DataLayer
+  alias AshAge.DataLayer.Info
   alias AshAge.Errors.QueryFailed
   alias AshAge.Query
 
@@ -251,6 +252,37 @@ defmodule AshAge.DataLayerTest do
                )
 
       assert AshAge.DataLayer.redact_db_error(:params_not_json_encodable) =~ "not JSON-encodable"
+    end
+  end
+
+  describe "sensitive DSL option (S7)" do
+    defmodule Classified do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:unit_s7_sens)
+        repo(AshAge.TestRepo)
+        label(:Classified)
+        sensitive([:ssn])
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+        attribute(:ssn, :binary, public?: true)
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
+
+    test "Info.sensitive/1 returns the declared list; defaults to []" do
+      assert Info.sensitive(Classified) == [:ssn]
+      # any pre-existing test resource without the option
+      assert Info.sensitive(NoRlsResource) == []
     end
   end
 end

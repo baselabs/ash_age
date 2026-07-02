@@ -24,6 +24,9 @@ defmodule AshAge.DataLayer.Info do
   @doc "Gets attributes to skip."
   def skip(resource), do: Extension.get_opt(resource, [:age], :skip, [])
 
+  @doc "Gets the sensitive-classified attribute names (default [])."
+  def sensitive(resource), do: Extension.get_opt(resource, [:age], :sensitive, [])
+
   @doc "Gets the tenant_graph MFA override for a resource, or nil."
   def tenant_graph(resource), do: Extension.get_opt(resource, [:age], :tenant_graph, nil)
 
