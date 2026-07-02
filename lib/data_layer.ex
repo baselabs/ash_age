@@ -143,6 +143,11 @@ defmodule AshAge.DataLayer do
   def can?(_, :boolean_filter), do: true
   def can?(_, :nested_expressions), do: true
   def can?(_, :sort), do: true
+  # Ash asks {:sort, Ash.Type.storage_type(type)} (deps/ash sort.ex): binary
+  # storage is stored as tagged base64, which is not byte-order-preserving, so
+  # sorting it would return a silently wrong order. Rejecting here surfaces
+  # Ash.Error.Query.UnsortableField at query build.
+  def can?(_, {:sort, :binary}), do: false
   def can?(_, {:sort, _}), do: true
   def can?(_, {:filter_operator, :eq}), do: true
   def can?(_, {:filter_operator, :not_eq}), do: true

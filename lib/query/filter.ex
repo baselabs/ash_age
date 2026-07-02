@@ -21,6 +21,7 @@ defmodule AshAge.Query.Filter do
 
   alias AshAge.Errors.UnsupportedFilter
   alias AshAge.Query
+  alias AshAge.Type.Cast
 
   @doc "Translate an Ash filter expression into a Cypher WHERE fragment + parameters"
   @spec translate(term(), Query.t()) :: {:ok, Query.t(), String.t()} | {:error, term()}
@@ -62,7 +63,7 @@ defmodule AshAge.Query.Filter do
          %Ash.Query.Operator.Eq{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
+    {query, param_ref} = Query.add_param(query, cast_value(value, attr))
     {:ok, query, "n.#{attr.name} = #{param_ref}"}
   end
 
@@ -71,7 +72,7 @@ defmodule AshAge.Query.Filter do
          %Ash.Query.Operator.NotEq{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
+    {query, param_ref} = Query.add_param(query, cast_value(value, attr))
     {:ok, query, "n.#{attr.name} <> #{param_ref}"}
   end
 
@@ -80,8 +81,10 @@ defmodule AshAge.Query.Filter do
          %Ash.Query.Operator.GreaterThan{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
-    {:ok, query, "n.#{attr.name} > #{param_ref}"}
+    with :ok <- rangeable(attr, Ash.Query.Operator.GreaterThan) do
+      {query, param_ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "n.#{attr.name} > #{param_ref}"}
+    end
   end
 
   # Less than
@@ -89,8 +92,10 @@ defmodule AshAge.Query.Filter do
          %Ash.Query.Operator.LessThan{left: %Ash.Query.Ref{attribute: attr}, right: value},
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
-    {:ok, query, "n.#{attr.name} < #{param_ref}"}
+    with :ok <- rangeable(attr, Ash.Query.Operator.LessThan) do
+      {query, param_ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "n.#{attr.name} < #{param_ref}"}
+    end
   end
 
   # Greater than or equal
@@ -101,8 +106,10 @@ defmodule AshAge.Query.Filter do
          },
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
-    {:ok, query, "n.#{attr.name} >= #{param_ref}"}
+    with :ok <- rangeable(attr, Ash.Query.Operator.GreaterThanOrEqual) do
+      {query, param_ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "n.#{attr.name} >= #{param_ref}"}
+    end
   end
 
   # Less than or equal
@@ -113,8 +120,10 @@ defmodule AshAge.Query.Filter do
          },
          query
        ) do
-    {query, param_ref} = Query.add_param(query, cast_value(value))
-    {:ok, query, "n.#{attr.name} <= #{param_ref}"}
+    with :ok <- rangeable(attr, Ash.Query.Operator.LessThanOrEqual) do
+      {query, param_ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "n.#{attr.name} <= #{param_ref}"}
+    end
   end
 
   # IN operator
@@ -135,7 +144,7 @@ defmodule AshAge.Query.Filter do
          query
        )
        when is_list(values) do
-    {query, param_ref} = Query.add_param(query, Enum.map(values, &cast_value/1))
+    {query, param_ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
     {:ok, query, "n.#{attr.name} IN #{param_ref}"}
   end
 
@@ -162,11 +171,30 @@ defmodule AshAge.Query.Filter do
     {:error, UnsupportedFilter.exception(operator: operator, field: field)}
   end
 
-  # Value casting for AGE compatibility
-  defp cast_value(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp cast_value(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
-  defp cast_value(%Date{} = d), do: Date.to_iso8601(d)
-  defp cast_value(value), do: value
+  # Value casting for AGE compatibility, typed by the ref's attribute. Binary-
+  # storage values are tagged (so equality matches the stored wire form —
+  # deterministic-encryption search); dates become ISO8601; refs without a type
+  # (bare maps in unit tests, non-attribute refs) pass values through unchanged.
+  defp cast_value(value, attr) do
+    Cast.serialize_value(value, attr_type(attr))
+  end
+
+  defp attr_type(%{type: type}), do: type
+  defp attr_type(_attr), do: nil
+
+  defp attr_constraints(%{constraints: constraints}) when is_list(constraints), do: constraints
+  defp attr_constraints(_attr), do: []
+
+  # The stored form of a binary-storage value is `$age64$` + base64, and base64
+  # is NOT byte-order-preserving — a range comparison on the stored form returns
+  # silently wrong results. Reject it as unsupported (structural error, no value).
+  defp rangeable(attr, operator) do
+    if Cast.binary_storage?(attr_type(attr), attr_constraints(attr)) do
+      {:error, UnsupportedFilter.exception(operator: operator, field: attr.name)}
+    else
+      :ok
+    end
+  end
 
   defp unsupported_shape(%mod{left: %Ash.Query.Ref{attribute: %{name: name}}}), do: {mod, name}
 

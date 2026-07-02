@@ -189,4 +189,12 @@ defmodule AshAge.DataLayerTest do
       assert :ok == DataLayer.bulk_create(RlsResource, [], %{})
     end
   end
+
+  describe "sort capability on binary storage (S7)" do
+    test "binary storage is not sortable; everything else still is" do
+      refute AshAge.DataLayer.can?(nil, {:sort, :binary})
+      assert AshAge.DataLayer.can?(nil, {:sort, :string})
+      assert AshAge.DataLayer.can?(nil, :sort)
+    end
+  end
 end

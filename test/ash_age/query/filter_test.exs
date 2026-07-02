@@ -4,6 +4,7 @@ defmodule AshAge.Query.FilterTest do
   alias AshAge.Errors.UnsupportedFilter
   alias AshAge.Query
   alias AshAge.Query.Filter
+  alias AshAge.Type.Cast
 
   alias Ash.Query.BooleanExpression
   alias Ash.Query.Not
@@ -24,6 +25,8 @@ defmodule AshAge.Query.FilterTest do
   defp q, do: %Query{resource: __MODULE__, graph: :g, label: :L, repo: __MODULE__, params: %{}}
 
   defp ref(name), do: %Ref{attribute: %{name: name}}
+
+  defp typed_ref(name, type), do: %Ref{attribute: %{name: name, type: type, constraints: []}}
 
   describe "comparison operators" do
     test "eq parameterizes the value (value never appears in the clause)" do
@@ -122,6 +125,57 @@ defmodule AshAge.Query.FilterTest do
   describe "unsupported filters" do
     test "returns an UnsupportedFilter error for anything not pushed down" do
       assert {:error, %UnsupportedFilter{}} = Filter.translate(%{some: :unknown_expr}, q())
+    end
+  end
+
+  describe "binary-storage attribute encoding (S7)" do
+    test "eq on a binary-storage attribute sends the tagged form" do
+      raw = <<0, 255, 1>>
+
+      {:ok, query, clause} =
+        Filter.translate(%Eq{left: typed_ref(:payload, Ash.Type.Binary), right: raw}, q())
+
+      assert clause == "n.payload = $param1"
+      assert query.params == %{"param1" => Cast.encode_binary(raw)}
+    end
+
+    test "in on a binary-storage attribute encodes every element" do
+      raws = [<<1, 255>>, <<2, 254>>]
+
+      {:ok, query, clause} =
+        Filter.translate(%In{left: typed_ref(:payload, Ash.Type.Binary), right: raws}, q())
+
+      assert clause == "n.payload IN $param1"
+      assert query.params == %{"param1" => Enum.map(raws, &Cast.encode_binary/1)}
+    end
+
+    test "eq on a string attribute is untouched (tenant filters stay raw)" do
+      {:ok, query, _} =
+        Filter.translate(%Eq{left: typed_ref(:tenant_id, Ash.Type.String), right: "t1"}, q())
+
+      assert query.params == %{"param1" => "t1"}
+    end
+
+    test "a ref without a type passes the value through unchanged" do
+      {:ok, query, _} = Filter.translate(%Eq{left: ref(:name), right: "x"}, q())
+      assert query.params == %{"param1" => "x"}
+    end
+
+    test "range operators on a binary-storage attribute are UnsupportedFilter" do
+      for op <- [GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual] do
+        assert {:error, %UnsupportedFilter{field: :payload}} =
+                 Filter.translate(
+                   struct(op, left: typed_ref(:payload, Ash.Type.Binary), right: <<1>>),
+                   q()
+                 )
+      end
+    end
+
+    test "range operators on non-binary attributes still work" do
+      {:ok, _query, clause} =
+        Filter.translate(%GreaterThan{left: typed_ref(:age, Ash.Type.Integer), right: 30}, q())
+
+      assert clause == "n.age > $param1"
     end
   end
 end
