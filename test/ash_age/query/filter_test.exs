@@ -59,6 +59,15 @@ defmodule AshAge.Query.FilterTest do
       assert clause == "n.status IN $param1"
       assert query.params == %{"param1" => ["a", "b"]}
     end
+
+    test "in with a MapSet right side (the real Ash In shape) parameterizes the whole list" do
+      {:ok, query, clause} =
+        Filter.translate(%In{left: ref(:status), right: MapSet.new(["a", "b"])}, q())
+
+      assert clause == "n.status IN $param1"
+      # the param carries the list value (order-independent — MapSet has no order)
+      assert query.params |> Map.values() |> List.first() |> Enum.sort() == ["a", "b"]
+    end
   end
 
   describe "is_nil" do

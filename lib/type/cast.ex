@@ -87,19 +87,28 @@ defmodule AshAge.Type.Cast do
   defp maybe_put_id(attrs, nil), do: attrs
   defp maybe_put_id(attrs, id), do: Map.put_new(attrs, :id, id)
 
-  defp coerce_value(value, type) when is_binary(value) and type in @date_types do
+  @doc """
+  Coerces a decoded agtype scalar to its Ash attribute `type`.
+
+  Single source of truth for scalar coercion, shared by the vertex-read path
+  (`vertex_to_resource_attrs/3`) and the traversal F3 source-key path
+  (`AshAge.ManualRelationships.Traverse`). A `nil`/unknown `type` returns the
+  value verbatim (identity), so callers may pass a type map that omits a field.
+  """
+  @spec coerce_value(term(), atom() | nil) :: term()
+  def coerce_value(value, type) when is_binary(value) and type in @date_types do
     coerce_date(value)
   end
 
-  defp coerce_value(value, type) when is_binary(value) and type in @datetime_types do
+  def coerce_value(value, type) when is_binary(value) and type in @datetime_types do
     coerce_datetime(value)
   end
 
-  defp coerce_value(value, type) when is_binary(value) and type in @naive_datetime_types do
+  def coerce_value(value, type) when is_binary(value) and type in @naive_datetime_types do
     coerce_naive_datetime(value)
   end
 
-  defp coerce_value(@binary_tag <> encoded, type) when type in @binary_types do
+  def coerce_value(@binary_tag <> encoded, type) when type in @binary_types do
     case Base.decode64(encoded) do
       {:ok, decoded} -> decoded
       # A tagged value that fails to decode is corrupt/unexpected; return it as
@@ -110,11 +119,11 @@ defmodule AshAge.Type.Cast do
 
   # Untagged binary-typed value: legacy (pre-tag) or externally written. Return
   # it verbatim — never guess-decode a string that merely looks like base64.
-  defp coerce_value(value, type) when is_binary(value) and type in @binary_types do
+  def coerce_value(value, type) when is_binary(value) and type in @binary_types do
     value
   end
 
-  defp coerce_value(value, _type), do: value
+  def coerce_value(value, _type), do: value
 
   defp coerce_date(value) do
     case Date.from_iso8601(value) do
