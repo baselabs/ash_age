@@ -209,8 +209,12 @@ defmodule AshAge.DataLayer do
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
     Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result = run_query_body(query, resource)
-      {result, %{row_count: row_count(result), result: Telemetry.result_tag(result)}}
+      result =
+        with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{row_count: row_count(result), result: Telemetry.result_tag(result), rls?: rls?(resource)}}
     end)
   end
 
@@ -257,8 +261,14 @@ defmodule AshAge.DataLayer do
   @impl true
   def create(resource, changeset) do
     Telemetry.span(:create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result = do_create(resource, changeset)
-      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+      result =
+        with_rls(resource, Map.get(changeset, :to_tenant), Info.repo(resource), fn ->
+          do_create(resource, changeset)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result), rls?: rls?(resource)}}
     end)
   end
 
@@ -333,45 +343,79 @@ defmodule AshAge.DataLayer do
     start = %{resource: resource, multitenancy: strategy(resource)}
 
     Telemetry.span(:bulk_create, start, fn ->
-      # Resolve the graph exactly as single-create does (via write_graph/2), so the
-      # fail-closed nil-:context-tenant behavior is identical. Ash batches by tenant,
-      # so every changeset in a batch shares one graph; resolve off the first.
-      result =
-        case bulk_graph(resource, entries) do
-          {:ok, graph} ->
-            do_bulk_create(resource, graph, entries, opts)
-
-          {:error, :tenant_required} ->
-            {:error,
-             CreateFailed.exception(
-               resource: resource,
-               reason: "multitenancy tenant required for :context write"
-             )}
-        end
+      result = run_bulk_create(resource, entries, opts)
 
       {result,
        %{
          batch_size: length(entries),
          group_count: length(group_bulk_entries(entries)),
          tenant?: bulk_tenant?(entries),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
        }}
     end)
+  end
+
+  # An empty batch (e.g. a fully-filtered stream) writes nothing and touches no DB
+  # — zero scoping surface — so it bypasses with_rls and returns the pre-S6 result
+  # (`:ok`) rather than the blank-tenant fail-closed path. This is the ONLY
+  # exception to the with_rls wrap-pin, justified by there being nothing to scope.
+  defp run_bulk_create(resource, [] = entries, opts),
+    do: bulk_create_body(resource, entries, opts)
+
+  # Non-empty batch: identical with_rls wrap shape as the other four callbacks.
+  defp run_bulk_create(resource, entries, opts) do
+    with_rls(resource, bulk_tenant(entries), Info.repo(resource), fn ->
+      bulk_create_body(resource, entries, opts)
+    end)
+    |> unwrap_rls(resource)
+  end
+
+  # The inner work of bulk_create/3 (named like run_query_body/do_create so the
+  # with_rls wrap shape is identical to the other four callbacks). Resolves the
+  # graph exactly as single-create does (via write_graph/2 through bulk_graph/2),
+  # so the fail-closed nil-:context-tenant behavior is identical; Ash batches by
+  # tenant, so every changeset in a batch shares one graph, resolved off the first.
+  defp bulk_create_body(resource, entries, opts) do
+    case bulk_graph(resource, entries) do
+      {:ok, graph} ->
+        do_bulk_create(resource, graph, entries, opts)
+
+      {:error, :tenant_required} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
   end
 
   defp bulk_tenant?([]), do: false
   defp bulk_tenant?([{changeset, _} | _]), do: tenant?(changeset)
 
+  # The RLS GUC value for a NON-EMPTY bulk batch: Ash batches by tenant, so every
+  # changeset shares one `to_tenant`; read it off the first. Only ever called on
+  # the non-empty branch — bulk_create/3 short-circuits an empty batch past
+  # with_rls entirely (nothing to scope), so the `[]` clause here is a defensive
+  # fallthrough and is never the value that drives an RLS decision.
+  defp bulk_tenant([]), do: nil
+  defp bulk_tenant([{changeset, _} | _]), do: Map.get(changeset, :to_tenant)
+
   @impl true
   def update(resource, changeset) do
     Telemetry.span(:update, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result = do_update(resource, changeset)
+      result =
+        with_rls(resource, Map.get(changeset, :to_tenant), Info.repo(resource), fn ->
+          do_update(resource, changeset)
+        end)
+        |> unwrap_rls(resource)
 
       {result,
        %{
          tenant?: tenant?(changeset),
          stale?: stale?(result),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
        }}
     end)
   end
@@ -422,13 +466,18 @@ defmodule AshAge.DataLayer do
   @impl true
   def destroy(resource, changeset) do
     Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result = do_destroy(resource, changeset)
+      result =
+        with_rls(resource, Map.get(changeset, :to_tenant), Info.repo(resource), fn ->
+          do_destroy(resource, changeset)
+        end)
+        |> unwrap_rls(resource)
 
       {result,
        %{
          tenant?: tenant?(changeset),
          stale?: stale?(result),
-         result: Telemetry.result_tag(result)
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
        }}
     end)
   end
@@ -929,6 +978,7 @@ defmodule AshAge.DataLayer do
 
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
   defp tenant?(changeset), do: not is_nil(Map.get(changeset, :to_tenant))
+  defp rls?(resource), do: not is_nil(Info.rls_guc(resource))
   defp row_count({:ok, records}), do: length(records)
   defp row_count(_), do: 0
   defp stale?({:error, %StaleRecord{}}), do: true

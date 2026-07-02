@@ -61,6 +61,11 @@ defmodule AshAge.TelemetryTest do
     assert :depth in AshAge.Telemetry.allowed_meta_keys()
   end
 
+  test "rls? is a permitted value-free metadata key" do
+    assert :rls? in AshAge.Telemetry.allowed_meta_keys()
+    assert %{rls?: true} = AshAge.Telemetry.validate!(%{rls?: true})
+  end
+
   test "a :traverse-shaped span with depth metadata does not raise" do
     result =
       AshAge.Telemetry.span(

@@ -180,5 +180,13 @@ defmodule AshAge.DataLayerTest do
       assert {:ok, %Query{tenant: "t9"}} =
                DataLayer.set_context(RlsResource, q, %{private: %{tenant: "t9"}})
     end
+
+    test "empty bulk_create batch on an RLS-on resource returns the pre-S6 success (not a fail-closed error)" do
+      # An empty batch has zero scoping surface (no DB touch, nothing written), so
+      # it must NOT route into with_rls's blank-tenant fail-closed. It short-circuits
+      # to the pre-S6 result `:ok` — the same as an RLS-off resource. This path is
+      # DB-free (do_bulk_create(_, _, [], _) -> :ok), so no Sandbox is required.
+      assert :ok == DataLayer.bulk_create(RlsResource, [], %{})
+    end
   end
 end
