@@ -15,9 +15,16 @@ defmodule AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr do
   `:context` resource. And `rls_guc` is incompatible with `global? true`: a
   global (tenantless) read sets no GUC, so RLS would hide all rows; that
   combination is rejected rather than silently returning an empty result.
+
+  Finally, it rejects an `:attribute` multitenancy discriminator whose type is
+  binary-storage-typed, since the tenant filter is a plaintext comparator
+  across the vertex filter, edge `$tenant` scoping, traverse per-hop scoping,
+  and RLS text-cast paths, and a binary (tag-encoded) discriminator would scope
+  those paths inconsistently.
   """
   use Spark.Dsl.Verifier
 
+  alias AshAge.Type.Cast
   alias Spark.Dsl.Verifier
   alias Spark.Error.DslError
 
@@ -30,33 +37,74 @@ defmodule AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr do
     rls_guc = Verifier.get_option(dsl_state, [:age], :rls_guc, nil)
     module = Verifier.get_persisted(dsl_state, :module)
 
-    cond do
-      strategy == :attribute and attribute in skip ->
-        {:error, skip_error(module, attribute)}
+    with :ok <- discriminator_not_skipped(module, strategy, attribute, skip),
+         :ok <- discriminator_not_binary(dsl_state, module, strategy, attribute),
+         :ok <- rls_guc_requires_attribute(module, rls_guc, strategy) do
+      rls_guc_not_global(module, rls_guc, global?)
+    end
+  end
 
-      not is_nil(rls_guc) and strategy != :attribute ->
-        {:error,
-         DslError.exception(
-           module: module,
-           path: [:age, :rls_guc],
-           message:
-             "`rls_guc` requires `:attribute` multitenancy. RLS scopes rows by a tenant " <>
-               "property; `:context` (graph-per-tenant) is already physical isolation."
-         )}
+  defp discriminator_not_skipped(module, strategy, attribute, skip) do
+    if strategy == :attribute and attribute in skip do
+      {:error, skip_error(module, attribute)}
+    else
+      :ok
+    end
+  end
 
-      not is_nil(rls_guc) and global? ->
-        {:error,
-         DslError.exception(
-           module: module,
-           path: [:age, :rls_guc],
-           message:
-             "`rls_guc` is incompatible with `global? true`: a global (tenantless) read " <>
-               "sets no GUC, so RLS hides all rows (fail-closed but empty). Use a " <>
-               "BYPASSRLS connection for global/admin access, or drop `rls_guc`."
-         )}
+  defp discriminator_not_binary(dsl_state, module, strategy, attribute) do
+    if strategy == :attribute and binary_discriminator?(dsl_state, attribute) do
+      {:error,
+       DslError.exception(
+         module: module,
+         path: [:multitenancy, :attribute],
+         message:
+           "the multitenancy attribute #{inspect(attribute)} must not be binary-storage-" <>
+             "typed: the discriminator is a plaintext comparator across the vertex filter, " <>
+             "edge $tenant scoping, traverse per-hop scoping, and RLS text-cast paths — a " <>
+             "binary (tag-encoded) discriminator would scope those paths inconsistently."
+       )}
+    else
+      :ok
+    end
+  end
 
-      true ->
-        :ok
+  defp rls_guc_requires_attribute(_module, nil, _strategy), do: :ok
+  defp rls_guc_requires_attribute(_module, _rls_guc, :attribute), do: :ok
+
+  defp rls_guc_requires_attribute(module, _rls_guc, _strategy) do
+    {:error,
+     DslError.exception(
+       module: module,
+       path: [:age, :rls_guc],
+       message:
+         "`rls_guc` requires `:attribute` multitenancy. RLS scopes rows by a tenant " <>
+           "property; `:context` (graph-per-tenant) is already physical isolation."
+     )}
+  end
+
+  defp rls_guc_not_global(_module, nil, _global?), do: :ok
+  defp rls_guc_not_global(_module, _rls_guc, false), do: :ok
+
+  defp rls_guc_not_global(module, _rls_guc, true) do
+    {:error,
+     DslError.exception(
+       module: module,
+       path: [:age, :rls_guc],
+       message:
+         "`rls_guc` is incompatible with `global? true`: a global (tenantless) read " <>
+           "sets no GUC, so RLS hides all rows (fail-closed but empty). Use a " <>
+           "BYPASSRLS connection for global/admin access, or drop `rls_guc`."
+     )}
+  end
+
+  defp binary_discriminator?(dsl_state, attribute) do
+    dsl_state
+    |> Verifier.get_entities([:attributes])
+    |> Enum.find(&(&1.name == attribute))
+    |> case do
+      nil -> false
+      attr -> Cast.binary_storage?(attr.type, attr.constraints)
     end
   end
 
