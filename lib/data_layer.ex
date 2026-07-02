@@ -396,9 +396,7 @@ defmodule AshAge.DataLayer do
   # The RLS GUC value for a NON-EMPTY bulk batch: Ash batches by tenant, so every
   # changeset shares one `to_tenant`; read it off the first. Only ever called on
   # the non-empty branch — bulk_create/3 short-circuits an empty batch past
-  # with_rls entirely (nothing to scope), so the `[]` clause here is a defensive
-  # fallthrough and is never the value that drives an RLS decision.
-  defp bulk_tenant([]), do: nil
+  # with_rls entirely (nothing to scope) before this is ever reached.
   defp bulk_tenant([{changeset, _} | _]), do: Map.get(changeset, :to_tenant)
 
   @impl true
