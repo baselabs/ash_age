@@ -755,4 +755,73 @@ defmodule AshAge.Integration.TraverseTest do
       elabels: ["LINK"]
     )
   end
+
+  # --- binary-PK resource: S7 `$ids` encoding (tagged stored form must match) ---
+
+  defmodule BinNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_s7_bintrav)
+      repo(AshAge.TestRepo)
+      label(:BinNode)
+
+      edge :links do
+        label(:BINLINK)
+        destination(__MODULE__)
+      end
+    end
+
+    attributes do
+      attribute(:key, :binary, primary_key?: true, allow_nil?: false, public?: true)
+    end
+
+    relationships do
+      has_many :reachable, __MODULE__ do
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :BINLINK, direction: :outgoing, max_depth: 2}
+        )
+      end
+
+      has_many(:links, __MODULE__, source_attribute: :key, destination_attribute: :key)
+    end
+
+    actions do
+      default_accept([:key])
+      defaults([:read, :destroy])
+
+      create :create do
+        accept([:key])
+        argument(:to, {:array, :binary})
+        change({AshAge.Changes.CreateEdge, edge: :links, to: :to})
+      end
+    end
+  end
+
+  # ===================================================================
+  # Test 14 — binary source PK: `$ids` carries the tagged stored form
+  # ===================================================================
+  test "traversal from a binary-PK source returns the F3 keyed map (S7 $ids encoding)" do
+    a = <<0, 255, 10>>
+    b = <<0, 255, 11>>
+
+    with_graph(
+      "itest_s7_bintrav",
+      fn ->
+        {:ok, _} = BinNode |> Ash.Changeset.for_create(:create, %{key: b}) |> Ash.create()
+
+        {:ok, src} =
+          BinNode |> Ash.Changeset.for_create(:create, %{key: a, to: [b]}) |> Ash.create()
+
+        loaded = Ash.load!(src, :reachable)
+        assert [%BinNode{key: ^b}] = loaded.reachable
+      end,
+      vlabels: ["BinNode"],
+      elabels: ["BINLINK"]
+    )
+  end
 end

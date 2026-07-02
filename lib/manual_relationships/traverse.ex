@@ -106,7 +106,8 @@ defmodule AshAge.ManualRelationships.Traverse do
     with {:ok, graph} <- resolve_graph(source, dest, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant) do
       src_pkey = Ash.Resource.Info.primary_key(source)
-      ids = Enum.uniq(Enum.map(records, fn r -> stringify_keys(Map.take(r, src_pkey)) end))
+      src_types = Info.attribute_types(source)
+      ids = Enum.uniq(Enum.map(records, &encode_id(&1, src_pkey, src_types)))
 
       spec = %{
         direction: direction,
@@ -425,7 +426,16 @@ defmodule AshAge.ManualRelationships.Traverse do
 
   # --- helpers ---
 
-  defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
+  # One `$ids` entry: source-PK fields stringified and serialized by attribute
+  # type (Cast.serialize_value/2) so the param matches the STORED form — binary
+  # PKs are `$age64$`-tagged, date/datetime PKs ISO8601 (S7). The RETURN side
+  # coerces back via Cast.coerce_value/2, preserving the F3 raw-record-value key.
+  defp encode_id(record, src_pkey, src_types) do
+    Map.new(src_pkey, fn field ->
+      {to_string(field), Cast.serialize_value(Map.get(record, field), Map.get(src_types, field))}
+    end)
+  end
+
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
 
   # `row_count` is the raw pre-dedup rows returned by SQL.query — a genuine
