@@ -52,6 +52,7 @@ defmodule AshAge.Integration.SensitiveSearchTest do
   test "deterministic ciphertext is equality-searchable; wrong ciphertext matches nothing" do
     ct_a = det_encrypt("111-11-1111")
     ct_b = det_encrypt("222-22-2222")
+    ct_c = det_encrypt("333-33-3333")
 
     with_graph(
       "itest_s7_sens",
@@ -62,18 +63,23 @@ defmodule AshAge.Integration.SensitiveSearchTest do
         {:ok, _} =
           Patient |> Ash.Changeset.for_create(:create, %{ssn: ct_b, name: "b"}) |> Ash.create()
 
+        # Third row NOT in the in-list below — an over-matching `in`
+        # translation (matching everything) would drag it in and go red.
+        {:ok, _} =
+          Patient |> Ash.Changeset.for_create(:create, %{ssn: ct_c, name: "c"}) |> Ash.create()
+
         # POSITIVE: eq on the ciphertext finds exactly the right row
         assert {:ok, [found]} = Patient |> Ash.Query.filter(ssn == ^ct_a) |> Ash.read()
         assert found.name == "a"
         assert found.ssn == ct_a
 
-        # POSITIVE: in-list finds both
+        # POSITIVE: in-list finds exactly a and b — not the bystander c
         assert {:ok, both} = Patient |> Ash.Query.filter(ssn in ^[ct_a, ct_b]) |> Ash.read()
-        assert length(both) == 2
+        assert both |> Enum.map(& &1.name) |> Enum.sort() == ["a", "b"]
 
         # NEGATIVE CONTROL (tripwire): a wrong ciphertext matches NOTHING —
         # proves the eq above does real work, not matching everything
-        wrong = det_encrypt("333-33-3333")
+        wrong = det_encrypt("444-44-4444")
         assert {:ok, []} = Patient |> Ash.Query.filter(ssn == ^wrong) |> Ash.read()
       end,
       vlabels: ["Patient"]
@@ -93,7 +99,7 @@ defmodule AshAge.Integration.SensitiveSearchTest do
 
         message = Exception.message(error)
         assert message =~ "ssn"
-        # value-free: neither the probe value nor the stored ciphertext leaks
+        # value-free: the stored ciphertext leaks in neither raw nor base64 form
         refute message =~ Base.encode64(ct)
         refute String.contains?(message, ct)
       end,
@@ -102,7 +108,14 @@ defmodule AshAge.Integration.SensitiveSearchTest do
   end
 
   test "sort on the sensitive binary attribute is rejected at query build" do
-    assert {:error, error} = Patient |> Ash.Query.sort(ssn: :asc) |> Ash.read()
+    assert {:error, %Ash.Error.Invalid{errors: errors} = error} =
+             Patient |> Ash.Query.sort(ssn: :asc) |> Ash.read()
+
+    # Pinned rejection class: UnsortableField lands on query.errors at build,
+    # before any cypher is issued against AGE.
+    assert %Ash.Error.Query.UnsortableField{field: :ssn} =
+             Enum.find(errors, &match?(%Ash.Error.Query.UnsortableField{}, &1))
+
     assert Exception.message(error) =~ "ssn"
   end
 end
