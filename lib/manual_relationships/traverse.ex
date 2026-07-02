@@ -169,25 +169,59 @@ defmodule AshAge.ManualRelationships.Traverse do
   # Per-hop scoping fires when EITHER endpoint is :attribute-multitenant (spec
   # §5.1 step 6 / §5.2: "if source/dest strategy :attribute … never omit the
   # filter"). Keying on `dest` alone left a source-:attribute / dest-non-:attribute
-  # config unscoped — an unscoped read of the shared multi-tenant graph. Prefer
-  # `dest`'s discriminator when dest is :attribute (the self-referential norm),
-  # else the source's; every node on the path is scoped to it, so a non-tenant
-  # dest node (lacking the attribute) is excluded — fail-closed, not fail-open.
-  # A blank/nil tenant fails closed.
+  # config unscoped — an unscoped read of the shared multi-tenant graph.
   defp resolve_tenant(source, dest, tenant) do
-    cond do
-      strategy(dest) == :attribute -> attribute_scope(dest, tenant)
-      strategy(source) == :attribute -> attribute_scope(source, tenant)
-      true -> {:ok, nil, nil}
+    case scope_decision(strategy(source), attr(source), strategy(dest), attr(dest)) do
+      :none -> {:ok, nil, nil}
+      {:error, :mixed_attribute} -> {:error, mixed_attribute_error()}
+      {:ok, scope_attr} -> attribute_scope(scope_attr, tenant)
     end
   end
 
-  defp attribute_scope(resource, tenant) do
-    case blank_tenant(tenant) do
-      :blank -> {:error, tenant_required()}
-      :ok -> {:ok, to_string(Ash.Resource.Info.multitenancy_attribute(resource)), tenant}
+  @doc false
+  # Pure per-hop-scope decision from both endpoints' strategies/attrs (unit seam):
+  #   :none                    — no :attribute endpoint, no scoping.
+  #   {:ok, attr}              — scope every path node by `attr` ($tenant).
+  #   {:error, :mixed_attribute} — both endpoints :attribute with DIFFERENT
+  #     discriminators. A single UNION scope covers all path nodes with ONE attr,
+  #     so it cannot honor two discriminator dimensions at once (and Ash carries
+  #     one tenant value per load); fail closed rather than scope by the wrong
+  #     attribute. Same-discriminator (the self-referential norm) scopes normally.
+  def scope_decision(src_strategy, src_attr, dest_strategy, dest_attr) do
+    cond do
+      src_strategy == :attribute and dest_strategy == :attribute and src_attr != dest_attr ->
+        {:error, :mixed_attribute}
+
+      dest_strategy == :attribute ->
+        {:ok, dest_attr}
+
+      src_strategy == :attribute ->
+        {:ok, src_attr}
+
+      true ->
+        :none
     end
   end
+
+  defp attr(resource) do
+    if strategy(resource) == :attribute do
+      to_string(Ash.Resource.Info.multitenancy_attribute(resource))
+    end
+  end
+
+  defp attribute_scope(scope_attr, tenant) do
+    case blank_tenant(tenant) do
+      :blank -> {:error, tenant_required()}
+      :ok -> {:ok, scope_attr, tenant}
+    end
+  end
+
+  defp mixed_attribute_error,
+    do:
+      QueryFailed.exception(
+        query: "AGE traversal",
+        reason: "traversal across resources with different multitenancy attributes is unsupported"
+      )
 
   defp blank_tenant(t) when t in [nil, ""], do: :blank
   defp blank_tenant(_), do: :ok

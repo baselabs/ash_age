@@ -132,6 +132,28 @@ defmodule AshAge.ManualRelationships.TraverseTest do
     assert {:LINK, :outgoing, 1, 2} = Traverse.validate_opts!(edge_label: :LINK, max_depth: 2)
   end
 
+  # ---- scope_decision/4 (per-hop tenant-scope decision) ----
+
+  test "scope_decision scopes when either endpoint is :attribute; none when neither" do
+    # neither tenant-scoped by attribute -> no per-hop scope
+    assert Traverse.scope_decision(nil, nil, nil, nil) == :none
+    assert Traverse.scope_decision(:context, nil, :context, nil) == :none
+    # self-referential :attribute (same discriminator) -> scope by it
+    assert Traverse.scope_decision(:attribute, "org_id", :attribute, "org_id") == {:ok, "org_id"}
+    # dest-only :attribute -> scope by dest
+    assert Traverse.scope_decision(nil, nil, :attribute, "org_id") == {:ok, "org_id"}
+    # source-only :attribute (dest not :attribute) -> scope by SOURCE (the fix:
+    # this combo was previously left unscoped / fail-open)
+    assert Traverse.scope_decision(:attribute, "org_id", nil, nil) == {:ok, "org_id"}
+    assert Traverse.scope_decision(:attribute, "org_id", :context, nil) == {:ok, "org_id"}
+  end
+
+  test "scope_decision fails closed when both endpoints are :attribute with different discriminators" do
+    # a single UNION scope can't honor two discriminator dimensions -> fail closed
+    assert Traverse.scope_decision(:attribute, "org_id", :attribute, "account_id") ==
+             {:error, :mixed_attribute}
+  end
+
   # ---- assemble_rows/4 (F3 keying + dedup + cardinality) ----
 
   defp node_vertex_text(id_prop),
