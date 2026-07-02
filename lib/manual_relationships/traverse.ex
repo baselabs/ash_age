@@ -126,7 +126,18 @@ defmodule AshAge.ManualRelationships.Traverse do
       {sql, pg_params} = Parameterized.build(graph, cypher, params, return_types(src_pkey))
       dest_pkey = Ash.Resource.Info.primary_key(dest)
 
-      case SQL.query(Info.repo(source), sql, pg_params) do
+      repo = Info.repo(source)
+
+      # Route the read through with_rls so an rls_guc source sets the GUC on a
+      # pinned connection before the traversal runs (defense-in-depth alongside
+      # the :attribute UNION scoping). context.tenant is the RLS tenant — the same
+      # :attribute discriminator value the resource's RLS policy compares against,
+      # and the same value scoped above. For a non-RLS source with_rls runs the fun
+      # verbatim, so the behavior is byte-identical to pre-S6.
+      rls_result =
+        DataLayer.with_rls(source, context.tenant, repo, fn -> SQL.query(repo, sql, pg_params) end)
+
+      case DataLayer.unwrap_rls(rls_result, source) do
         {:ok, %{rows: rows}} ->
           {{:ok,
             assemble_rows(
@@ -141,17 +152,27 @@ defmodule AshAge.ManualRelationships.Traverse do
             )}, length(rows)}
 
         {:error, error} ->
-          {{:error,
-            QueryFailed.exception(
-              query: "AGE traversal",
-              reason: DataLayer.redact_db_error(error)
-            )}, 0}
+          {{:error, wrap_traverse_error(error)}, 0}
       end
     else
       # fail-closed graph/tenant resolution short-circuit — no rows transferred.
       {:error, _} = error -> {error, 0}
     end
   end
+
+  @doc false
+  # Normalizes the error branch of the with_rls-unwrapped result. unwrap_rls/2
+  # already builds a %QueryFailed{} for the blank-tenant / set_config-rollback
+  # sentinels; pass THAT through verbatim (never re-wrap/re-redact). Every other
+  # term is a raw DB error — a %Postgrex.Error{} from SQL.query (RLS-off path, or
+  # the query after the GUC is set) or a %DBConnection.*{} — and gets redacted.
+  # Matching %QueryFailed{} (not the broad %{__exception__: true}) is deliberate:
+  # a raw %Postgrex.Error{} is itself an exception, so the broad guard would leak
+  # it un-redacted, echoing Postgres DETAIL (offending values) to the caller.
+  def wrap_traverse_error(%QueryFailed{} = exception), do: exception
+
+  def wrap_traverse_error(error),
+    do: QueryFailed.exception(query: "AGE traversal", reason: DataLayer.redact_db_error(error))
 
   # --- graph + tenant resolution (fail-closed) ---
 
