@@ -8,9 +8,12 @@ defmodule AshAge.ManualRelationships.Traverse do
       end
 
   `load/3` emits `UNWIND $ids AS sid MATCH (a)<pattern>(b) WHERE a.<pk> = sid.<pk>
-  … RETURN DISTINCT a.<pk> AS s1[, …], b`, riding the P1-proven list-param UNWIND
+  … RETURN a.<pk> AS s1[, …], b`, riding the P1-proven list-param UNWIND
   + map-access mechanism, and returns an F3 source-PK-keyed map of materialized
-  destination records (deduped per source, cardinality-aware). Direction from
+  destination records (deduped per source, cardinality-aware). No SQL `DISTINCT`
+  is used: per-path rows are returned raw so `row_count` is the genuine pre-dedup
+  fan-out signal (§5.4); dedup is done in Elixir by `dedup/2` (keyed by dest PK),
+  which yields `destination_count`. Direction from
   `direction` (`:both` is undirected). Tenancy is FAIL-CLOSED: `:context` resolves
   a per-tenant graph; `:attribute` scopes EVERY node on the path via a fixed-length
   UNION expansion — one basic-MATCH branch per length in `min..max`, each binding
@@ -186,10 +189,12 @@ defmodule AshAge.ManualRelationships.Traverse do
       # :attribute — AGE lacks ALL(nodes(p)) (probe P-S5b), so expand to a
       # fixed-length UNION: one basic-MATCH branch per length, every node scoped
       # to $tenant, UNWIND repeated per branch (P-S5b-UNION validated this shape).
+      # UNION ALL (not UNION) preserves per-path fan-out across branches so
+      # `row_count` stays pre-dedup; Elixir `dedup/2` is the final dedup.
       attr = Migration.validate_identifier!(spec.tenant_attr)
 
       cypher =
-        Enum.map_join(spec.min_depth..spec.max_depth, " UNION ", fn len ->
+        Enum.map_join(spec.min_depth..spec.max_depth, " UNION ALL ", fn len ->
           union_branch(
             spec.direction,
             src_label,
@@ -212,7 +217,7 @@ defmodule AshAge.ManualRelationships.Traverse do
         "UNWIND $ids AS sid " <>
           "MATCH #{pattern} " <>
           "WHERE #{src_match} " <>
-          "RETURN DISTINCT #{src_return}, b"
+          "RETURN #{src_return}, b"
 
       {cypher, %{"ids" => spec.ids}}
     end
@@ -237,7 +242,7 @@ defmodule AshAge.ManualRelationships.Traverse do
     "UNWIND $ids AS sid " <>
       "MATCH #{chain} " <>
       "WHERE #{src_match} AND #{scope} " <>
-      "RETURN DISTINCT #{src_return}, b"
+      "RETURN #{src_return}, b"
   end
 
   # Builds a fixed `len`-edge chain and the list of node variables to scope.
@@ -342,8 +347,10 @@ defmodule AshAge.ManualRelationships.Traverse do
   defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
 
-  # `row_count` is the raw pre-dedup rows returned by SQL.query (the fan-out
-  # signal); `destination_count` is the deduped/cardinalized total (§5.4).
+  # `row_count` is the raw pre-dedup rows returned by SQL.query — a genuine
+  # fan-out signal because the emitted Cypher uses no SQL DISTINCT (UNION ALL for
+  # the :attribute branches); `destination_count` is the Elixir-deduped/
+  # cardinalized total (§5.4).
   defp stop_meta({:ok, map}, row_count, max_depth) do
     dests = map |> Map.values() |> Enum.map(&List.wrap/1) |> List.flatten()
     %{destination_count: length(dests), row_count: row_count, depth: max_depth, result: :ok}

@@ -31,7 +31,9 @@ defmodule AshAge.ManualRelationships.TraverseTest do
     assert cypher =~ "UNWIND $ids AS sid"
     assert cypher =~ "MATCH (a:Node)-[:LINK*1..3]->(b:Node)"
     assert cypher =~ "WHERE a.id = sid.id"
-    assert cypher =~ "RETURN DISTINCT a.id AS s1, b"
+    assert cypher =~ "RETURN a.id AS s1, b"
+    # No SQL DISTINCT — per-path rows are returned so row_count is pre-dedup (§5.4).
+    refute cypher =~ "DISTINCT"
     # never-interpolate: the id VALUE lives only in params, referenced as $ids.
     assert cypher =~ "$ids"
     assert params == %{"ids" => [%{"id" => "a"}]}
@@ -60,7 +62,7 @@ defmodule AshAge.ManualRelationships.TraverseTest do
       )
 
     assert cypher =~ "WHERE a.org_id = sid.org_id AND a.node_id = sid.node_id"
-    assert cypher =~ "RETURN DISTINCT a.org_id AS s1, a.node_id AS s2, b"
+    assert cypher =~ "RETURN a.org_id AS s1, a.node_id AS s2, b"
     assert params == %{"ids" => [%{"org_id" => "o", "node_id" => "n"}]}
   end
 
@@ -77,11 +79,12 @@ defmodule AshAge.ManualRelationships.TraverseTest do
       )
 
     # P-S5b = NO fallback: no bound path variable, no ALL(nodes(p)); one basic-MATCH
-    # branch per length, UNIONed, UNWIND repeated per branch, every node scoped.
-    refute cypher =~ "ALL("
+    # branch per length, UNION ALL'd, UNWIND repeated per branch, every node scoped.
+    # `ALL(n` (not `ALL(`) so this doesn't false-fail on the `UNION ALL` keyword.
+    refute cypher =~ "ALL(n"
     refute cypher =~ "nodes(p)"
     refute cypher =~ "p ="
-    assert cypher =~ " UNION "
+    assert cypher =~ " UNION ALL "
     # 2 length branches => "UNWIND $ids AS sid" appears twice => 3 split parts.
     assert length(String.split(cypher, "UNWIND $ids AS sid")) == 3
     # L1: direct edge, both endpoints scoped.
@@ -92,7 +95,7 @@ defmodule AshAge.ManualRelationships.TraverseTest do
     assert cypher =~ "m1.tenant_id = $tenant"
     assert cypher =~ "b.tenant_id = $tenant"
     assert cypher =~ "WHERE a.id = sid.id AND"
-    assert cypher =~ "RETURN DISTINCT a.id AS s1, b"
+    assert cypher =~ "RETURN a.id AS s1, b"
     assert params == %{"ids" => [%{"id" => "a"}], "tenant" => "t-1"}
   end
 
