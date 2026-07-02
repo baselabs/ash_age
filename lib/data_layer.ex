@@ -86,6 +86,11 @@ defmodule AshAge.DataLayer do
             type: :atom,
             required: true,
             doc: "Destination resource module"
+          ],
+          properties: [
+            type: {:list, :atom},
+            default: [],
+            doc: "Optional edge property keys, set from same-named action arguments."
           ]
         ]
       }
@@ -94,13 +99,16 @@ defmodule AshAge.DataLayer do
 
   @behaviour Ash.DataLayer
 
+  alias Ash.Actions.Helpers.Bulk, as: BulkHelpers
   alias Ash.Error.Changes.StaleRecord
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
   alias AshAge.Query.Filter
+  alias AshAge.Telemetry
   alias AshAge.Type.{Agtype, Cast}
   alias Ecto.Adapters.SQL
+  alias Ecto.Schema.Metadata
 
   use Spark.Dsl.Extension,
     sections: [@age],
@@ -111,7 +119,8 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Transformers.DefaultRelate
     ],
     verifiers: [
-      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr
+      AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
+      AshAge.DataLayer.Verifiers.ValidateEdge
     ]
 
   # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
@@ -155,7 +164,7 @@ defmodule AshAge.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
   def can?(_, :upsert), do: false
-  def can?(_, :bulk_create), do: false
+  def can?(_, :bulk_create), do: true
   def can?(_, {:lateral_join, _}), do: false
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :multitenancy), do: true
@@ -184,6 +193,13 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
+    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = run_query_body(query, resource)
+      {result, %{row_count: row_count(result), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  defp run_query_body(%AshAge.Query{} = query, resource) do
     {cypher, params} = AshAge.Query.to_cypher(query)
 
     result =
@@ -225,6 +241,14 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def create(resource, changeset) do
+    Telemetry.span(:create, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_create(resource, changeset)
+      {result, %{tenant?: tenant?(changeset), result: Telemetry.result_tag(result)}}
+    end)
+  end
+
+  # do_create/2 is the current create/2 body, renamed verbatim (unchanged).
+  defp do_create(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -274,8 +298,70 @@ defmodule AshAge.DataLayer do
     end
   end
 
+  @doc """
+  Bulk-creates a batch of changesets via key-set-grouped `UNWIND ... CREATE`.
+
+  A batch is fanned into one `SQL.query` per key-set group, so atomicity depends
+  on Ash wrapping the batch in a transaction: on the default `transaction: :batch`
+  path (this layer advertises `can?(:transact)`), a later-group failure rolls back
+  earlier groups; under `transaction: false` the groups run unwrapped and a partial
+  write is possible — the same contract single-create and AshPostgres carry.
+  """
+  @impl true
+  def bulk_create(resource, changesets, opts) do
+    # Ash passes a stream of %Ash.Changeset{} already carrying `.to_tenant` and a
+    # `context.bulk_create.{index, ref}` stamp. Materialize preserving order, and
+    # carry the changeset alongside its property map so returned records can be
+    # tagged back to their originating changeset (Ash maps records to changesets
+    # by `__metadata__.bulk_create_index`, NOT by positional order).
+    entries = Enum.map(changesets, fn cs -> {cs, changeset_to_properties(resource, cs)} end)
+    start = %{resource: resource, multitenancy: strategy(resource)}
+
+    Telemetry.span(:bulk_create, start, fn ->
+      # Resolve the graph exactly as single-create does (via write_graph/2), so the
+      # fail-closed nil-:context-tenant behavior is identical. Ash batches by tenant,
+      # so every changeset in a batch shares one graph; resolve off the first.
+      result =
+        case bulk_graph(resource, entries) do
+          {:ok, graph} ->
+            do_bulk_create(resource, graph, entries, opts)
+
+          {:error, :tenant_required} ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason: "multitenancy tenant required for :context write"
+             )}
+        end
+
+      {result,
+       %{
+         batch_size: length(entries),
+         group_count: length(group_bulk_entries(entries)),
+         tenant?: bulk_tenant?(entries),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp bulk_tenant?([]), do: false
+  defp bulk_tenant?([{changeset, _} | _]), do: tenant?(changeset)
+
   @impl true
   def update(resource, changeset) do
+    Telemetry.span(:update, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_update(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_update(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -320,6 +406,19 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def destroy(resource, changeset) do
+    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result = do_destroy(resource, changeset)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result)
+       }}
+    end)
+  end
+
+  defp do_destroy(resource, changeset) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -611,4 +710,148 @@ defmodule AshAge.DataLayer do
     do: Cast.encode_binary(value)
 
   def serialize_value(value, _type), do: value
+
+  # Resolves the AGE graph for a bulk batch. An empty batch has no changeset to
+  # read `to_tenant` from, so there is nothing to write and the base graph is
+  # harmless (do_bulk_create short-circuits on empty). A non-empty batch resolves
+  # via write_graph/2 off the first changeset — Ash batches by tenant, so all
+  # changesets in a batch share the same tenant/graph, and this reuses the exact
+  # fail-closed nil-:context-tenant path single-create uses.
+  defp bulk_graph(resource, []), do: {:ok, Info.graph(resource)}
+  defp bulk_graph(resource, [{changeset, _props} | _]), do: write_graph(resource, changeset)
+
+  defp do_bulk_create(_resource, _graph, [], _opts), do: :ok
+
+  defp do_bulk_create(resource, graph, entries, opts) do
+    repo = Info.repo(resource)
+    label = validated_label(resource)
+    return_records? = Map.get(opts, :return_records?, false)
+
+    # Group by key-set so each UNWIND CREATE emits SET clauses for exactly the
+    # keys present in that group — no null-fill across differently-shaped rows.
+    # Property maps are paired with their changeset so returned vertices can be
+    # stamped with the changeset's bulk_create_index for Ash's record→changeset
+    # mapping.
+    entries
+    |> group_bulk_entries()
+    |> Enum.reduce_while({:ok, []}, fn {keys, group_entries}, {:ok, acc} ->
+      case run_bulk_group(resource, graph, repo, label, keys, group_entries, return_records?) do
+        {:ok, records} -> {:cont, {:ok, acc ++ records}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, _records} when not return_records? -> :ok
+      {:ok, records} -> {:ok, records}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  # Runs one key-set group's UNWIND CREATE. `keys` are the property keys shared by
+  # every row in the group; each is validated as an AGE identifier before it is
+  # interpolated into the SET clause. Row values are carried as a single list
+  # param `$rows` (an agtype array of maps) — serialize_value has already tagged
+  # binary/date values so they round-trip through Jason.encode! + AGE.
+  defp run_bulk_group(resource, graph, repo, label, keys, group_entries, return_records?) do
+    rows = Enum.map(group_entries, fn {_cs, props} -> props end)
+
+    set_clause =
+      Enum.map_join(keys, ", ", fn key ->
+        key = AshAge.Migration.validate_identifier!(key)
+        "n.#{key} = row.#{key}"
+      end)
+
+    cypher =
+      if set_clause == "" do
+        "UNWIND $rows AS row CREATE (n:#{label}) RETURN n"
+      else
+        "UNWIND $rows AS row CREATE (n:#{label}) SET #{set_clause} RETURN n"
+      end
+
+    {sql, pg_params} = Parameterized.build(graph, cypher, %{"rows" => rows})
+
+    case SQL.query(repo, sql, pg_params) do
+      {:ok, %{rows: result_rows}} ->
+        cond do
+          not return_records? ->
+            {:ok, []}
+
+          # AGE CREATE per UNWIND row is 1:1, so the returned vertex count MUST
+          # equal the group's row count. A mismatch is a should-never-happen
+          # invariant, but zipping would silently truncate/misalign the
+          # record→changeset mapping (corrupting bulk_create_index stamping), so
+          # fail the whole batch LOUD instead — mirroring single-create's strict
+          # row-shape match.
+          length(result_rows) != length(group_entries) ->
+            {:error,
+             CreateFailed.exception(
+               resource: resource,
+               reason:
+                 "bulk create returned #{length(result_rows)} rows for " <>
+                   "#{length(group_entries)} changesets (row-count mismatch)"
+             )}
+
+          true ->
+            {:ok, decode_bulk_records(resource, group_entries, result_rows)}
+        end
+
+      {:error, error} ->
+        {:error, CreateFailed.exception(resource: resource, reason: redact_db_error(error))}
+    end
+  end
+
+  # Decodes each returned vertex to a record and stamps it with its originating
+  # changeset's bulk metadata (`bulk_create_index` + `bulk_action_ref`). P4a
+  # proves UNWIND preserves per-group input order, so the Nth returned vertex
+  # corresponds to the Nth entry in this group; Ash then reassembles cross-group
+  # order via `bulk_create_index`.
+  defp decode_bulk_records(resource, group_entries, result_rows) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    group_entries
+    |> Enum.zip(result_rows)
+    |> Enum.map(fn {{changeset, _props}, [vertex_text]} ->
+      attrs =
+        vertex_text
+        |> Agtype.decode()
+        |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+
+      record = struct(resource, attrs)
+
+      %{record | __meta__: %Metadata{state: :loaded, schema: resource}}
+      |> BulkHelpers.put_metadata(changeset)
+    end)
+  end
+
+  @doc false
+  # Groups a list of `{changeset, property_map}` entries by their key-set (the set
+  # of property keys), preserving intra-group input order. Returns
+  # `[{keys, entries}]` where `keys` is the sorted list of that group's property
+  # keys. Distinct key-sets become distinct groups so a bulk UNWIND never has to
+  # null-fill a property absent from some rows.
+  def group_bulk_entries(entries) do
+    entries
+    |> Enum.group_by(fn {_cs, props} -> props |> Map.keys() |> Enum.sort() end)
+    |> Map.to_list()
+  end
+
+  @doc false
+  # Group a list of bare property maps by key-set. Public seam for the unit test
+  # of the grouping logic (no changesets, no DB). Returns `[{keys, rows}]`.
+  def group_bulk_rows(rows) do
+    rows
+    |> Enum.map(fn props -> {nil, props} end)
+    |> group_bulk_entries()
+    |> Enum.map(fn {keys, entries} -> {keys, Enum.map(entries, fn {_cs, props} -> props end)} end)
+  end
+
+  # === Telemetry span helpers (value-free metadata only) ===
+
+  defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
+  defp tenant?(changeset), do: not is_nil(Map.get(changeset, :to_tenant))
+  defp row_count({:ok, records}), do: length(records)
+  defp row_count(_), do: 0
+  defp stale?({:error, %StaleRecord{}}), do: true
+  defp stale?(_), do: false
 end

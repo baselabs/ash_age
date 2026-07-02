@@ -238,6 +238,114 @@ so the rest of your suite still runs with no database:
 - Run locally against a throwaway AGE container mapped to a free host port, e.g.
   `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
 
+## Edges
+
+Edges connect vertices within a graph via the `edge` DSL configuration:
+
+```elixir
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  
+  edge :author do
+    label :AUTHORED
+    direction :outgoing
+    destination MyApp.Author
+    properties [:weight]
+  end
+end
+```
+
+**Creating edges:** Use the `AshAge.Changes.CreateEdge` change on an action:
+
+```elixir
+actions do
+  create :create_with_author do
+    argument :author_id, :uuid
+    change {AshAge.Changes.CreateEdge, edge: :author, to: :author_id}
+  end
+end
+```
+
+`to:` names an action argument holding the destination primary key (or a list of keys for multiple edges). `to:` is optional — a nil/empty value writes no edge. Edge property values come from **same-named action arguments**; each property MUST have a declared argument whose type governs serialization (binary → `$age64$`-tagged base64, DateTime/Date → ISO8601). Unset (nil) property arguments are omitted — sparse storage, matching single-create vertex semantics.
+
+**Destroying edges:** Use `AshAge.Changes.DestroyEdge` symmetrically:
+
+```elixir
+actions do
+  destroy :remove_author do
+    argument :author_id, :uuid
+    change {AshAge.Changes.DestroyEdge, edge: :author, to: :author_id}
+  end
+end
+```
+
+A 0-row destroy (edge already gone or out of scope) returns `Ash.Error.Changes.StaleRecord`.
+
+**Direction:**
+- `:outgoing` — stored as `(source)-[edge]->(destination)`
+- `:incoming` — stored as `(destination)-[edge]->(source)`
+- `:both` — stored as `:outgoing` but readable via undirected Cypher match (e.g., `MATCH (a)-[e]-(b)`) from either end
+
+**Constraints:**
+- Destination resources **must have a single-attribute primary key** (composite-PK destinations are not supported).
+- Edges are isolated by tenant: `:context` graphs are graph-per-tenant (a cross-tenant destination isn't found); `:attribute` edges scope both endpoints by the tenant discriminator (a cross-tenant link fails closed with `InvalidRelationship`).
+
+**Atomicity:** Edge creation/destruction runs inside the action's transaction via `after_action`; an edge write failure rolls the vertex back.
+
+## Bulk Create
+
+`can?(:bulk_create)` is now `true`. `Ash.bulk_create` emits a single `UNWIND $rows AS row CREATE (n:Label) SET n.key = row.key … RETURN n` per key-set group.
+
+**Key-set grouping:** Rows are grouped by their attribute key-set — a row with an optional attribute missing is NOT null-filled to match other rows. Each group's `UNWIND` emits SET clauses for exactly that group's keys, preserving single-create's sparse stored shape.
+
+**Ordering:** With `return_records?: true`, records are returned in the order they were input, paired back to their changesets via `bulk_create_index`.
+
+**Binary/date values:** Round-trip correctly through the `$rows` parameter nesting (same `$age64$`/ISO8601 serialization as single-create).
+
+**Atomicity:** `UNWIND` is one statement — atomic per batch (`{:error, …}` on any failure), not `:partial_success`. On the default `transaction: :batch` path (Ash wraps the batch in a transaction), a later-group failure rolls back earlier groups; under `transaction: false` a partial write is possible (same contract single-create and AshPostgres carry). A `:context` bulk with a nil tenant fails closed.
+
+## Telemetry
+
+Every data-layer operation emits a `:telemetry.span`:
+
+```
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+```
+
+Attach a handler the usual way:
+
+```elixir
+:telemetry.attach_many(
+  "ash-age-metrics",
+  [
+    [:ash_age, :create, :stop],
+    [:ash_age, :bulk_create, :stop],
+    [:ash_age, :read, :stop]
+  ],
+  fn _event, measurements, metadata, _config ->
+    # measurements: %{duration: native_time, monotonic_time: ...}
+    # metadata: value-free — see below
+  end,
+  nil
+)
+```
+
+**Metadata is value-free.** It carries schema identifiers, counts, booleans, and DSL enums only — **never** a primary-key or property value, an error reason, a Cypher/filter string, or the tenant-derived `graph` name:
+
+| Key | Ops | Meaning |
+|---|---|---|
+| `resource` | all (`:start`) | the Ash resource module |
+| `multitenancy` | all (`:start`) | `nil \| :attribute \| :context` (the strategy, not the tenant) |
+| `result` | all (`:stop`) | `:ok \| :error` |
+| `row_count` | read | rows returned |
+| `tenant?` | writes | whether the op was tenant-scoped (boolean) |
+| `stale?` | update/destroy | the 0-row not-found path (boolean) |
+| `batch_size`, `group_count` | bulk_create | rows in the batch / key-set groups |
+| `destination_count`, `direction`, `properties?` | create_edge/destroy_edge | edges written / edge direction / any properties set (`properties?` create only) |
+
+`:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`) — DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`. Its `kind`/`reason`/`stacktrace` are Erlang-standard telemetry-span data and are intentionally **outside** the value-free contract.
+
 ## Supported Capabilities
 
 - CRUD: `:read`, `:create`, `:update`, `:destroy`
@@ -248,3 +356,6 @@ so the rest of your suite still runs with no database:
 - Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
 - Boolean expressions: `and`, `or`, `not`
 - Sort, limit, offset
+- Bulk create: `UNWIND` grouping, order-preserving, atomic-per-batch
+- Edges: create/destroy via `AshAge.Changes.{CreateEdge, DestroyEdge}`, properties, `:both` direction
+- Telemetry: value-free `[:ash_age, <op>, :start | :stop | :exception]` spans on every operation

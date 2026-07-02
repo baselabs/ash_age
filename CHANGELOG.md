@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Data-layer telemetry.** Every operation emits a `:telemetry.span` — `[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]`:
+  - Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums only (`resource`, `multitenancy`, `tenant?`, `stale?`, `properties?`, `direction`, `row_count`, `batch_size`, `group_count`, `destination_count`, `result`). Never a PK/property value, error reason, Cypher/filter string, or the tenant-derived graph name.
+  - `AshAge.Telemetry` (a new dependency-free module) owns the metadata allowlist and raises on any off-allowlist key — the single enforcement point for the value-free contract.
+  - `:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`); DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`.
+  - `:telemetry` is now a declared runtime dependency (already resolved transitively via `ash`/`ecto`).
+- **Edge CRUD (S4).** Two Ash `Resource.Change` modules for creating and destroying graph edges:
+  - `AshAge.Changes.CreateEdge` — creates edges via `change {AshAge.Changes.CreateEdge, edge: :name, to: :arg}`, parameterized endpoint matching, optional edge properties (values from same-named action arguments, type-serialized as vertex attributes), atomic write inside the action's transaction (0-row match or DB error rolls the vertex back). Tenant-isolated: `:context` edges are same-graph fail-closed; `:attribute` edges scope both endpoints by the tenant discriminator.
+  - `AshAge.Changes.DestroyEdge` — destroys edges symmetrically, returning `Ash.Error.Changes.StaleRecord` on 0-row match (already gone or out of scope).
+  - Edge `properties` DSL option — a list of property keys, values sourced from same-named action arguments (declared argument type governs serialization: binary → `$age64$`-tagged base64, DateTime/Date → ISO8601). Unset properties are sparse (not written as null).
+  - `:both` direction — stored as `:outgoing`, readable via undirected Cypher match from either endpoint (contract for S5 traversal, pinned by integration test).
+  - Constraint: edge destinations must have a **single-attribute primary key**.
+  - Edge-label auto-creation: AGE auto-creates edge labels on first `CREATE` (verified live by probe P4); no provisioning required. Edge labels are provisioned like vertex labels: via `create_edge_label/2` in migrations or `:elabels` in `provision_tenant/3`.
+- **Bulk create (S4).** `can?(:bulk_create)` is now `true`. `Ash.bulk_create` emits `UNWIND $rows AS row CREATE (n:Label) SET n.key = row.key … RETURN n` per key-set group:
+  - Key-set grouping — rows are grouped by which attributes are present, so a row with an optional attribute missing is NOT null-filled to match other rows. Each group's `UNWIND` emits SET clauses for exactly that group's keys, preserving single-create's sparse stored shape.
+  - Order-preserving — with `return_records?: true` records come back mapped to input changesets via `bulk_create_index`; positional order matches input.
+  - Binary/date round-trip — values serialize identically to single-create (`$age64$`/ISO8601) and survive nested in the `$rows` parameter.
+  - Atomic-per-batch — one `UNWIND` statement, so any row's DB error fails the whole batch (`{:error, …}`, not `:partial_success`). On `transaction: :batch` (default, Ash wraps the batch), a later-group failure rolls back earlier groups; on `transaction: false` partial writes are possible (same contract single-create and AshPostgres carry). `:context` batches with a nil tenant fail closed.
 - **Multitenancy (S3).** Both Ash multitenancy strategies are now supported
   (`can?(:multitenancy) → true`):
   - **`:attribute`** — works through Ash core (reads inject a tenant filter,

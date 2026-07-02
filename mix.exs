@@ -57,6 +57,7 @@ defmodule AshAge.MixProject do
       {:ecto, "~> 3.10"},
       {:ecto_sql, "~> 3.10"},
       {:postgrex, ">= 0.0.0"},
+      {:telemetry, "~> 1.0"},
 
       # Dev/Test dependencies
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},

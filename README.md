@@ -107,6 +107,51 @@ defmodule MyApp.MyEntity do
 end
 ```
 
+### Edges
+
+Graph edges connect vertices. Define them in the `age` block:
+
+```elixir
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  
+  edge :related_to do
+    label :RELATES_TO
+    direction :outgoing
+    destination MyApp.RelatedEntity
+    properties [:weight]
+  end
+end
+```
+
+Create and destroy edges via changes:
+
+```elixir
+actions do
+  create :create_with_relation do
+    argument :related_id, :uuid
+    change {AshAge.Changes.CreateEdge, edge: :related_to, to: :related_id}
+  end
+  
+  destroy :remove_relation do
+    argument :related_id, :uuid
+    change {AshAge.Changes.DestroyEdge, edge: :related_to, to: :related_id}
+  end
+end
+```
+
+Edges are atomic with their source vertex write, tenant-isolated, and fail closed
+on endpoint not found. Edge property values come from same-named action arguments.
+See `usage-rules.md` for constraints (single-PK destinations) and direction semantics.
+
+### Bulk Create
+
+`Ash.bulk_create` is now supported via `UNWIND` grouping. Rows are grouped by
+their key-set so sparse rows don't null-fill to match others. Record order is
+preserved, and failures are atomic per batch. See `usage-rules.md` for transaction
+semantics and tenant handling.
+
 ### Multitenancy
 
 Both Ash strategies are supported. **`:attribute`** (one graph, tenant-filtered)
@@ -123,6 +168,28 @@ AshAge.Migration.provision_tenant(MyApp.Repo, graph, vlabels: ["Entity"])
 Tenant/policy filters are enforced on `update`/`destroy` (not just reads). See
 `usage-rules.md` for the graph-name encoder, the `tenant_graph` MFA override, and
 strategy trade-offs.
+
+### Telemetry
+
+Every data-layer operation emits a `:telemetry.span`:
+
+```
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+```
+
+```elixir
+:telemetry.attach(
+  "ash-age",
+  [:ash_age, :create, :stop],
+  fn _event, %{duration: d}, meta, _ -> IO.inspect({d, meta.result}) end,
+  nil
+)
+```
+
+Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums
+only (`resource`, `multitenancy`, `tenant?`, `result`, `row_count`, `direction`,
+…); never a PK/property value, error reason, Cypher, or the tenant-derived graph
+name. See `usage-rules.md` for the full per-op metadata catalog.
 
 ## Mix Tasks
 
