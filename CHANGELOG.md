@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Traversal (S5).** `AshAge.ManualRelationships.Traverse` — bounded variable-length
+  graph traversal exposed as an Ash manual relationship:
+  ```elixir
+  has_many :descendants, MyApp.Node do
+    manual {AshAge.ManualRelationships.Traverse,
+            edge_label: :LINK, direction: :outgoing, min_depth: 1, max_depth: 3}
+  end
+  ```
+  - Returns a source-primary-key-keyed map of materialized destination records,
+    **deduped per source** (in Elixir, by destination PK — no SQL `DISTINCT`, so
+    `row_count` telemetry stays a genuine pre-dedup fan-out signal) and
+    **cardinality-aware** (`has_one` → one record, `has_many` → list).
+  - All three directions — `:outgoing`, `:incoming`, and undirected `:both`.
+  - `max_depth` is **required** and bounded (integer `>= 1`); an unbounded `*` is
+    forbidden. `min_depth` defaults to `1`. Both single and composite primary keys
+    on source and destination are supported.
+  - **Fail-closed tenancy.** `:context` resolves the per-tenant graph (nil/blank
+    tenant fails closed); `:attribute` scopes **every node on the path** to
+    `$tenant` via a **fixed-length UNION expansion** — one basic `MATCH` branch per
+    length in `min_depth..max_depth`, each node AND-scoped to the discriminator,
+    `UNION ALL`-joined. (This AGE build's Cypher parser rejects the
+    `ALL(n IN nodes(p) WHERE …)` per-hop predicate, so the UNION expansion is the
+    shipped mechanism — see probes below.)
+  - Emits a value-free `:traverse` telemetry span with `destination_count`
+    (post-dedup), `row_count` (pre-dedup fan-out), `depth` (`max_depth`),
+    `direction`, and `result`.
+- **Raw Cypher (S5).** `AshAge.cypher(repo, graph, cypher, params \\ %{}, return_types)`
+  — a parameterized escape hatch for queries the Ash DSL cannot express:
+  ```elixir
+  AshAge.cypher(MyApp.Repo, "my_graph",
+    "MATCH (n:Person)-[:KNOWS*1..2]->(m) WHERE n.id = $id RETURN m",
+    %{"id" => person_id}, [{:m, :agtype}])
+  #=> {:ok, [%{m: %AshAge.Type.Vertex{...}}, ...]}
+  ```
+  - Values reach AGE **only as `$` parameters**; the `graph` name is
+    `validate_identifier!`-checked and a `$$` break-out in the body is rejected.
+  - Returns `{:ok, [%{column_atom => decoded}]}` (each cell a
+    `%AshAge.Type.Vertex{}` / `Edge{}` / `Path{}` or a scalar) or
+    `{:error, %AshAge.Errors.QueryFailed{}}`.
+  - **Decode boundary:** a bare agtype aggregate (`collect(n)`, `{k: v}`) is returned
+    as its **raw agtype string** — aggregate decoding is out of scope; use `UNWIND`.
+  - **Tenancy is explicit:** the `graph` you pass IS the isolation boundary;
+    `cypher/5` opens no transaction of its own (wrap in your own tenant-GUC
+    transaction for RLS defense-in-depth).
+  - Emits a value-free `:cypher` telemetry span with `row_count` and `result`; `:depth`
+    was added to the telemetry value-free metadata allowlist this slice.
+- Feasibility probes verifying AGE 1.6.0 behavior this slice depends on:
+  `UNWIND` + variable-length `MATCH` (P-S5a = supported); a bound path variable with
+  `ALL(n IN nodes(p) WHERE …)` (P-S5b = **rejected** by this AGE build); the
+  fixed-length `UNION ALL` expansion as its equivalent (P-S5b-UNION = supported);
+  and `IN $param` list binds (P-S5c = supported).
 - **Data-layer telemetry.** Every operation emits a `:telemetry.span` — `[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]`:
   - Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums only (`resource`, `multitenancy`, `tenant?`, `stale?`, `properties?`, `direction`, `row_count`, `batch_size`, `group_count`, `destination_count`, `result`). Never a PK/property value, error reason, Cypher/filter string, or the tenant-derived graph name.
   - `AshAge.Telemetry` (a new dependency-free module) owns the metadata allowlist and raises on any off-allowlist key — the single enforcement point for the value-free contract.
@@ -100,6 +151,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`In` filter handles Ash's `MapSet` right side (S5).** `AshAge.Query.Filter`
+  now normalizes the `MapSet` that `Ash.Query.Operator.In` stores as its right side
+  to a list before emitting `n.attr IN $param`, so `filter(x in ^list)` — and nested
+  loads that flow through traversal — work. Previously the `MapSet` shape fell through
+  to `{:error, UnsupportedFilter}`.
+- **`AshAge.Type.Path` decodes AGE's inline-tagged path wire format (S5).** A
+  `::path` body is an array of individually `::vertex`/`::edge`-tagged agtype
+  elements, not plain JSON; the decoder now splits at top-level commas
+  (depth- and string-literal-aware) and recursively decodes each element.
+  Previously it fed the body to `Jason.decode!` and raised `Jason.DecodeError`
+  (first exercised by `cypher/5` returning a path, `RETURN p`).
 - `AshAge.DataLayer.update/2` no longer risks a parameter collision when a resource
   has an attribute literally named `match_id`; the internal match parameter now uses
   a name guaranteed not to clash with a changed attribute.

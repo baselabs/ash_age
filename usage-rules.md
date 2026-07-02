@@ -293,6 +293,78 @@ A 0-row destroy (edge already gone or out of scope) returns `Ash.Error.Changes.S
 
 **Atomicity:** Edge creation/destruction runs inside the action's transaction via `after_action`; an edge write failure rolls the vertex back.
 
+## Traversal
+
+Bounded variable-length graph traversal is exposed as an Ash **manual relationship**
+via `AshAge.ManualRelationships.Traverse`:
+
+```elixir
+has_many :descendants, MyApp.Node do
+  manual {AshAge.ManualRelationships.Traverse,
+          edge_label: :LINK,
+          direction: :outgoing,   # :outgoing | :incoming | :both
+          min_depth: 1,           # optional, defaults to 1
+          max_depth: 3}           # REQUIRED, integer >= 1
+end
+```
+
+**Options:**
+- `edge_label` (required) — the edge label to traverse (identifier-validated).
+- `direction` — `:outgoing` (default), `:incoming`, or `:both` (undirected match).
+- `min_depth` — integer `>= 1`, `<= max_depth` (defaults to `1`).
+- `max_depth` (required) — integer `>= 1`. **Unbounded `*` is forbidden** — every
+  traversal is depth-bounded.
+
+**Result shape:** load produces a source-PK-keyed map of materialized destination
+records. Destinations are **deduped per source** (in Elixir, by destination primary
+key — no SQL `DISTINCT`) and **cardinality-aware**: a `has_one` manual relationship
+yields a single record per source, `has_many` yields a list. Works with both
+**single and composite primary keys** on source and destination.
+
+**Tenancy is FAIL-CLOSED:**
+- `:context` — resolves the per-tenant graph; a nil/blank tenant fails closed.
+- `:attribute` — scopes **every node on the path** to `$tenant`. Because this AGE
+  build's Cypher parser rejects the `ALL(n IN nodes(p) WHERE …)` per-hop predicate,
+  attribute scoping is implemented as a **fixed-length UNION expansion**: one basic
+  `MATCH` branch per length in `min_depth..max_depth`, each binding every node
+  (`a`, intermediates, `b`) and AND-ing `<node>.<attr> = $tenant`, joined with
+  `UNION ALL`. A nil/blank tenant fails closed.
+
+Values reach Cypher only as `$` parameters; every identifier is validated.
+
+The `:traverse` telemetry span carries `destination_count` (post-dedup),
+`row_count` (pre-dedup fan-out — genuinely larger than `destination_count` when
+multiple paths reach the same destination), `depth` (`max_depth`), and `result`.
+
+## Raw Cypher
+
+For graph queries Ash's DSL cannot express, `AshAge.cypher/5` is a parameterized
+escape hatch:
+
+```elixir
+AshAge.cypher(MyApp.Repo, "my_graph",
+  "MATCH (n:Person)-[:KNOWS*1..2]->(m) WHERE n.id = $id RETURN m",
+  %{"id" => person_id},
+  [{:m, :agtype}])
+#=> {:ok, [%{m: %AshAge.Type.Vertex{...}}, ...]}
+```
+
+**Signature:** `AshAge.cypher(repo, graph, cypher, params \\ %{}, return_types)`.
+
+**Contract:**
+- **Values reach AGE only as `$` parameters** (`params`) — the `cypher` body is
+  yours to write. The `graph` name is `validate_identifier!`-checked, and a `$$`
+  break-out in the body is rejected.
+- **Return:** `{:ok, [row_map]}` (each `row_map` is `%{column_atom => decoded}`,
+  keyed by the atoms in `return_types`) or `{:error, %AshAge.Errors.QueryFailed{}}`.
+  Each cell decodes to a `%AshAge.Type.Vertex{}` / `Edge{}` / `Path{}` or a scalar.
+- **Aggregate boundary:** a bare agtype **aggregate** (`collect(n)`, a map literal
+  `{k: v}`) is returned as its **raw agtype string** — aggregate decoding is out of
+  scope. Use Cypher `UNWIND` to project collections into individual rows.
+- **Tenancy is explicit:** the `graph` you pass IS the isolation boundary. `cypher/5`
+  opens no transaction of its own; for RLS defense-in-depth, call it inside your own
+  tenant-GUC (`SET LOCAL`) transaction.
+
 ## Bulk Create
 
 `can?(:bulk_create)` is now `true`. `Ash.bulk_create` emits a single `UNWIND $rows AS row CREATE (n:Label) SET n.key = row.key … RETURN n` per key-set group.
@@ -310,7 +382,7 @@ A 0-row destroy (edge already gone or out of scope) returns `Ash.Error.Changes.S
 Every data-layer operation emits a `:telemetry.span`:
 
 ```
-[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
 ```
 
 Attach a handler the usual way:
@@ -343,6 +415,8 @@ Attach a handler the usual way:
 | `stale?` | update/destroy | the 0-row not-found path (boolean) |
 | `batch_size`, `group_count` | bulk_create | rows in the batch / key-set groups |
 | `destination_count`, `direction`, `properties?` | create_edge/destroy_edge | edges written / edge direction / any properties set (`properties?` create only) |
+| `destination_count`, `row_count`, `depth`, `direction` | traverse | destinations (post-dedup) / rows (pre-dedup fan-out) / `max_depth` / traversal direction |
+| `row_count` | cypher | rows returned |
 
 `:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`) — DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`. Its `kind`/`reason`/`stacktrace` are Erlang-standard telemetry-span data and are intentionally **outside** the value-free contract.
 
@@ -358,4 +432,6 @@ Attach a handler the usual way:
 - Sort, limit, offset
 - Bulk create: `UNWIND` grouping, order-preserving, atomic-per-batch
 - Edges: create/destroy via `AshAge.Changes.{CreateEdge, DestroyEdge}`, properties, `:both` direction
+- Traversal: bounded variable-length via `AshAge.ManualRelationships.Traverse` (all directions incl. `:both`, per-source dedup, cardinality-aware, fail-closed tenancy)
+- Raw Cypher: `AshAge.cypher/5` parameterized escape hatch (decoded rows, explicit-graph tenancy)
 - Telemetry: value-free `[:ash_age, <op>, :start | :stop | :exception]` spans on every operation

@@ -145,6 +145,44 @@ Edges are atomic with their source vertex write, tenant-isolated, and fail close
 on endpoint not found. Edge property values come from same-named action arguments.
 See `usage-rules.md` for constraints (single-PK destinations) and direction semantics.
 
+### Traversal
+
+Bounded variable-length graph traversal is an Ash manual relationship via
+`AshAge.ManualRelationships.Traverse`:
+
+```elixir
+has_many :descendants, MyApp.Node do
+  manual {AshAge.ManualRelationships.Traverse,
+          edge_label: :LINK, direction: :outgoing, min_depth: 1, max_depth: 3}
+end
+```
+
+`direction` may be `:outgoing`, `:incoming`, or `:both` (undirected). `max_depth`
+is required and bounded (unbounded `*` is forbidden). Loading yields a source-PK-keyed
+map of destination records, deduped per source and cardinality-aware, with single or
+composite primary keys. Tenancy is fail-closed: `:context` scopes to the per-tenant
+graph, and `:attribute` scopes every node on the path by the tenant discriminator (via
+a fixed-length UNION expansion, since this AGE build lacks `ALL(nodes(p))`). See
+`usage-rules.md` for options and telemetry.
+
+### Raw Cypher
+
+For queries the DSL can't express, `AshAge.cypher/5` runs parameterized Cypher and
+decodes each cell:
+
+```elixir
+AshAge.cypher(MyApp.Repo, "my_graph",
+  "MATCH (n:Person)-[:KNOWS*1..2]->(m) WHERE n.id = $id RETURN m",
+  %{"id" => person_id},
+  [{:m, :agtype}])
+#=> {:ok, [%{m: %AshAge.Type.Vertex{...}}, ...]}
+```
+
+Values reach AGE only as `$` params; the `graph` name is identifier-checked. Each cell
+decodes to a `%Vertex{}`/`Edge{}`/`Path{}` or a scalar; a bare aggregate (`collect(n)`)
+returns as its raw agtype string (use `UNWIND`). The `graph` you pass is the tenant
+isolation boundary. See `usage-rules.md` for the full contract.
+
 ### Bulk Create
 
 `Ash.bulk_create` is now supported via `UNWIND` grouping. Rows are grouped by
@@ -174,7 +212,7 @@ strategy trade-offs.
 Every data-layer operation emits a `:telemetry.span`:
 
 ```
-[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge, :start | :stop | :exception]
+[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
 ```
 
 ```elixir
