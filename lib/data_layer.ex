@@ -129,11 +129,6 @@ defmodule AshAge.DataLayer do
       AshAge.DataLayer.Verifiers.ValidateEdge
     ]
 
-  # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
-  # non-UTF-8 bytes (e.g. AshCloak ciphertext) survive Jason.encode!, and decoded
-  # back by AshAge.Type.Cast on read.
-  @binary_types [:binary, Ash.Type.Binary]
-
   # === Capability Declarations ===
 
   @impl true
@@ -766,19 +761,10 @@ defmodule AshAge.DataLayer do
   end
 
   @doc false
-  # Serializes an attribute value for AGE storage. Binary-typed values are
-  # tagged + base64-encoded (via `AshAge.Type.Cast.encode_binary/1`, the single
-  # source of truth for the wire format) so raw (non-UTF-8) bytes survive
-  # `Jason.encode!` and read-back is deterministic; the branch is type-gated so
-  # plaintext `:string` values (also Elixir binaries) are untouched.
-  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
-  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
-  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
-
-  def serialize_value(value, type) when is_binary(value) and type in @binary_types,
-    do: Cast.encode_binary(value)
-
-  def serialize_value(value, _type), do: value
+  # Delegates to AshAge.Type.Cast.serialize_value/2 — the encoder moved to Cast
+  # (level 2) in S7 so Query.Filter (level 3) can share it. Kept as a shim so
+  # existing callers keep their entry point.
+  def serialize_value(value, type), do: Cast.serialize_value(value, type)
 
   # Resolves the AGE graph for a bulk batch. An empty batch has no changeset to
   # read `to_tenant` from, so there is nothing to write and the base graph is

@@ -120,4 +120,63 @@ defmodule AshAge.Type.CastTest do
       assert attrs.payload == "not base64 !!!"
     end
   end
+
+  describe "coerce_value/2 tag-prefix gating" do
+    test "a $age64$-prefixed string on a NON-binary type returns verbatim (never guess-decoded)" do
+      literal = "$age64$" <> Base.encode64("x")
+      assert Cast.coerce_value(literal, :string) == literal
+      assert Cast.coerce_value(literal, Ash.Type.String) == literal
+    end
+
+    test "a tagged value with corrupt base64 on a binary type returns as stored" do
+      corrupt = "$age64$not-valid!!!"
+      assert Cast.coerce_value(corrupt, Ash.Type.Binary) == corrupt
+    end
+  end
+
+  describe "binary_storage?/2" do
+    test "true for :binary, Ash.Type.Binary, and binary-storage wrappers" do
+      assert Cast.binary_storage?(:binary)
+      assert Cast.binary_storage?(Ash.Type.Binary)
+      # storage_type resolution, not literal-list membership (spec D6/C3)
+      assert Cast.binary_storage?(Ash.Type.UrlEncodedBinary)
+    end
+
+    test "resolves Ash.Type.NewType wrappers to their subtype's storage" do
+      defmodule WrappedBinary do
+        use Ash.Type.NewType, subtype_of: :binary
+      end
+
+      assert Cast.binary_storage?(WrappedBinary)
+    end
+
+    test "false for nil, non-binary types, non-type atoms, and arrays" do
+      refute Cast.binary_storage?(nil)
+      refute Cast.binary_storage?(:string)
+      refute Cast.binary_storage?(Ash.Type.String)
+      refute Cast.binary_storage?(:not_a_type_at_all)
+      refute Cast.binary_storage?({:array, Ash.Type.Binary})
+    end
+  end
+
+  describe "serialize_value/2 (moved from DataLayer)" do
+    test "tags binary-storage values, passes strings through" do
+      raw = <<0, 255, 1>>
+      assert "$age64$" <> _ = Cast.serialize_value(raw, Ash.Type.Binary)
+      assert Cast.serialize_value("plain", Ash.Type.String) == "plain"
+      assert Cast.serialize_value("plain", nil) == "plain"
+    end
+
+    test "tags values of binary-storage wrapper types (UrlEncodedBinary)" do
+      raw = <<0, 255, 1>>
+      tagged = Cast.serialize_value(raw, Ash.Type.UrlEncodedBinary)
+      assert "$age64$" <> _ = tagged
+      # and the decode gate accepts the same predicate
+      assert Cast.coerce_value(tagged, Ash.Type.UrlEncodedBinary) == raw
+    end
+
+    test "dates serialize to ISO8601 (unchanged behavior)" do
+      assert Cast.serialize_value(~D[2026-07-02], Ash.Type.Date) == "2026-07-02"
+    end
+  end
 end

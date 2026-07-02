@@ -24,11 +24,6 @@ defmodule AshAge.Type.Cast do
     Ash.Type.NaiveDatetime
   ]
 
-  @binary_types [
-    :binary,
-    Ash.Type.Binary
-  ]
-
   # Wire-format tag prefixing every ash_age-encoded binary value. Its purpose is
   # to make read-back deterministic: a stored string carries the tag iff ash_age
   # base64-encoded it, so decoding is never a guess. Legacy or externally-written
@@ -40,9 +35,40 @@ defmodule AshAge.Type.Cast do
 
   @doc false
   # Encodes a raw binary value for AGE storage: tag + base64. Used by
-  # AshAge.DataLayer.serialize_value/2 on the write path (the encode counterpart
-  # of the `@binary_tag`-prefixed coerce clause below).
+  # serialize_value/2 below on the write path (the encode counterpart of the
+  # `@binary_tag`-prefixed coerce clause below).
   def encode_binary(value) when is_binary(value), do: @binary_tag <> Base.encode64(value)
+
+  @doc false
+  # TRUE when `type` stores as raw bytes (storage type `:binary`), resolving
+  # builtin aliases (`:binary`) and `Ash.Type.NewType` wrappers exactly the way
+  # Ash itself keys sort capability (`Ash.Type.storage_type/2`). This is the ONE
+  # binary-type predicate — the encoder, the decode gate, the filter cast, and
+  # the classification verifiers all key off it, so a type can never be encoded
+  # by one path and missed by another. `nil`/unknown types → false.
+  def binary_storage?(type, constraints \\ [])
+  def binary_storage?(nil, _constraints), do: false
+
+  def binary_storage?(type, constraints) do
+    resolved = Ash.Type.get_type(type)
+    Ash.Type.ash_type?(resolved) and Ash.Type.storage_type(resolved, constraints) == :binary
+  end
+
+  @doc false
+  # Serializes an attribute/argument value for AGE storage or match-param use.
+  # Binary-storage values are tagged + base64-encoded so raw bytes survive
+  # `Jason.encode!` and read-back is deterministic; date/datetime values become
+  # ISO8601; everything else passes through. Moved from AshAge.DataLayer in S7
+  # so level-3 modules (Query.Filter) can call it without importing level 5.
+  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
+  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
+  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
+
+  def serialize_value(value, type) when is_binary(value) do
+    if binary_storage?(type), do: encode_binary(value), else: value
+  end
+
+  def serialize_value(value, _type), do: value
 
   @doc """
   Converts a vertex to a map of resource attributes.
@@ -108,21 +134,24 @@ defmodule AshAge.Type.Cast do
     coerce_naive_datetime(value)
   end
 
-  def coerce_value(@binary_tag <> encoded, type) when type in @binary_types do
-    case Base.decode64(encoded) do
-      {:ok, decoded} -> decoded
-      # A tagged value that fails to decode is corrupt/unexpected; return it as
-      # stored rather than crash the read path.
-      :error -> @binary_tag <> encoded
+  def coerce_value(@binary_tag <> encoded = original, type) do
+    if binary_storage?(type) do
+      case Base.decode64(encoded) do
+        {:ok, decoded} -> decoded
+        # A tagged value that fails to decode is corrupt/unexpected; return it
+        # as stored rather than crash the read path.
+        :error -> original
+      end
+    else
+      original
     end
   end
 
-  # Untagged binary-typed value: legacy (pre-tag) or externally written. Return
-  # it verbatim — never guess-decode a string that merely looks like base64.
-  def coerce_value(value, type) when is_binary(value) and type in @binary_types do
-    value
-  end
-
+  # Untagged binary-storage values (legacy/pre-tag or externally written) fall
+  # through to the identity clause below and are returned verbatim — READ-ONLY
+  # grace: as of S7 the match paths (filter/PK/traverse/edge) send the tagged
+  # form, so untagged rows are readable but not matchable through Ash. Never
+  # guess-decode a string that merely looks like base64.
   def coerce_value(value, _type), do: value
 
   defp coerce_date(value) do
