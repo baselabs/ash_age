@@ -142,6 +142,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AshAge.Cypher.Parameterized.build/*` now reject any Cypher body containing a
     `$$` sequence — a final centralized guard against breaking out of AGE's
     dollar-quoted literal.
+  - `AshAge.Cypher.Parameterized` now validates `return_types` column names and
+    types as AGE identifiers before interpolating them into the outer `AS (...)`
+    record clause (which sits **outside** AGE's `$$` dollar-quote). On the public
+    `AshAge.cypher/5` surface these are caller-controlled, so an unvalidated
+    column name was a SQL-injection vector (S5 closeout).
+  - The `$$`-body rejection no longer echoes the Cypher body in its
+    `ArgumentError` message; that raise bypasses the redaction boundary, so a body
+    carrying an interpolated value would otherwise leak it into logs (S5 closeout).
 - Error messages no longer leak filtered values or database row contents.
   `AshAge.Errors.UnsupportedFilter` now reports only the operator and referenced
   field name (never the filtered value). `CreateFailed`/`QueryFailed`/`UpdateFailed`
@@ -151,6 +159,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`:attribute` traversal scopes off the source strategy too (S5 closeout).**
+  `AshAge.ManualRelationships.Traverse` now applies per-node tenant scoping when
+  **either** the source or the destination resource is `:attribute`-multitenant.
+  Previously it keyed only on the destination, so a source-`:attribute` /
+  non-`:attribute`-destination traversal ran an **unscoped** query against the
+  shared multi-tenant graph (fail-open); it is now fail-closed on that config too.
+- **Date/DateTime source primary keys associate correctly in traversal (S5
+  closeout).** The traversal F3 source key now coerces the decoded agtype scalar
+  to the source attribute type (via `AshAge.Type.Cast.coerce_value/2`), so a
+  `:date`/`:utc_datetime`/`:naive_datetime` primary key (stored as an ISO8601
+  string, held as a struct in the record) matches Ash's manual-result lookup.
+  Previously the raw string key never matched and the source was **silently
+  dropped** (returned `[]`/`nil`). UUID/integer/string PKs were unaffected.
 - **`In` filter handles Ash's `MapSet` right side (S5).** `AshAge.Query.Filter`
   now normalizes the `MapSet` that `Ash.Query.Operator.In` stores as its right side
   to a list before emitting `n.attr IN $param`, so `filter(x in ^list)` — and nested

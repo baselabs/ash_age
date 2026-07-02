@@ -323,12 +323,17 @@ yields a single record per source, `has_many` yields a list. Works with both
 
 **Tenancy is FAIL-CLOSED:**
 - `:context` — resolves the per-tenant graph; a nil/blank tenant fails closed.
-- `:attribute` — scopes **every node on the path** to `$tenant`. Because this AGE
-  build's Cypher parser rejects the `ALL(n IN nodes(p) WHERE …)` per-hop predicate,
-  attribute scoping is implemented as a **fixed-length UNION expansion**: one basic
-  `MATCH` branch per length in `min_depth..max_depth`, each binding every node
-  (`a`, intermediates, `b`) and AND-ing `<node>.<attr> = $tenant`, joined with
-  `UNION ALL`. A nil/blank tenant fails closed.
+- `:attribute` — scopes **every node on the path** to `$tenant`. Scoping fires when
+  **either** the source **or** the destination resource is `:attribute`-multitenant
+  (a source-`:attribute` traversal to a non-tenant destination is scoped, never run
+  unscoped). Because this AGE build's Cypher parser rejects the
+  `ALL(n IN nodes(p) WHERE …)` per-hop predicate, attribute scoping is implemented
+  as a **fixed-length UNION expansion**: one basic `MATCH` branch per length in
+  `min_depth..max_depth`, each binding every node (`a`, intermediates, `b`) and
+  AND-ing `<node>.<attr> = $tenant`, joined with `UNION ALL`. A nil/blank tenant
+  fails closed. **Cost note:** the expansion runs one branch per length in
+  `min_depth..max_depth` (each re-`UNWIND`ing `$ids`), so a wide `:attribute` depth
+  span multiplies the per-query work by the branch count — keep the span tight.
 
 Values reach Cypher only as `$` parameters; every identifier is validated.
 
