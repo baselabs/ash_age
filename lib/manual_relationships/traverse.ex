@@ -104,7 +104,7 @@ defmodule AshAge.ManualRelationships.Traverse do
          {edge_label, direction, min_depth, max_depth}
        ) do
     with {:ok, graph} <- resolve_graph(source, dest, context.tenant),
-         {:ok, tenant_attr, tenant} <- resolve_tenant(dest, context.tenant) do
+         {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant) do
       src_pkey = Ash.Resource.Info.primary_key(source)
       ids = Enum.uniq(Enum.map(records, fn r -> stringify_keys(Map.take(r, src_pkey)) end))
 
@@ -166,14 +166,26 @@ defmodule AshAge.ManualRelationships.Traverse do
     end
   end
 
-  defp resolve_tenant(dest, tenant) do
-    if strategy(dest) == :attribute do
-      case blank_tenant(tenant) do
-        :blank -> {:error, tenant_required()}
-        :ok -> {:ok, to_string(Ash.Resource.Info.multitenancy_attribute(dest)), tenant}
-      end
-    else
-      {:ok, nil, nil}
+  # Per-hop scoping fires when EITHER endpoint is :attribute-multitenant (spec
+  # §5.1 step 6 / §5.2: "if source/dest strategy :attribute … never omit the
+  # filter"). Keying on `dest` alone left a source-:attribute / dest-non-:attribute
+  # config unscoped — an unscoped read of the shared multi-tenant graph. Prefer
+  # `dest`'s discriminator when dest is :attribute (the self-referential norm),
+  # else the source's; every node on the path is scoped to it, so a non-tenant
+  # dest node (lacking the attribute) is excluded — fail-closed, not fail-open.
+  # A blank/nil tenant fails closed.
+  defp resolve_tenant(source, dest, tenant) do
+    cond do
+      strategy(dest) == :attribute -> attribute_scope(dest, tenant)
+      strategy(source) == :attribute -> attribute_scope(source, tenant)
+      true -> {:ok, nil, nil}
+    end
+  end
+
+  defp attribute_scope(resource, tenant) do
+    case blank_tenant(tenant) do
+      :blank -> {:error, tenant_required()}
+      :ok -> {:ok, to_string(Ash.Resource.Info.multitenancy_attribute(resource)), tenant}
     end
   end
 

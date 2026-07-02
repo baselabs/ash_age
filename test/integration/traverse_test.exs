@@ -184,6 +184,74 @@ defmodule AshAge.Integration.TraverseTest do
     end
   end
 
+  # --- mixed multitenancy strategies: :attribute SOURCE -> non-tenant DEST ---
+  # GNode is not multitenant but carries a plain `org_id` discriminator column
+  # (same name as SNode's multitenancy attribute). Proves per-hop scoping fires
+  # off the SOURCE strategy even when the DEST is not :attribute — a config that
+  # was read UNSCOPED before the fix (resolve_tenant keyed on dest alone).
+
+  defmodule GNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_s5_mixed)
+      repo(AshAge.TestRepo)
+      label(:GNode)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+      attribute(:org_id, :uuid, public?: true)
+      attribute(:name, :string, public?: true)
+    end
+
+    actions do
+      default_accept([:org_id, :name])
+      defaults([:read, :create, :destroy])
+    end
+  end
+
+  defmodule SNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_s5_mixed)
+      repo(AshAge.TestRepo)
+      label(:SNode)
+    end
+
+    multitenancy do
+      strategy(:attribute)
+      attribute(:org_id)
+    end
+
+    attributes do
+      uuid_primary_key(:id)
+      attribute(:org_id, :uuid, allow_nil?: false, public?: true)
+      attribute(:name, :string, public?: true)
+    end
+
+    relationships do
+      has_many :globals, GNode do
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :LINK, direction: :outgoing, max_depth: 1}
+        )
+      end
+    end
+
+    actions do
+      default_accept([:name])
+      defaults([:read, :create, :destroy])
+    end
+  end
+
   @tenant_a "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
   @tenant_b "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
   @org_a "11111111-1111-1111-1111-111111111111"
@@ -615,6 +683,75 @@ defmodule AshAge.Integration.TraverseTest do
                "expected our QueryFailed tenant-required guard, got: #{inspect(result)}"
       end,
       vlabels: ["TNode"],
+      elabels: ["LINK"]
+    )
+  end
+
+  # ===================================================================
+  # Test 12 — :attribute POSITIVE control (builder UNION-ALL actually reaches)
+  # ===================================================================
+  # Test 8's cross-tenant tripwire asserts `reachable == []`; on its own that
+  # cannot distinguish working per-node scoping from a wholly broken :attribute
+  # path. This positive control proves the builder-emitted UNION-ALL query DOES
+  # reach in-tenant nodes at every depth, so test 8's `[]` is a genuine exclusion.
+  test ":attribute in-tenant traversal reaches every node at depth (builder positive control)" do
+    with_graph(
+      "itest_s5_attr",
+      fn ->
+        a = create!(TNode, %{name: "a"}, tenant: @org_a)
+        b = create!(TNode, %{name: "b"}, tenant: @org_a)
+        c = create!(TNode, %{name: "c"}, tenant: @org_a)
+
+        link("itest_s5_attr", "TNode", a.id, b.id)
+        link("itest_s5_attr", "TNode", b.id, c.id)
+
+        {:ok, [loaded]} = Ash.load([a], :reachable, tenant: @org_a)
+        assert loaded.reachable |> Enum.map(& &1.name) |> Enum.sort() == ["b", "c"]
+      end,
+      vlabels: ["TNode"],
+      elabels: ["LINK"]
+    )
+  end
+
+  # ===================================================================
+  # Test 13 — mixed strategies: :attribute SOURCE scopes a non-tenant DEST
+  # ===================================================================
+  # SOURCE (SNode) is :attribute; DEST (GNode) is NOT multitenant but carries a
+  # plain `org_id` discriminator. Before the fix, resolve_tenant keyed on dest
+  # alone, so this ran UNSCOPED and returned g2 (the other tenant's row). After
+  # the fix, per-hop scoping fires off the SOURCE strategy: g1 (same discriminator
+  # as tenant A) is returned, g2 is excluded. Non-vacuous both ways — g1 present
+  # (proves the query reaches) AND g2 absent (proves the scope fires).
+  test "mixed strategies: an :attribute source scopes a non-:attribute destination" do
+    with_graph(
+      "itest_s5_mixed",
+      fn ->
+        a = create!(SNode, %{name: "a"}, tenant: @org_a)
+        g1 = create!(GNode, %{name: "g1", org_id: @org_a})
+        g2 = create!(GNode, %{name: "g2", org_id: @org_b})
+
+        # a -> g1 (same discriminator) and a -> g2 (other tenant's discriminator).
+        {:ok, _} =
+          cypher_query(
+            "itest_s5_mixed",
+            "MATCH (x:SNode {id: $a}), (y:GNode {id: $g}) CREATE (x)-[:LINK]->(y) RETURN 1",
+            %{"a" => a.id, "g" => g1.id}
+          )
+
+        {:ok, _} =
+          cypher_query(
+            "itest_s5_mixed",
+            "MATCH (x:SNode {id: $a}), (y:GNode {id: $g}) CREATE (x)-[:LINK]->(y) RETURN 1",
+            %{"a" => a.id, "g" => g2.id}
+          )
+
+        {:ok, [loaded]} = Ash.load([a], :globals, tenant: @org_a)
+        names = loaded.globals |> Enum.map(& &1.name) |> Enum.sort()
+
+        # g1 reached (query works), g2 excluded (source-driven scope fires).
+        assert names == ["g1"]
+      end,
+      vlabels: ["SNode", "GNode"],
       elabels: ["LINK"]
     )
   end
