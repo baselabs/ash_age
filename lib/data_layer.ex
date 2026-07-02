@@ -136,7 +136,8 @@ defmodule AshAge.DataLayer do
     ],
     verifiers: [
       AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
-      AshAge.DataLayer.Verifiers.ValidateEdge
+      AshAge.DataLayer.Verifiers.ValidateEdge,
+      AshAge.DataLayer.Verifiers.ValidateSensitive
     ]
 
   # === Capability Declarations ===
