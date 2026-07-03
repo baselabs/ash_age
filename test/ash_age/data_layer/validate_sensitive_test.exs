@@ -3,32 +3,36 @@ defmodule AshAge.DataLayer.ValidateSensitiveTest do
 
   alias AshAge.DataLayer.Info
 
-  import Spark.Test, only: [assert_dsl_error: 2]
+  import Spark.Test, only: [assert_dsl_error: 2, refute_dsl_errors: 1]
 
   # POSITIVE CONTROL: a conforming classification compiles (binary attr,
-  # skipped attr, binary-typed edge-property argument).
+  # skipped attr, binary-typed edge-property argument). refute_dsl_errors is
+  # load-bearing: Spark surfaces verifier errors as compiler WARNINGS, so a
+  # bare defmodule would still compile if the verifier over-fired.
   test "a conforming sensitive declaration compiles" do
-    defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.Good do
-      use Ash.Resource,
-        domain: AshAge.TestDomain,
-        validate_domain_inclusion?: false,
-        data_layer: AshAge.DataLayer
+    refute_dsl_errors do
+      defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.Good do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
 
-      age do
-        graph(:vs_good)
-        repo(AshAge.TestRepo)
-        skip([:derived])
-        sensitive([:ssn, :derived])
-      end
+        age do
+          graph(:vs_good)
+          repo(AshAge.TestRepo)
+          skip([:derived])
+          sensitive([:ssn, :derived])
+        end
 
-      attributes do
-        uuid_primary_key(:id)
-        attribute(:ssn, :binary, public?: true)
-        attribute(:derived, :string, public?: true)
-      end
+        attributes do
+          uuid_primary_key(:id)
+          attribute(:ssn, :binary, public?: true)
+          attribute(:derived, :string, public?: true)
+        end
 
-      actions do
-        defaults([:read])
+        actions do
+          defaults([:read])
+        end
       end
     end
 
@@ -200,38 +204,40 @@ defmodule AshAge.DataLayer.ValidateSensitiveTest do
   end
 
   test "R4 passes when the same-named argument is binary-typed" do
-    defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.EdgeOk do
-      use Ash.Resource,
-        domain: AshAge.TestDomain,
-        validate_domain_inclusion?: false,
-        data_layer: AshAge.DataLayer
+    refute_dsl_errors do
+      defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.EdgeOk do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
 
-      age do
-        graph(:vs_edge_ok)
-        repo(AshAge.TestRepo)
-        sensitive([:ssn])
+        age do
+          graph(:vs_edge_ok)
+          repo(AshAge.TestRepo)
+          sensitive([:ssn])
 
-        edge :rel do
-          label(:REL)
-          destination(__MODULE__)
-          properties([:ssn])
+          edge :rel do
+            label(:REL)
+            destination(__MODULE__)
+            properties([:ssn])
+          end
         end
-      end
 
-      attributes do
-        uuid_primary_key(:id)
-        attribute(:ssn, :binary, public?: true)
-      end
+        attributes do
+          uuid_primary_key(:id)
+          attribute(:ssn, :binary, public?: true)
+        end
 
-      relationships do
-        has_many(:rel, __MODULE__, destination_attribute: :id)
-      end
+        relationships do
+          has_many(:rel, __MODULE__, destination_attribute: :id)
+        end
 
-      actions do
-        defaults([:read])
+        actions do
+          defaults([:read])
 
-        create :create do
-          argument(:ssn, :binary)
+          create :create do
+            argument(:ssn, :binary)
+          end
         end
       end
     end
@@ -245,35 +251,37 @@ defmodule AshAge.DataLayer.ValidateSensitiveTest do
   # (edge_properties/2 fails closed on a sensitive key without a binary-storage
   # declared argument) — landed as the next task in this slice.
   test "R4 boundary: edge property naming a sensitive attr with zero declared args compiles" do
-    defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.EdgeNoArgs do
-      use Ash.Resource,
-        domain: AshAge.TestDomain,
-        validate_domain_inclusion?: false,
-        data_layer: AshAge.DataLayer
+    refute_dsl_errors do
+      defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.EdgeNoArgs do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
 
-      age do
-        graph(:vs_edge_noargs)
-        repo(AshAge.TestRepo)
-        sensitive([:ssn])
+        age do
+          graph(:vs_edge_noargs)
+          repo(AshAge.TestRepo)
+          sensitive([:ssn])
 
-        edge :rel do
-          label(:REL)
-          destination(__MODULE__)
-          properties([:ssn])
+          edge :rel do
+            label(:REL)
+            destination(__MODULE__)
+            properties([:ssn])
+          end
         end
-      end
 
-      attributes do
-        uuid_primary_key(:id)
-        attribute(:ssn, :binary, public?: true)
-      end
+        attributes do
+          uuid_primary_key(:id)
+          attribute(:ssn, :binary, public?: true)
+        end
 
-      relationships do
-        has_many(:rel, __MODULE__, destination_attribute: :id)
-      end
+        relationships do
+          has_many(:rel, __MODULE__, destination_attribute: :id)
+        end
 
-      actions do
-        defaults([:read])
+        actions do
+          defaults([:read])
+        end
       end
     end
 

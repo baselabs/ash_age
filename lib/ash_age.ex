@@ -174,8 +174,9 @@ defmodule AshAge do
     RLS policy's blank-GUC guard yields "no rows visible" rather than an error —
     a silent empty result, not a raised `:rls_tenant_required`. Pass a real tenant.
   - **Errors propagate raw** (this uses `SQL.query!`); it does not redact DB errors,
-    unlike the data layer's internal path. The raw hatch already surfaces raw errors
-    from your own `cypher/5` calls, so the caller owns error handling here.
+    unlike the data layer's internal path and unlike `cypher/5` itself (which wraps
+    DB and encode failures in a redacted `QueryFailed`). The caller owns error
+    handling for this wrapper's own `set_config` queries.
   """
   @spec with_tenant_rls(module(), String.t(), term(), (-> result)) :: result when result: var
   def with_tenant_rls(repo, guc, tenant, fun) when is_function(fun, 0) do

@@ -163,8 +163,14 @@ defmodule AshAge.Query.Filter do
          query
        )
        when is_list(values) do
-    {query, param_ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
-    {:ok, query, "n.#{attr.name} IN #{param_ref}"}
+    # A Ref nested in the list is the in-list form of the attr-to-attr case the
+    # guard clause above rejects for direct operands — same structural rejection.
+    if Enum.any?(values, &match?(%Ash.Query.Ref{}, &1)) do
+      {:error, UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr.name)}
+    else
+      {query, param_ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
+      {:ok, query, "n.#{attr.name} IN #{param_ref}"}
+    end
   end
 
   # IS NULL / IS NOT NULL

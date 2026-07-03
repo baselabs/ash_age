@@ -789,7 +789,11 @@ defmodule AshAge.DataLayer do
   # outside Ash; an update WHERE can then match 2+ rows. Fail closed with a
   # value-free reason (the count is structural) — never a FunctionClauseError
   # crossing the callback boundary. Destroy's [_ | _] clause already tolerates
-  # this; update must not silently pick one row, so it errors instead.
+  # this; update must not silently pick one row, so it errors instead. The SET
+  # has already applied to every matched row by this point: Ash update actions
+  # default `transaction?: true` (and this layer advertises :transact), which
+  # rolls the multi-write back — a `transaction? false` action keeps it and
+  # only surfaces this error.
   defp decode_update_result(resource, _filter, {:ok, %{rows: [_, _ | _] = rows}}) do
     {:error,
      UpdateFailed.exception(

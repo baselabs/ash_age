@@ -3,7 +3,7 @@ defmodule AshAge.DataLayer.ValidateSkipTest do
 
   alias AshAge.DataLayer.Info
 
-  import Spark.Test, only: [assert_dsl_error: 2]
+  import Spark.Test, only: [assert_dsl_error: 2, refute_dsl_errors: 1]
 
   test "a primary-key attribute in skip fails compilation" do
     error =
@@ -30,22 +30,27 @@ defmodule AshAge.DataLayer.ValidateSkipTest do
     assert error.message =~ "primary key"
   end
 
+  # refute_dsl_errors is load-bearing: Spark surfaces verifier errors as
+  # compiler WARNINGS, so a bare defmodule would still compile if the verifier
+  # over-fired on a conforming resource.
   test "skipping a non-PK attribute still compiles (positive control)" do
-    defmodule Elixir.AshAge.DataLayer.ValidateSkipTest.Fine do
-      use Ash.Resource,
-        domain: AshAge.TestDomain,
-        validate_domain_inclusion?: false,
-        data_layer: AshAge.DataLayer
+    refute_dsl_errors do
+      defmodule Elixir.AshAge.DataLayer.ValidateSkipTest.Fine do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
 
-      age do
-        graph(:vsk_ok)
-        repo(AshAge.TestRepo)
-        skip([:cached])
-      end
+        age do
+          graph(:vsk_ok)
+          repo(AshAge.TestRepo)
+          skip([:cached])
+        end
 
-      attributes do
-        uuid_primary_key(:id)
-        attribute(:cached, :string, public?: true)
+        attributes do
+          uuid_primary_key(:id)
+          attribute(:cached, :string, public?: true)
+        end
       end
     end
 

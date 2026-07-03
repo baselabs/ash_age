@@ -164,13 +164,34 @@ defmodule AshAge.Query.FilterTest do
       # surface downstream as a misleading "params not JSON-encodable" error.
       right = %Ref{attribute: %{name: :other, type: Ash.Type.String, constraints: []}}
 
-      for op <- [Eq, NotEq, GreaterThan] do
+      for op <- [Eq, NotEq, In] do
         assert {:error, %UnsupportedFilter{field: :payload}} =
                  Filter.translate(
                    struct(op, left: typed_ref(:payload, Ash.Type.Binary), right: right),
                    q()
                  )
       end
+
+      # Range arms use a NON-binary left deliberately: a binary left is already
+      # rejected by rangeable/2 with the same field, which would make these
+      # assertions vacuous for the Ref-right guard itself.
+      for op <- [GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual] do
+        assert {:error, %UnsupportedFilter{field: :age}} =
+                 Filter.translate(
+                   struct(op, left: typed_ref(:age, Ash.Type.Integer), right: right),
+                   q()
+                 )
+      end
+    end
+
+    test "a Ref nested in an in-list is UnsupportedFilter, not a poisoned param" do
+      nested = %Ref{attribute: %{name: :other, type: Ash.Type.Binary, constraints: []}}
+
+      assert {:error, %UnsupportedFilter{field: :payload}} =
+               Filter.translate(
+                 %In{left: typed_ref(:payload, Ash.Type.Binary), right: [<<1>>, nested]},
+                 q()
+               )
     end
 
     test "eq on a string attribute is untouched (tenant filters stay raw)" do
