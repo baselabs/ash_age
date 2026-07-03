@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-03
+
+A large, mostly **additive** release: multitenancy (`:attribute` and `:context`),
+graph edges, bounded traversal, DB-enforced RLS, sensitive-data classification,
+raw Cypher, bulk create, and composite primary keys. Existing `0.2.x` builds are
+unaffected until you upgrade.
+
+### Upgrading from 0.2.x
+
+A few behavior changes to check before upgrading (the rest is new capability):
+
+- **`update`/`destroy` on a missing or filter-excluded row now return
+  `Ash.Error.Changes.StaleRecord`** (previously `Ash.Error.Query.NotFound`;
+  `destroy` previously returned `:ok` on a no-match). Update any code that
+  pattern-matches on the old error.
+- **`update`/`destroy` now honor `changeset.filter`** — mutations are scoped by
+  the tenant/policy filter Ash attaches, not matched by primary key alone. This
+  closes a cross-tenant write/delete gap; behavior changes only if you relied on
+  the previous unscoped matching.
+- **`AshAge.DataLayer.Info.attribute_types/1` now returns `{type, constraints}`
+  tuples** (was bare types). Only affects code calling that introspection helper
+  directly.
+- **New compile-time checks** reject a primary key listed in `age skip` and a
+  binary-typed multitenancy discriminator — both were already silently broken
+  (perpetual `StaleRecord` / inconsistent scoping).
+
+Binary attribute storage (`$age64$`), range/sort rejection on binary storage,
+and sensitive classification are new and do not affect existing non-binary
+resources.
+
 ### Added
 
 - **Sensitive classification (S7).** `age do sensitive [:attrs] end` +
@@ -427,7 +457,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/baselabs/ash_age/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/baselabs/ash_age/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/baselabs/ash_age/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/baselabs/ash_age/compare/v0.2.3...v0.2.4
