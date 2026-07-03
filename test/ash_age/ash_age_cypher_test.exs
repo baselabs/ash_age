@@ -72,6 +72,24 @@ defmodule AshAge.CypherTest do
     end
   end
 
+  # S7 closeout: the raw hatch was the one param-bearing surface left outside the
+  # redaction seam — a raw binary param raised Jason.EncodeError with the value
+  # bytes in the message (and through the :cypher telemetry span as :exception).
+  test "cypher/5 fails closed, value-free, on non-JSON-encodable params" do
+    secret = <<0, 255, 9>>
+
+    assert {:error, %AshAge.Errors.QueryFailed{} = error} =
+             AshAge.cypher(:unused_repo, "g", "RETURN 1", %{"blob" => %{"raw" => secret}}, [
+               {:n, :agtype}
+             ])
+
+    message = Exception.message(error)
+    assert message =~ "not JSON-encodable"
+    refute String.contains?(message, secret)
+    refute message =~ Base.encode64(secret)
+    refute message =~ inspect(secret)
+  end
+
   test "with_tenant_rls/4 exists and runs the fun, returning its value" do
     assert AshAge.with_tenant_rls(AshAge.TestRepo, "ash_age.tenant_id", "t1", fn -> :done end) ==
              :done

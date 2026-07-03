@@ -14,25 +14,18 @@ defmodule AshAge.Changes.EdgeCypher do
   alias AshAge.Type.Cast
 
   @doc false
-  # Wraps Parameterized.build so a non-JSON-encodable property/param fails closed
-  # as a value-free tuple instead of a raised Jason.EncodeError (whose message
-  # embeds the bytes — AGENTS.md rule 5).
+  # Wraps Parameterized.safe_build (the one home of the encode-failure rescue
+  # classifier) so a non-JSON-encodable property/param fails closed as a
+  # value-free tuple instead of a raise whose message embeds the bytes
+  # (AGENTS.md rule 5), keeping the edge paths' string-reason error contract.
   def safe_build(graph, cypher, params, return_types) do
-    {:ok, Parameterized.build(graph, cypher, params, return_types)}
-  rescue
-    _e in Jason.EncodeError ->
-      {:error, "edge parameters not JSON-encodable (raw binary in a non-binary-typed value?)"}
+    case Parameterized.safe_build(graph, cypher, params, return_types) do
+      {:ok, built} ->
+        {:ok, built}
 
-    # A struct value with no Jason.Encoder impl (e.g. a Regex in an edge property)
-    # raises Protocol.UndefinedError — NOT EncodeError — with the value inspected
-    # into the message. Redact only the Jason-protocol case; any other protocol
-    # error is an unrelated bug and must not be masked.
-    e in Protocol.UndefinedError ->
-      if e.protocol == Jason.Encoder do
+      {:error, :params_not_json_encodable} ->
         {:error, "edge parameters not JSON-encodable (raw binary in a non-binary-typed value?)"}
-      else
-        reraise(e, __STACKTRACE__)
-      end
+    end
   end
 
   @doc false

@@ -130,11 +130,15 @@ defmodule AshAge do
           {:ok, [map()]} | {:error, Exception.t()}
   def cypher(repo, graph, cypher, params \\ %{}, return_types) do
     Telemetry.span(:cypher, %{}, fn ->
-      {sql, pg_params} =
+      # safe_build: a caller-passed raw binary param fails closed as a value-free
+      # tuple instead of a raised Jason.EncodeError carrying the bytes through
+      # the :cypher telemetry :exception event and into caller logs (AGENTS.md
+      # rule 5). The static branch encodes nothing, so it has nothing to rescue.
+      built =
         if map_size(params) > 0 do
-          Parameterized.build(graph, cypher, params, return_types)
+          Parameterized.safe_build(graph, cypher, params, return_types)
         else
-          Parameterized.build_static(graph, cypher, return_types)
+          {:ok, Parameterized.build_static(graph, cypher, return_types)}
         end
 
       # Column names are constant across the whole result set — compute once,
@@ -142,10 +146,10 @@ defmodule AshAge do
       cols = column_names(return_types)
 
       result =
-        case SQL.query(repo, sql, pg_params) do
-          {:ok, %{rows: rows}} ->
-            {:ok, Enum.map(rows, &decode_row(&1, cols))}
-
+        with {:ok, {sql, pg_params}} <- built,
+             {:ok, %{rows: rows}} <- SQL.query(repo, sql, pg_params) do
+          {:ok, Enum.map(rows, &decode_row(&1, cols))}
+        else
           {:error, error} ->
             {:error,
              QueryFailed.exception(

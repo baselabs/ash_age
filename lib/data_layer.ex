@@ -863,28 +863,17 @@ defmodule AshAge.DataLayer do
   end
 
   @doc false
-  # The single build+execute seam: a non-JSON-encodable param fails closed as a
-  # value-free tuple BEFORE any SQL runs, instead of a raised Jason.EncodeError
-  # (whose message embeds the bytes — AGENTS.md rule 5) crossing the callback
-  # boundary. Public so the unit suite can poison the params without a DB (the
-  # raise happens at build time, before the repo is touched).
+  # The data layer's build+execute seam: a non-JSON-encodable param fails closed
+  # as a value-free tuple BEFORE any SQL runs, instead of a raise (whose message
+  # embeds the bytes — AGENTS.md rule 5) crossing the callback boundary. The
+  # rescue classifier itself lives ONCE in Parameterized.safe_build/4. Public so
+  # the unit suite can poison the params without a DB (the failure happens at
+  # build time, before the repo is touched).
   def build_and_query(repo, graph, cypher, params, return_types \\ [{:v, :agtype}]) do
-    {sql, pg_params} = Parameterized.build(graph, cypher, params, return_types)
-    SQL.query(repo, sql, pg_params)
-  rescue
-    _e in Jason.EncodeError ->
-      {:error, :params_not_json_encodable}
-
-    # A struct value with no Jason.Encoder impl (e.g. a Regex nested in a :map)
-    # raises Protocol.UndefinedError — NOT EncodeError — with the value inspected
-    # into the message. Redact only the Jason-protocol case; any other protocol
-    # error is an unrelated bug and must not be masked.
-    e in Protocol.UndefinedError ->
-      if e.protocol == Jason.Encoder do
-        {:error, :params_not_json_encodable}
-      else
-        reraise(e, __STACKTRACE__)
-      end
+    case Parameterized.safe_build(graph, cypher, params, return_types) do
+      {:ok, {sql, pg_params}} -> SQL.query(repo, sql, pg_params)
+      {:error, :params_not_json_encodable} = error -> error
+    end
   end
 
   defp changeset_to_properties(resource, changeset) do

@@ -37,6 +37,35 @@ defmodule AshAge.Cypher.Parameterized do
   end
 
   @doc """
+  `build/4` wrapped so a non-JSON-encodable param value fails closed as
+  `{:error, :params_not_json_encodable}` instead of raising: `Jason.EncodeError`
+  embeds the raw bytes in its message, and `Protocol.UndefinedError` (a struct
+  with no `Jason.Encoder` impl nested in a param) inspects the value into its
+  message. This is the ONE home for that classifier — every executing caller
+  (`AshAge.DataLayer.build_and_query/5`, `AshAge.Changes.EdgeCypher.safe_build/4`,
+  `AshAge.cypher/5`, the traverse path) routes through it, so the redaction
+  logic cannot drift between copies. Identifier/`$$`-breakout `ArgumentError`s
+  propagate unchanged: they are value-free by design and must stay loud.
+  """
+  @spec safe_build(atom() | String.t(), String.t(), map(), keyword()) ::
+          {:ok, {String.t(), list()}} | {:error, :params_not_json_encodable}
+  def safe_build(graph, cypher, params, return_types) do
+    {:ok, build(graph, cypher, params, return_types)}
+  rescue
+    _e in Jason.EncodeError ->
+      {:error, :params_not_json_encodable}
+
+    # Redact only the Jason-protocol case; any other protocol error is an
+    # unrelated bug and must not be masked.
+    e in Protocol.UndefinedError ->
+      if e.protocol == Jason.Encoder do
+        {:error, :params_not_json_encodable}
+      else
+        reraise(e, __STACKTRACE__)
+      end
+  end
+
+  @doc """
   Builds a static Cypher query (no parameters).
 
   Omits the params argument entirely — AGE rejects `NULL` as the third argument.
