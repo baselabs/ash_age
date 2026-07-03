@@ -19,7 +19,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 0.2.4"}
+    {:ash_age, "~> 0.2"}
   ]
 end
 ```
@@ -277,7 +277,9 @@ mix credo --strict
 
 - **CONTRIBUTING.md** — Contribution guidelines
 - **LICENSE** — MIT License
-- **usage-rules.md** — AI agent usage patterns (via `usage_rules` package)
+- **usage-rules.md** — usage rules for AI coding agents; it ships in the hex
+  package, so a consuming app can pull it in with `mix usage_rules.sync ash_age`
+  (see the [usage_rules](https://hex.pm/packages/usage_rules) package)
 
 ## License
 
