@@ -156,14 +156,17 @@ Key changes that affect agent behavior:
   not preserve byte order, so a range/sort over it would silently return wrong
   results. **Fail-closed, value-free JSON boundary:** `encode_check/1` (and its
   bulk counterpart `first_encode_failure/1`) pre-checks every serialized
-  property and returns the OFFENDING ATTRIBUTE NAME only; `build_and_query/5`
-  and `AshAge.Changes.EdgeCypher.safe_build/4` both wrap
-  `Parameterized.build/execute` in a `rescue` that catches BOTH
-  `Jason.EncodeError` and `Protocol.UndefinedError` (the latter fires when a
-  struct with no `Jason.Encoder` impl, e.g. a `Regex`, is nested in a param) —
-  the `Protocol.UndefinedError` clause is scoped to `e.protocol == Jason.Encoder`
+  property and returns the OFFENDING ATTRIBUTE NAME only. The encode-failure
+  `rescue` lives in ONE place — `AshAge.Cypher.Parameterized.safe_build/4` —
+  which wraps `Parameterized.build/4` and catches BOTH `Jason.EncodeError` and
+  `Protocol.UndefinedError` (the latter fires when a struct with no
+  `Jason.Encoder` impl, e.g. a `Regex`, is nested in a param); the
+  `Protocol.UndefinedError` clause is scoped to `e.protocol == Jason.Encoder`
   and `reraise`s any other protocol error, so no raise crosses a callback
-  boundary carrying raw bytes into its message. **Redaction:** `redacted_filter/1`
+  boundary carrying raw bytes into its message. Every executing caller routes
+  through it via a thin `case` wrapper — `DataLayer.build_and_query/5`,
+  `AshAge.Changes.EdgeCypher.safe_build/4`, `AshAge.cypher/5`, and the traverse
+  read path — so the classifier cannot drift between copies. **Redaction:** `redacted_filter/1`
   now runs on every `StaleRecord` (data-layer update/destroy AND
   `DestroyEdge`), replacing PK/endpoint values with `"<redacted>"` before Ash
   inspects the filter into logs; `redact_db_error(:params_not_json_encodable)`
@@ -204,7 +207,9 @@ Key changes that affect agent behavior:
   these DSL calls re-parenthesized (3aa5ccb). Key files:
   `lib/data_layer/verifiers/validate_sensitive.ex`,
   `lib/data_layer/verifiers/validate_skip.ex`, `lib/type/cast.ex`
-  (`binary_storage?/2`, `serialize_value/2`), `lib/data_layer.ex`
+  (`storage_class/2`, `binary_storage?/2`, `serialize_value/2`, `coerce_value/2`),
+  `lib/cypher/parameterized.ex` (`safe_build/4` — the one encode-failure rescue),
+  `lib/data_layer.ex`
   (`serialize_value/2` shim, `encode_check/1`, `first_encode_failure/1`,
   `build_and_query/5`, `redacted_filter/1`, `redact_db_error/1`),
   `lib/changes/edge_cypher.ex` (`safe_build/4`),
