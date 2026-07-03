@@ -20,6 +20,11 @@ defmodule AshAge.Changes.CreateEdge do
 
   A nil or empty `to:` argument writes NO edge and the action still succeeds
   (the edge is optional). Make `to:` required at the call site to force one.
+  Exception: the sensitive-property guard (runtime half of ValidateSensitive
+  R4) fails the action even with an empty `to:` — the misdeclaration (a
+  classified datum handed to a plaintext/undeclared argument) exists
+  regardless of whether an edge would be written, matching the compile half's
+  declaration-level semantics.
   """
   use Ash.Resource.Change
 

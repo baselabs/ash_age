@@ -149,8 +149,14 @@ controls display/log redaction in Ash core; `age do sensitive [:ssn] end`
 controls storage shape in the graph. They are orthogonal — declare both for
 classified fields.
 
+**Filtering `skip`ped attributes.** A skipped attribute is never written by
+ash_age, so a filter on it compares against an absent property: `eq`/`in`
+match nothing and `is_nil` matches every ash_age-written row (graph NULL
+semantics). The filter is not rejected because externally-written rows may
+legitimately carry the property.
+
 **Externally-written binary rows (migration note).** ash_age reads untagged
-binary-typed values verbatim (read-only grace), but all match params (filters,
+binary-storage-typed values verbatim (read-only grace), but all match params (filters,
 primary-key match, traversal, edge endpoints) send the tagged `$age64$` form —
 untagged rows are readable but not matchable/mutable through Ash. Migrate them
 by rewriting the property through ash_age, or store such values as `:string`.

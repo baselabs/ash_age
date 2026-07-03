@@ -141,7 +141,7 @@ Key changes that affect agent behavior:
   to `cast.ex`, Level 2, in S7 so `Query.Filter`, Level 3, can share it) is the
   SOLE value encoder — `AshAge.DataLayer.serialize_value/2` is now a delegating
   shim. Every match param routes through it: filter `eq`/`not_eq`/`in`,
-  `pk_pairs` (update/destroy PK match), traversal source/dest ids, and edge
+  `pk_pairs` (update/destroy PK match), traversal source `$ids`, and edge
   `src_key`/`dst` params (the destination is typed by the DESTINATION
   RESOURCE's PK attribute, not the source's). **Range/sort rejected on binary
   storage:** `>`/`<`/`>=`/`<=` return `UnsupportedFilter` and
@@ -189,8 +189,8 @@ Key changes that affect agent behavior:
   **`sensitive` verifies TYPE SHAPE, not encryption** — a `:binary` attribute
   holding plaintext bytes passes; encrypting is the host app's job
   (AshCloak/Cloak). **Dependency levels unchanged:** `cast` stays Level 2
-  (→ `agtype`); it
-  gained only external `Ash.Type` calls, no new internal-module edges. Also
+  (→ `agtype`); it gained only external `Ash.Type` calls, no new
+  internal-module edges. Also
   landed: `.formatter.exs` `locals_without_parens`/`export` repair
   (`sensitive: 1`, plus drifted `tenant_graph: 1`/`rls_guc: 1`/`properties: 1`
   from S3/S6/S4) so downstream `import_deps: [:ash_age]` consumers don't get
