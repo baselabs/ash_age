@@ -1,5 +1,7 @@
 # ash_age
 
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbaselabs%2Fash_age%2Fmaster%2Fnotebooks%2Fgetting_started.livemd)
+
 **An [Ash Framework](https://hexdocs.pm/ash) data layer for [Apache AGE](https://age.apache.org) — model your Ash resources as a property graph (vertices and edges) inside the PostgreSQL you already run.**
 
 Apache AGE adds openCypher graph queries to PostgreSQL. `ash_age` maps Ash

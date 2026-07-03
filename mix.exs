@@ -89,6 +89,7 @@ defmodule AshAge.MixProject do
       skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       extras: [
         "README.md",
+        "notebooks/getting_started.livemd",
         "usage-rules.md",
         "documentation/troubleshooting.md",
         "documentation/dsls/DSL-AshAge.DataLayer.md",
@@ -97,7 +98,7 @@ defmodule AshAge.MixProject do
         "LICENSE"
       ],
       groups_for_extras: [
-        Guides: ["documentation/troubleshooting.md"],
+        Guides: ["notebooks/getting_started.livemd", "documentation/troubleshooting.md"],
         Reference: ["documentation/dsls/DSL-AshAge.DataLayer.md", "usage-rules.md"]
       ],
       groups_for_modules: [

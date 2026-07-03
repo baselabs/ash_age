@@ -1,0 +1,313 @@
+# Getting started with ash_age
+
+## Setup
+
+`ash_age` is an [Ash](https://hexdocs.pm/ash) data layer for
+[Apache AGE](https://age.apache.org): your Ash resources become labelled graph
+vertices, relationships become real graph edges, and traversals run inside the
+PostgreSQL you already operate.
+
+This notebook needs a running **PostgreSQL + Apache AGE** instance. The quickest
+way is Docker:
+
+```
+docker run -d --name ash_age \
+  -p 5462:5432 \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=ash_age_test \
+  apache/age:release_PG16_1.6.0
+```
+
+The container publishes Postgres on host port **5462**, not the default **5432** —
+a local Postgres almost always already owns 5432, and a clash there gives you a
+misleading `connection not available` / pool-timeout error (the notebook ends up
+talking to your local Postgres, which has no AGE extension).
+
+The notebook connects to `postgres://postgres:postgres@localhost:5462/ash_age_test`
+by default. **Want a different port?** Change the `-p <host-port>:5432` mapping in
+the `docker run` above and the matching port in the "Start a Repo" cell below — or,
+to override the whole URL without editing a cell, set the `AGE_DATABASE_URL`
+environment variable before launching Livebook. If a cell fails with a connection
+error, AGE isn't reachable at that URL — check the container is up and the ports
+line up.
+
+> Re-running a cell reuses the already-started database process. If you change the
+> connection settings, reconnect the runtime (Runtime → Reconnect) so the new
+> settings take effect.
+> 
+> The setup cells (repo start, `CREATE EXTENSION`, migration) are safe to re-run.
+> The **data-creation cells are not** — each insert adds a new row (there is no
+> upsert), so re-running them duplicates `Alice`/`Bob` and a later single-result
+> match will fail. To start over, reconnect the runtime and run all cells top to
+> bottom.
+
+## Install
+
+```elixir
+Mix.install([{:ash_age, "~> 1.0"}])
+```
+
+## Register Postgrex types for AGE's `agtype`
+
+`Postgrex.Types.define/3` defines the module named in its first argument, so it is
+called at the top level (not inside a `defmodule`).
+
+```elixir
+Postgrex.Types.define(
+  GettingStarted.PostgrexTypes,
+  [AshAge.Postgrex.AgtypeExtension] ++ Ecto.Adapters.Postgres.extensions(),
+  []
+)
+```
+
+## Start a Repo
+
+The AGE session hook sets the search path and loads the AGE extension on every
+connection. The `case` makes the cell safe to re-run — a second run reuses the
+already-started process.
+
+```elixir
+defmodule GettingStarted.Repo do
+  use Ecto.Repo, otp_app: :getting_started, adapter: Ecto.Adapters.Postgres
+end
+
+# Connection URL. Host port 5462 matches the `docker run -p 5462:5432` above (5432 is
+# avoided because a local Postgres usually owns it). Change the port here AND in the
+# docker `-p` mapping to use another, or set AGE_DATABASE_URL to override the whole URL.
+case GettingStarted.Repo.start_link(
+       url:
+         System.get_env(
+           "AGE_DATABASE_URL",
+           "postgres://postgres:postgres@localhost:5462/ash_age_test"
+         ),
+       types: GettingStarted.PostgrexTypes,
+       after_connect: {AshAge.Session, :setup, []},
+       pool_size: 2
+     ) do
+  {:ok, pid} -> pid
+  {:error, {:already_started, pid}} -> pid
+end
+```
+
+## Create the AGE extension
+
+AGE ships as a PostgreSQL extension. The `apache/age` image auto-creates it in its
+`POSTGRES_DB`, so this is usually a no-op — but running it makes the notebook work
+against any AGE-enabled PostgreSQL. It needs a superuser connection (the dev
+container's `postgres` role is one).
+
+```elixir
+Ecto.Adapters.SQL.query!(GettingStarted.Repo, "CREATE EXTENSION IF NOT EXISTS age", [])
+```
+
+## Provision the graph with a migration
+
+In a real app this migration lives in `priv/repo/migrations/` (generate one with
+`mix ash_age.gen.migration`). Here we define and run it inline. It is idempotent —
+`Ecto.Migrator` records the version, so re-running this cell is a no-op.
+
+```elixir
+defmodule GettingStarted.Migrations.CreateGraph do
+  use Ecto.Migration
+  import AshAge.Migration
+
+  def up do
+    create_age_graph("getting_started")
+    create_vertex_label("getting_started", "Person")
+    create_edge_label("getting_started", "FRIEND")
+  end
+
+  def down, do: drop_age_graph("getting_started")
+end
+
+Ecto.Migrator.up(
+  GettingStarted.Repo,
+  20_260_703_000_001,
+  GettingStarted.Migrations.CreateGraph,
+  all: true
+)
+```
+
+## Define a resource
+
+A `Person` is a `:Person` vertex. The `:friend` edge is a `:FRIEND` graph edge to
+another `Person`, and `:friends_of` is a bounded traversal over those edges.
+
+```elixir
+defmodule GettingStarted.Domain do
+  use Ash.Domain, validate_config_inclusion?: false
+
+  resources do
+    allow_unregistered?(true)
+  end
+end
+
+defmodule GettingStarted.Person do
+  use Ash.Resource,
+    domain: GettingStarted.Domain,
+    validate_domain_inclusion?: false,
+    data_layer: AshAge.DataLayer
+
+  age do
+    graph(:getting_started)
+    repo(GettingStarted.Repo)
+    label(:Person)
+
+    edge :friend do
+      label(:FRIEND)
+      destination(__MODULE__)
+      properties([:since])
+    end
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:name, :string, public?: true, allow_nil?: false)
+  end
+
+  relationships do
+    has_many :friends_of, __MODULE__ do
+      manual(
+        {AshAge.ManualRelationships.Traverse,
+         edge_label: :FRIEND, direction: :outgoing, max_depth: 2}
+      )
+    end
+  end
+
+  actions do
+    defaults([:read, :destroy])
+
+    create :create do
+      accept([:name])
+    end
+
+    update :add_friend do
+      require_atomic?(false)
+      argument(:friend_id, :uuid)
+      argument(:since, :string)
+      change({AshAge.Changes.CreateEdge, edge: :friend, to: :friend_id})
+    end
+  end
+end
+```
+
+## Create and read
+
+`require Ash.Query` brings the `filter` macro into scope.
+
+```elixir
+require Ash.Query
+
+{:ok, alice} =
+  GettingStarted.Person |> Ash.Changeset.for_create(:create, %{name: "Alice"}) |> Ash.create()
+
+{:ok, bob} =
+  GettingStarted.Person |> Ash.Changeset.for_create(:create, %{name: "Bob"}) |> Ash.create()
+
+{:ok, everyone} = GettingStarted.Person |> Ash.Query.for_read(:read) |> Ash.read()
+{:ok, [only_alice]} = GettingStarted.Person |> Ash.Query.filter(name == "Alice") |> Ash.read()
+
+{length(everyone), only_alice.name}
+```
+
+## Create an edge
+
+```elixir
+{:ok, _} =
+  alice
+  |> Ash.Changeset.for_update(:add_friend, %{friend_id: bob.id, since: "2020"})
+  |> Ash.update()
+
+:edge_created
+```
+
+## Traverse
+
+Loading `:friends_of` walks `:FRIEND` edges out from Alice, up to depth 2.
+
+```elixir
+{:ok, alice_loaded} = Ash.load(alice, :friends_of)
+Enum.map(alice_loaded.friends_of, & &1.name)
+```
+
+## Optional: multitenancy (`:attribute` strategy)
+
+ash_age supports Ash's `:attribute` multitenancy — one graph, filtered by a tenant
+discriminator. This section is optional and independent of the core walkthrough
+above.
+
+> This is **app-layer** tenant filtering (Ash scopes every query by the tenant).
+> DB-enforced Row-Level Security is a separate opt-in that requires a non-superuser
+> role and is out of scope for this guide — see `usage-rules.md`.
+
+```elixir
+defmodule GettingStarted.Migrations.CreateTenantGraph do
+  use Ecto.Migration
+  import AshAge.Migration
+
+  def up do
+    create_age_graph("getting_started_tenants")
+    create_vertex_label("getting_started_tenants", "Note")
+  end
+
+  def down, do: drop_age_graph("getting_started_tenants")
+end
+
+Ecto.Migrator.up(
+  GettingStarted.Repo,
+  20_260_703_000_002,
+  GettingStarted.Migrations.CreateTenantGraph,
+  all: true
+)
+```
+
+```elixir
+defmodule GettingStarted.Note do
+  use Ash.Resource,
+    domain: GettingStarted.Domain,
+    validate_domain_inclusion?: false,
+    data_layer: AshAge.DataLayer
+
+  age do
+    graph(:getting_started_tenants)
+    repo(GettingStarted.Repo)
+    label(:Note)
+  end
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:org_id, :uuid, allow_nil?: false, public?: true)
+    attribute(:body, :string, public?: true)
+  end
+
+  actions do
+    defaults([:read, :destroy])
+
+    create :create do
+      accept([:body])
+    end
+  end
+end
+```
+
+```elixir
+org_a = Ash.UUID.generate()
+org_b = Ash.UUID.generate()
+
+{:ok, _} =
+  GettingStarted.Note
+  |> Ash.Changeset.for_create(:create, %{body: "from org A"}, tenant: org_a)
+  |> Ash.create()
+
+{:ok, _} =
+  GettingStarted.Note
+  |> Ash.Changeset.for_create(:create, %{body: "from org B"}, tenant: org_b)
+  |> Ash.create()
+
+{:ok, org_a_notes} = GettingStarted.Note |> Ash.Query.for_read(:read) |> Ash.read(tenant: org_a)
+Enum.map(org_a_notes, & &1.body)
+```
