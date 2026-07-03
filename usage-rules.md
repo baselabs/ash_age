@@ -103,6 +103,37 @@ practice; this library's own gate battery uses it) to make every verifier rule
 build-blocking. This is Spark/Ash-ecosystem-wide behavior, not specific to
 ash_age's verifiers.
 
+**`sensitive` has exactly two valid states — there is no third.** A classified
+attribute is EITHER binary-storage-typed (ciphertext stored, searchable per
+below) OR listed in `skip` (never written to the graph at all). A plaintext
+`:string` attribute cannot be `sensitive` — the verifier rejects it.
+
+**Wiring the encryption (host-app responsibility).** ash_age never encrypts; it
+stores and matches whatever bytes reach the `:binary` attribute. Your app
+produces the ciphertext, typically with AshCloak or Cloak. The resource carries
+the encryption extension alongside the `age` block, and the classified attribute
+is `:binary`:
+
+```elixir
+# cipher/vault configured per the AshCloak/Cloak docs — it encrypts :ssn to bytes
+age do
+  graph :patients
+  repo MyApp.Repo
+  sensitive [:ssn]
+end
+
+attributes do
+  attribute :ssn, :binary   # ciphertext bytes; ash_age $age64$-tags them on write
+end
+```
+
+The only contract ash_age imposes is that the attribute is binary-storage-typed
+(or skipped) — see the AshCloak/Cloak documentation for the exact cipher setup.
+Pick the cipher by searchability: a **deterministic** cipher (same plaintext →
+same ciphertext) keeps `eq`/`not_eq`/`in` working on the stored form; a
+**randomized** cipher maximizes confidentiality but the field is not searchable
+(load and decrypt app-side).
+
 **Searchable vs. maximally confidential.**
 
 - *Deterministic encryption* (same plaintext → same ciphertext) makes a field
@@ -492,6 +523,12 @@ yields a single record per source, `has_many` yields a list. Works with both
   fails closed. **Cost note:** the expansion runs one branch per length in
   `min_depth..max_depth` (each re-`UNWIND`ing `$ids`), so a wide `:attribute` depth
   span multiplies the per-query work by the branch count — keep the span tight.
+- **`:mixed_attribute` fails closed:** if BOTH the source and destination are
+  `:attribute`-multitenant but keyed on DIFFERENT discriminator attributes, the
+  traversal fails closed with an error — one UNION scope covers all path nodes
+  with a single attribute, and Ash carries one tenant value per load, so two
+  discriminator dimensions cannot be honored at once. Same-discriminator
+  traversals (the self-referential norm) scope normally.
 
 Values reach Cypher only as `$` parameters; every identifier is validated.
 
