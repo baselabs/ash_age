@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Getting-started [Livebook](https://livebook.dev) guide (`notebooks/getting_started.livemd`),
+  rendered in the docs and executed against Apache AGE in CI.
+
 ## [1.0.0] - 2026-07-03
 
 The first stable release. A large, mostly **additive** expansion over `0.2.x`:
