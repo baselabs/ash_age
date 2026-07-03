@@ -126,6 +126,36 @@ defmodule AshAge.MultitenancyTest do
       assert error.message =~ ~r/rls_guc.*global/s
     end
 
+    test "a binary-storage-typed multitenancy discriminator fails compilation (S7)" do
+      error =
+        assert_dsl_error %Spark.Error.DslError{} do
+          defmodule Elixir.AshAge.MultitenancyTest.BinaryTenant do
+            use Ash.Resource,
+              domain: AshAge.TestDomain,
+              validate_domain_inclusion?: false,
+              data_layer: AshAge.DataLayer
+
+            age do
+              graph(:vmt_bin)
+              repo(AshAge.TestRepo)
+            end
+
+            multitenancy do
+              strategy(:attribute)
+              attribute(:tenant_key)
+            end
+
+            attributes do
+              uuid_primary_key(:id)
+              attribute(:tenant_key, :binary, public?: true)
+            end
+          end
+        end
+
+      assert error.message =~ "tenant_key"
+      assert error.message =~ "plaintext comparator"
+    end
+
     test "rls_guc with :attribute (non-global) compiles cleanly" do
       refute_dsl_errors do
         defmodule Elixir.AshAge.MultitenancyTest.RlsAttrValid do

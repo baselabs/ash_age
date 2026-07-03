@@ -106,7 +106,8 @@ defmodule AshAge.ManualRelationships.Traverse do
     with {:ok, graph} <- resolve_graph(source, dest, context.tenant),
          {:ok, tenant_attr, tenant} <- resolve_tenant(source, dest, context.tenant) do
       src_pkey = Ash.Resource.Info.primary_key(source)
-      ids = Enum.uniq(Enum.map(records, fn r -> stringify_keys(Map.take(r, src_pkey)) end))
+      src_types = Info.attribute_types(source)
+      ids = Enum.uniq(Enum.map(records, &encode_id(&1, src_pkey, src_types)))
 
       spec = %{
         direction: direction,
@@ -123,34 +124,29 @@ defmodule AshAge.ManualRelationships.Traverse do
       }
 
       {cypher, params} = build_traverse(spec)
-      {sql, pg_params} = Parameterized.build(graph, cypher, params, return_types(src_pkey))
       dest_pkey = Ash.Resource.Info.primary_key(dest)
 
       repo = Info.repo(source)
 
-      # Route the read through with_rls so an rls_guc source sets the GUC on a
-      # pinned connection before the traversal runs (defense-in-depth alongside
-      # the :attribute UNION scoping). context.tenant is the RLS tenant — the same
-      # :attribute discriminator value the resource's RLS policy compares against,
-      # and the same value scoped above. For a non-RLS source with_rls runs the fun
-      # verbatim, so the behavior is byte-identical to pre-S6.
-      rls_result =
-        DataLayer.with_rls(source, context.tenant, repo, fn -> SQL.query(repo, sql, pg_params) end)
-
-      case DataLayer.unwrap_rls(rls_result, source) do
-        {:ok, %{rows: rows}} ->
-          {{:ok,
-            assemble_rows(
-              rows,
-              %{
-                src_pkey: src_pkey,
-                src_types: Info.attribute_types(source),
-                dest_pkey: dest_pkey,
-                dest: dest
-              },
-              card
-            )}, length(rows)}
-
+      # safe_build: no reachable $ids value is non-JSON-encodable today (every
+      # PK routes through Cast.serialize_value/2), but a future PK type with no
+      # Jason.Encoder impl must fail closed as a redacted tuple here — never a
+      # raise carrying bytes across the manual-relationship boundary.
+      with {:ok, {sql, pg_params}} <-
+             Parameterized.safe_build(graph, cypher, params, return_types(src_pkey)),
+           {:ok, %{rows: rows}} <- scoped_query(source, context.tenant, repo, sql, pg_params) do
+        {{:ok,
+          assemble_rows(
+            rows,
+            %{
+              src_pkey: src_pkey,
+              src_types: src_types,
+              dest_pkey: dest_pkey,
+              dest: dest
+            },
+            card
+          )}, length(rows)}
+      else
         {:error, error} ->
           {{:error, wrap_traverse_error(error)}, 0}
       end
@@ -173,6 +169,19 @@ defmodule AshAge.ManualRelationships.Traverse do
 
   def wrap_traverse_error(error),
     do: QueryFailed.exception(query: "AGE traversal", reason: DataLayer.redact_db_error(error))
+
+  # Routes the read through with_rls so an rls_guc source sets the GUC on a
+  # pinned connection before the traversal runs (defense-in-depth alongside
+  # the :attribute UNION scoping). The tenant is the RLS tenant — the same
+  # :attribute discriminator value the resource's RLS policy compares against,
+  # and the same value scoped in the UNION. For a non-RLS source with_rls runs
+  # the fun verbatim, so the behavior is byte-identical to pre-S6.
+  defp scoped_query(source, tenant, repo, sql, pg_params) do
+    DataLayer.unwrap_rls(
+      DataLayer.with_rls(source, tenant, repo, fn -> SQL.query(repo, sql, pg_params) end),
+      source
+    )
+  end
 
   # --- graph + tenant resolution (fail-closed) ---
 
@@ -425,7 +434,16 @@ defmodule AshAge.ManualRelationships.Traverse do
 
   # --- helpers ---
 
-  defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
+  # One `$ids` entry: source-PK fields stringified and serialized by attribute
+  # type (Cast.serialize_value/2) so the param matches the STORED form — binary
+  # PKs are `$age64$`-tagged, date/datetime PKs ISO8601 (S7). The RETURN side
+  # coerces back via Cast.coerce_value/2, preserving the F3 raw-record-value key.
+  defp encode_id(record, src_pkey, src_types) do
+    Map.new(src_pkey, fn field ->
+      {to_string(field), Cast.serialize_value(Map.get(record, field), Map.get(src_types, field))}
+    end)
+  end
+
   defp strategy(resource), do: Ash.Resource.Info.multitenancy_strategy(resource)
 
   # `row_count` is the raw pre-dedup rows returned by SQL.query — a genuine

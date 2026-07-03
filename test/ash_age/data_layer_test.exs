@@ -2,6 +2,7 @@ defmodule AshAge.DataLayerTest do
   use ExUnit.Case, async: true
 
   alias AshAge.DataLayer
+  alias AshAge.DataLayer.Info
   alias AshAge.Errors.QueryFailed
   alias AshAge.Query
 
@@ -187,6 +188,101 @@ defmodule AshAge.DataLayerTest do
       # to the pre-S6 result `:ok` — the same as an RLS-off resource. This path is
       # DB-free (do_bulk_create(_, _, [], _) -> :ok), so no Sandbox is required.
       assert :ok == DataLayer.bulk_create(RlsResource, [], %{})
+    end
+  end
+
+  describe "sort capability on binary storage (S7)" do
+    test "binary storage is not sortable; everything else still is" do
+      refute AshAge.DataLayer.can?(nil, {:sort, :binary})
+      assert AshAge.DataLayer.can?(nil, {:sort, :string})
+      assert AshAge.DataLayer.can?(nil, :sort)
+    end
+  end
+
+  describe "StaleRecord redaction + binary PK serialization (S7)" do
+    test "redacted_filter replaces every PK value with a placeholder" do
+      secret = <<0, 255, 7>>
+
+      redacted = AshAge.DataLayer.redacted_filter([{:id, secret}, {:code, "k1"}])
+
+      assert redacted == %{id: "<redacted>", code: "<redacted>"}
+      refute inspect(redacted) =~ inspect(secret)
+    end
+  end
+
+  describe "JSON-encodability pre-check (S7)" do
+    test "a :map value holding raw bytes yields the attr name, never the value" do
+      secret = <<0, 255, 9>>
+
+      assert {:error, :meta} =
+               AshAge.DataLayer.encode_check(%{"name" => "x", "meta" => %{"blob" => secret}})
+
+      assert :ok = AshAge.DataLayer.encode_check(%{"name" => "x", "meta" => %{"k" => "v"}})
+    end
+
+    test "a poisoned row in a bulk batch yields the offending attr name (bulk gate seam)" do
+      clean = {:cs1, %{"name" => "ok"}}
+      poisoned = {:cs2, %{"name" => "x", "meta" => %{"blob" => <<0, 255, 9>>}}}
+
+      assert AshAge.DataLayer.first_encode_failure([clean, poisoned]) == :meta
+      assert AshAge.DataLayer.first_encode_failure([clean, clean]) == nil
+    end
+
+    test "a struct value (no Jason.Encoder impl) fails closed as the same tuple, never a raise" do
+      # Jason.encode! raises Protocol.UndefinedError (NOT EncodeError) here, with
+      # the value inspected into the message — must be redacted the same way
+      assert {:error, :params_not_json_encodable} =
+               AshAge.DataLayer.build_and_query(
+                 AshAge.TestRepo,
+                 :any_graph,
+                 "MATCH (n) WHERE n.x = $x RETURN n",
+                 %{"x" => %{"r" => ~r/secret/}}
+               )
+    end
+
+    test "build_and_query fails closed on poisoned params before touching the repo" do
+      # the Jason raise happens at build time, so no DB is needed: a poisoned
+      # param map must come back as a value-free tuple, never a raise
+      assert {:error, :params_not_json_encodable} =
+               AshAge.DataLayer.build_and_query(
+                 AshAge.TestRepo,
+                 :any_graph,
+                 "MATCH (n) WHERE n.x = $x RETURN n",
+                 %{"x" => %{"blob" => <<0, 255, 9>>}}
+               )
+
+      assert AshAge.DataLayer.redact_db_error(:params_not_json_encodable) =~ "not JSON-encodable"
+    end
+  end
+
+  describe "sensitive DSL option (S7)" do
+    defmodule Classified do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:unit_s7_sens)
+        repo(AshAge.TestRepo)
+        label(:Classified)
+        sensitive([:ssn])
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+        attribute(:ssn, :binary, public?: true)
+      end
+
+      actions do
+        defaults([:read])
+      end
+    end
+
+    test "Info.sensitive/1 returns the declared list; defaults to []" do
+      assert Info.sensitive(Classified) == [:ssn]
+      # any pre-existing test resource without the option
+      assert Info.sensitive(NoRlsResource) == []
     end
   end
 end

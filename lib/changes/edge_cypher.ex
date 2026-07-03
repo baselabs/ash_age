@@ -8,8 +8,25 @@ defmodule AshAge.Changes.EdgeCypher do
   # `tenant_where/1` would be a cross-tenant write hole). Same dependency level
   # as its callers (above the data layer): imports `Info` (L3) / `Migration` (L0).
 
+  alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
+  alias AshAge.Type.Cast
+
+  @doc false
+  # Wraps Parameterized.safe_build (the one home of the encode-failure rescue
+  # classifier) so a non-JSON-encodable property/param fails closed as a
+  # value-free tuple instead of a raise whose message embeds the bytes
+  # (AGENTS.md rule 5), keeping the edge paths' string-reason error contract.
+  def safe_build(graph, cypher, params, return_types) do
+    case Parameterized.safe_build(graph, cypher, params, return_types) do
+      {:ok, built} ->
+        {:ok, built}
+
+      {:error, :params_not_json_encodable} ->
+        {:error, "edge parameters not JSON-encodable (raw binary in a non-binary-typed value?)"}
+    end
+  end
 
   @doc false
   # Resolves the named edge on the resource, raising if it isn't declared.
@@ -35,12 +52,33 @@ defmodule AshAge.Changes.EdgeCypher do
   end
 
   @doc false
+  # Destination endpoint values serialized by the DESTINATION RESOURCE's PK
+  # attribute type — the `to:` argument's declared type does not govern the
+  # stored wire form (spec C6). Resolves the PK and type spec ONCE for the
+  # whole list (the edge write loops run once per destination; per-id
+  # re-introspection was the S7-closeout O1 advisory). Single-attribute PK is
+  # enforced by destination_pk! at the build site, so this match cannot fail.
+  # Shared by CreateEdge and DestroyEdge for the same anti-divergence reason
+  # as source_key/2.
+  def serialize_destination_ids(destination, dest_ids) do
+    [dest_pk_attr] = Ash.Resource.Info.primary_key(destination)
+    spec = Map.get(Info.attribute_types(destination), dest_pk_attr)
+    Enum.map(dest_ids, &Cast.serialize_value(&1, spec))
+  end
+
+  @doc false
   # A map of source PK field (string) => value, read from the PERSISTED record
-  # (its original identity), not the pending changeset.
+  # (its original identity), not the pending changeset. Values are serialized by
+  # the SOURCE RESOURCE's attribute types (binary-storage → tagged) so the WHERE
+  # matches the stored wire form.
   def source_key(resource, record) do
+    types = Info.attribute_types(resource)
+
     resource
     |> Ash.Resource.Info.primary_key()
-    |> Map.new(fn f -> {to_string(f), Map.get(record, f)} end)
+    |> Map.new(fn f ->
+      {to_string(f), Cast.serialize_value(Map.get(record, f), Map.get(types, f))}
+    end)
   end
 
   @doc false

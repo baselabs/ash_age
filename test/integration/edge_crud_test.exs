@@ -286,6 +286,86 @@ defmodule AshAge.Integration.EdgeCrudTest do
     )
   end
 
+  defmodule BinDoc do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_s7_binedge)
+      repo(AshAge.TestRepo)
+      label(:BinDoc)
+
+      edge :refs do
+        label(:BINREF)
+        destination(__MODULE__)
+      end
+    end
+
+    attributes do
+      attribute(:key, :binary, primary_key?: true, allow_nil?: false, public?: true)
+    end
+
+    relationships do
+      has_many(:refs, __MODULE__, source_attribute: :key, destination_attribute: :key)
+    end
+
+    actions do
+      default_accept([:key])
+      defaults([:read, :destroy])
+
+      create :create do
+        accept([:key])
+        argument(:to, {:array, :binary})
+        change({AshAge.Changes.CreateEdge, edge: :refs, to: :to})
+      end
+
+      update :unlink do
+        require_atomic?(false)
+        argument(:to, {:array, :binary})
+        change({AshAge.Changes.DestroyEdge, edge: :refs, to: :to})
+      end
+    end
+  end
+
+  test "binary-PK endpoints: edge create + destroy match the stored tagged form (S7)" do
+    a = <<0, 255, 20>>
+    b = <<0, 255, 21>>
+
+    with_graph(
+      "itest_s7_binedge",
+      fn ->
+        {:ok, _} = BinDoc |> Ash.Changeset.for_create(:create, %{key: b}) |> Ash.create()
+
+        {:ok, src} =
+          BinDoc |> Ash.Changeset.for_create(:create, %{key: a, to: [b]}) |> Ash.create()
+
+        # edge exists: destroy it; a second destroy is StaleRecord whose
+        # message leaks neither endpoint's bytes
+        {:ok, _} = src |> Ash.Changeset.for_update(:unlink, %{to: [b]}) |> Ash.update()
+
+        assert {:error, %Ash.Error.Invalid{errors: errors}} =
+                 src |> Ash.Changeset.for_update(:unlink, %{to: [b]}) |> Ash.update()
+
+        stale = Enum.find(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+        assert stale
+        message = Exception.message(stale)
+        refute String.contains?(message, a)
+        refute String.contains?(message, b)
+        refute message =~ Base.encode64(b)
+        # The forms an un-redacted filter would ACTUALLY leak at this call
+        # site: src_key arrives tagged (contains Base.encode64(a)) and dst
+        # arrives raw, rendered via inspect/1 into StaleRecord's message.
+        refute message =~ Base.encode64(a)
+        refute message =~ inspect(b)
+        assert message =~ "<redacted>"
+      end,
+      vlabels: ["BinDoc"],
+      elabels: ["BINREF"]
+    )
+  end
+
   test ":both edge stored outgoing is reachable from both ends via undirected match" do
     with_graph(
       "itest_s4_peer",

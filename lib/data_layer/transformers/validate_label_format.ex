@@ -1,7 +1,7 @@
 defmodule AshAge.DataLayer.Transformers.ValidateLabelFormat do
-  @moduledoc """
-  Transformer that validates the label format is a valid AGE identifier.
-  """
+  @moduledoc false
+  # Internal DSL-compile transformer: validates the label is a valid AGE
+  # identifier.
 
   use Spark.Dsl.Transformer
 

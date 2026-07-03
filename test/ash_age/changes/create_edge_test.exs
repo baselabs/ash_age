@@ -112,7 +112,7 @@ defmodule AshAge.Changes.CreateEdgeTest do
 
     test "binary property is $age64$-tagged (not raw bytes)" do
       changeset = props_changeset(%{photo: @raw_photo})
-      props = CreateEdge.edge_properties(changeset, @props_edge)
+      assert {:ok, props} = CreateEdge.edge_properties(changeset, @props_edge)
 
       # Byte-identical to how the vertex path stores a binary attribute.
       assert props[:photo] == Cast.encode_binary(@raw_photo)
@@ -124,7 +124,7 @@ defmodule AshAge.Changes.CreateEdgeTest do
     test "datetime property is ISO8601 (not a struct)" do
       when_dt = ~U[2026-07-01 12:00:00Z]
       changeset = props_changeset(%{when: when_dt})
-      props = CreateEdge.edge_properties(changeset, @props_edge)
+      assert {:ok, props} = CreateEdge.edge_properties(changeset, @props_edge)
 
       assert props[:when] == DateTime.to_iso8601(when_dt)
       # Non-vacuity: the struct itself is NOT stored (pre-fix behavior).
@@ -133,17 +133,104 @@ defmodule AshAge.Changes.CreateEdgeTest do
 
     test "string property is unchanged" do
       changeset = props_changeset(%{note: "hello"})
-      props = CreateEdge.edge_properties(changeset, @props_edge)
+      assert {:ok, props} = CreateEdge.edge_properties(changeset, @props_edge)
       assert props[:note] == "hello"
     end
 
     test "an unsupplied property argument is rejected (absent from the map)" do
       changeset = props_changeset(%{note: "only-note"})
-      props = CreateEdge.edge_properties(changeset, @props_edge)
+      assert {:ok, props} = CreateEdge.edge_properties(changeset, @props_edge)
 
       assert Map.has_key?(props, :note)
       refute Map.has_key?(props, :photo)
       refute Map.has_key?(props, :when)
+    end
+  end
+
+  describe "sensitive edge properties (S7 runtime guard)" do
+    defmodule SensSrc do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:unit_s7_edgeguard)
+        repo(AshAge.TestRepo)
+        sensitive([:ssn])
+
+        # Declared so run/3's fetch_edge! resolves; destination is the
+        # NON-sensitive Tagged (see @sens_edge note below).
+        edge :rel do
+          label(:REL)
+          destination(Tagged)
+          properties([:ssn])
+        end
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+        attribute(:ssn, :binary, public?: true)
+      end
+
+      actions do
+        defaults([:read])
+
+        create :create do
+          argument(:ssn, :binary)
+        end
+
+        # NO :ssn argument -- the runtime-injection walk-around target.
+        create(:inject)
+      end
+    end
+
+    # Destination is deliberately a NON-sensitive resource (Tagged): the guard
+    # must key off the SOURCE (changeset.resource) classification, so a
+    # regression that reads Info.sensitive(edge.destination) goes red here.
+    @sens_edge %Edge{
+      name: :rel,
+      label: :REL,
+      direction: :outgoing,
+      destination: Tagged,
+      properties: [:ssn]
+    }
+
+    test "a declared binary-typed sensitive property serializes tagged" do
+      changeset = Ash.Changeset.for_create(SensSrc, :create, %{ssn: <<0, 255, 5>>})
+
+      assert {:ok, %{ssn: "$age64$" <> _}} = CreateEdge.edge_properties(changeset, @sens_edge)
+    end
+
+    test "a sensitive property injected via set_argument without a binary declared arg fails closed" do
+      # Simulate the walk-around: the :inject action declares NO :ssn argument,
+      # so the injected value has no declared type -- it would store raw
+      # plaintext on the edge. The guard must halt, value-free.
+      changeset =
+        SensSrc
+        |> Ash.Changeset.new()
+        |> Ash.Changeset.set_argument(:ssn, "123-45-6789")
+        |> Ash.Changeset.for_create(:inject, %{})
+
+      assert {:error, :ssn} = CreateEdge.edge_properties(changeset, @sens_edge)
+    end
+
+    test "run/3 surfaces the fail-closed branch as a value-free InvalidRelationship" do
+      changeset =
+        SensSrc
+        |> Ash.Changeset.new()
+        |> Ash.Changeset.set_argument(:ssn, "123-45-6789")
+        |> Ash.Changeset.for_create(:inject, %{})
+
+      # The guard halts BEFORE any graph/DB work, so run/3 is DB-free here.
+      assert {:error, %Ash.Error.Changes.InvalidRelationship{} = error} =
+               CreateEdge.run(changeset, nil, edge: :rel, to: :to)
+
+      message = Exception.message(error)
+      assert message =~ "sensitive property :ssn"
+      assert message =~ "value withheld"
+      # The classified plaintext must never reach the error surface.
+      refute message =~ "123-45-6789"
     end
   end
 

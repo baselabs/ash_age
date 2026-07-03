@@ -9,9 +9,13 @@ spark_locals_without_parens = [
   repo: 1,
   label: 1,
   skip: 1,
+  sensitive: 1,
+  tenant_graph: 1,
+  rls_guc: 1,
   edge: 1,
   direction: 1,
-  destination: 1
+  destination: 1,
+  properties: 1
 ]
 
 [

@@ -70,6 +70,128 @@ values as bound `$1` JSON params — Ecto's default logger prints those params,
 by design, at the `:debug` level. If primary-key or attribute values must never
 reach application logs, run the AGE-backed repo at `:info` or higher in production.
 
+## Sensitive Data
+
+ash_age stores vertex properties as JSON inside AGE. For classified values
+(PII/PHI/secrets), declare them and store ciphertext:
+
+```elixir
+age do
+  graph :my_graph
+  repo MyApp.Repo
+  sensitive [:ssn]        # fail-closed verifier check
+end
+
+attributes do
+  attribute :ssn, :binary  # holds app-side-encrypted bytes
+end
+```
+
+**What `sensitive` verifies (and what it cannot).** The compile-time verifier
+(`ValidateSensitive`) enforces a type SHAPE: every listed attribute must be
+binary-storage-typed (`Ash.Type.storage_type == :binary` — `:binary`, or
+wrappers like `Ash.Type.NewType` over `:binary`) or listed in `skip` (never
+written to the graph). It cannot verify that the bytes are actually encrypted —
+that is your application's job (AshCloak or Cloak; ash_age round-trips the
+ciphertext via the tagged `$age64$` base64 wire format). A `:binary` attribute
+holding plaintext bytes passes the verifier.
+
+**Enforcement point.** Spark surfaces verifier errors as compiler diagnostics:
+a default `mix compile` prints the `Spark.Error.DslError` as a warning and
+still builds the module. Compile with `--warnings-as-errors` (standard CI
+practice; this library's own gate battery uses it) to make every verifier rule
+build-blocking. This is Spark/Ash-ecosystem-wide behavior, not specific to
+ash_age's verifiers.
+
+**`sensitive` has exactly two valid states — there is no third.** A classified
+attribute is EITHER binary-storage-typed (ciphertext stored, searchable per
+below) OR listed in `skip` (never written to the graph at all). A plaintext
+`:string` attribute cannot be `sensitive` — the verifier rejects it.
+
+**Wiring the encryption (host-app responsibility).** ash_age never encrypts; it
+stores and matches whatever bytes reach the `:binary` attribute. Your app
+produces the ciphertext, typically with AshCloak or Cloak. The resource carries
+the encryption extension alongside the `age` block, and the classified attribute
+is `:binary`:
+
+```elixir
+# cipher/vault configured per the AshCloak/Cloak docs — it encrypts :ssn to bytes
+age do
+  graph :patients
+  repo MyApp.Repo
+  sensitive [:ssn]
+end
+
+attributes do
+  attribute :ssn, :binary   # ciphertext bytes; ash_age $age64$-tags them on write
+end
+```
+
+The only contract ash_age imposes is that the attribute is binary-storage-typed
+(or skipped) — see the AshCloak/Cloak documentation for the exact cipher setup.
+Pick the cipher by searchability: a **deterministic** cipher (same plaintext →
+same ciphertext) keeps `eq`/`not_eq`/`in` working on the stored form; a
+**randomized** cipher maximizes confidentiality but the field is not searchable
+(load and decrypt app-side).
+
+**Searchable vs. maximally confidential.**
+
+- *Deterministic encryption* (same plaintext → same ciphertext) makes a field
+  equality-searchable on the graph side: `eq`, `not_eq`, and `in` filters work
+  on the ciphertext (ash_age encodes your filter value to the stored wire
+  form). Trade-off: equal values are visibly equal in the database —
+  deterministic encryption leaks equality patterns by design.
+- *Randomized encryption* (unique IV per write) maximizes confidentiality; the
+  field is NOT searchable — read and decrypt app-side.
+- Range filters (`>`, `<`, `>=`, `<=`) and `sort` on binary-storage attributes
+  are REJECTED (`UnsupportedFilter` / unsortable at query build): the stored
+  form is tagged base64, which does not preserve byte order, so a range or
+  sort would return silently wrong results.
+
+**The multitenancy discriminator stays plaintext by design.** It is a
+filter/graph selector, not secret content: Ash core injects it as a plaintext
+filter and force-set, and ash_age holds no key material. `sensitive` rejects
+the discriminator, and the verifier rejects a binary-storage-typed discriminator
+outright.
+
+**Edges.** An edge property that names a sensitive attribute must be backed by
+a binary-storage-typed DECLARED action argument — verified at compile time and
+again at runtime (an injected/undeclared argument fails the edge write closed).
+
+**Maps and lists.** JSON cannot hold raw bytes: a non-UTF-8 binary nested
+inside a `:map`/`:list` value fails closed with a value-free error naming the
+attribute (AshPostgres jsonb has the same property). Encode app-side
+(`Base.encode64`) or use a top-level `:binary` attribute.
+
+**Erasure and crypto-shred.** `destroy` runs `DETACH DELETE` — the vertex and
+every incident edge are removed. For crypto-shred, destroy the app-side key
+(per-tenant or per-record): ash_age stores only ciphertext, so key destruction
+renders stored values unrecoverable. Database backups and any AshPaperTrail
+versions retain ciphertext until they age out.
+
+**AshPaperTrail.** Point version resources at a relational data layer
+(AshPostgres) or add encrypted attributes to the version resource's ignore
+list. A version resource on `AshAge.DataLayer` stores its `changes` map as a
+vertex property, and raw ciphertext nested in that map is not JSON-encodable
+(fails closed, value-free, as above).
+
+**Ash's `sensitive?` flag.** `attribute :ssn, :binary, sensitive?: true`
+controls display/log redaction in Ash core; `age do sensitive [:ssn] end`
+controls storage shape in the graph. They are orthogonal — declare both for
+classified fields.
+
+**Filtering `skip`ped attributes.** A skipped attribute is never written by
+ash_age, so a filter on it compares against an absent property: `eq`/`in`
+match nothing and `is_nil` matches every ash_age-written row (graph NULL
+semantics). The filter is not rejected because externally-written rows may
+legitimately carry the property.
+
+**Externally-written binary rows (migration note).** ash_age reads untagged
+binary-storage-typed values verbatim (read-only grace), but all match params (filters,
+primary-key match, traversal, edge endpoints) send the tagged `$age64$` form —
+untagged rows are readable but not matchable/mutable through Ash. Migrate them
+by rewriting the property through ash_age, or store such values as `:string`.
+
 ## Multitenancy
 
 AshAge supports both Ash multitenancy strategies.
@@ -85,9 +207,9 @@ multitenancy do
 end
 ```
 
-- **Do NOT list the multitenancy attribute in `age do skip [...]`** — AshAge fails
-  compilation if you do (skipping it means the tenant discriminator is never
-  written, so the tenant filter would silently match nothing).
+- **Do NOT list the multitenancy attribute in `age do skip [...]`** — AshAge
+  rejects it with a verifier error (skipping it means the tenant discriminator is
+  never written, so the tenant filter would silently match nothing).
 - **Do NOT put the multitenancy attribute in an action's `accept`** — pass the
   tenant via `tenant:`; Ash sets/scopes it. (Listing it in `accept` makes Ash's
   required-input check reject the create.)
@@ -223,11 +345,15 @@ end
   - Use CREATE + SET pattern instead
   - For idempotency: MATCH first, then CREATE if not found
 
-**Known Issues:**
-- AGE 1.1.0 has several Cypher implementation bugs
-- collect() IS supported (despite some docs claiming otherwise)
-- OPTIONAL MATCH works for simple patterns but bugs with multi-pattern
-- datetime() function not supported (use application-side timestamp conversion)
+**AGE 1.6.0 Cypher notes** (verified against the pinned `release_PG16_1.6.0` build):
+- `collect()` and `count()` aggregates are supported.
+- `OPTIONAL MATCH` is supported, including the multi-pattern form
+  (`OPTIONAL MATCH (a:P), (b:P)`).
+- `datetime()` is NOT supported (`function datetime does not exist`); `timestamp()`
+  works and returns epoch milliseconds. Do date/datetime handling application-side —
+  ash_age serializes `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` to ISO8601 on write
+  and coerces back to the struct on read (by storage class, so `Ash.Type.NewType`
+  wrappers over those types round-trip too).
 
 **Binary attributes use a self-identifying wire format.** Values for
 `:binary`/`Ash.Type.Binary` attributes are stored as `"$age64$" <> base64(value)`.
@@ -295,8 +421,9 @@ so the rest of your suite still runs with no database:
 - Tag AGE tests `@moduletag :integration` and run them with `async: false` (AGE does not
   support concurrent transactions).
 - Graph/label creation is DDL and is **not** rolled back by the Sandbox transaction —
-  create each test's graph (unique name) on an unboxed connection and `drop_graph/2` it
-  afterward for isolation, rather than relying on transactional rollback.
+  create each test's graph (unique name) on an unboxed connection and drop it afterward
+  (`SELECT ag_catalog.drop_graph(name, true)`, or `AshAge.Migration.drop_age_graph/1`
+  in a migration) for isolation, rather than relying on transactional rollback.
 - Run locally against a throwaway AGE container mapped to a free host port, e.g.
   `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
 
@@ -396,6 +523,12 @@ yields a single record per source, `has_many` yields a list. Works with both
   fails closed. **Cost note:** the expansion runs one branch per length in
   `min_depth..max_depth` (each re-`UNWIND`ing `$ids`), so a wide `:attribute` depth
   span multiplies the per-query work by the branch count — keep the span tight.
+- **`:mixed_attribute` fails closed:** if BOTH the source and destination are
+  `:attribute`-multitenant but keyed on DIFFERENT discriminator attributes, the
+  traversal fails closed with an error — one UNION scope covers all path nodes
+  with a single attribute, and Ash carries one tenant value per load, so two
+  discriminator dimensions cannot be honored at once. Same-discriminator
+  traversals (the self-referential norm) scope normally.
 
 Values reach Cypher only as `$` parameters; every identifier is validated.
 

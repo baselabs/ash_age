@@ -15,8 +15,11 @@ defmodule AshAge.DataLayer do
   age do
     graph :my_graph
     repo MyApp.Repo
-    label :MyLabel   # optional, defaults to module short module name
-    skip [:computed]  # optional, properties to exclude from AGE
+    label :MyLabel     # optional, defaults to the module's short name
+    skip [:computed]   # optional, attributes excluded from AGE properties
+    sensitive [:ssn]   # optional, classified attributes (binary-storage or skipped)
+    rls_guc "myapp.tenant_id"  # optional, :attribute-only DB-enforced RLS backstop
+    # tenant_graph {MyApp.Graphs, :for_tenant, []}  # optional, :context graph-name override
 
     edge :related_to do
       label :RELATES_TO
@@ -25,6 +28,17 @@ defmodule AshAge.DataLayer do
     end
   end
   ```
+
+  ## Capabilities
+
+  Supports `:read`, `:create`, `:update`, `:destroy`, `:bulk_create`, `:filter`
+  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions),
+  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute` and
+  `:context`), `:composite_primary_key`, and `:changeset_filter`. Not supported:
+  `:upsert`, aggregates, and lateral joins. One subtlety: binary-storage
+  attributes are **unsortable** (`can?({:sort, :binary})` is `false`) because
+  the stored `$age64$`-tagged base64 form is not byte-order-preserving —
+  sorting on one raises `Ash.Error.Query.UnsortableField` at query build.
   """
 
   require Spark.Dsl
@@ -52,6 +66,17 @@ defmodule AshAge.DataLayer do
         type: {:list, :atom},
         default: [],
         doc: "List of attribute names to exclude from AGE vertex properties"
+      ],
+      sensitive: [
+        type: {:list, :atom},
+        default: [],
+        doc:
+          "Attribute names classified as sensitive. Fail-closed verifier check " <>
+            "(AshAge.DataLayer.Verifiers.ValidateSensitive): each must be " <>
+            "binary-storage-typed (app-side-encrypted bytes) or listed in `skip`. " <>
+            "ash_age verifies the type SHAPE — encrypting is the host app's job. " <>
+            "Verifier errors are compiler diagnostics; build with " <>
+            "--warnings-as-errors to make them blocking."
       ],
       tenant_graph: [
         type: :mfa,
@@ -126,13 +151,10 @@ defmodule AshAge.DataLayer do
     ],
     verifiers: [
       AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
-      AshAge.DataLayer.Verifiers.ValidateEdge
+      AshAge.DataLayer.Verifiers.ValidateEdge,
+      AshAge.DataLayer.Verifiers.ValidateSensitive,
+      AshAge.DataLayer.Verifiers.ValidateSkip
     ]
-
-  # Attribute types whose values are raw bytes: base64-encoded for AGE storage so
-  # non-UTF-8 bytes (e.g. AshCloak ciphertext) survive Jason.encode!, and decoded
-  # back by AshAge.Type.Cast on read.
-  @binary_types [:binary, Ash.Type.Binary]
 
   # === Capability Declarations ===
 
@@ -148,6 +170,11 @@ defmodule AshAge.DataLayer do
   def can?(_, :boolean_filter), do: true
   def can?(_, :nested_expressions), do: true
   def can?(_, :sort), do: true
+  # Ash asks {:sort, Ash.Type.storage_type(type)} (deps/ash sort.ex): binary
+  # storage is stored as tagged base64, which is not byte-order-preserving, so
+  # sorting it would return a silently wrong order. Rejecting here surfaces
+  # Ash.Error.Query.UnsortableField at query build.
+  def can?(_, {:sort, :binary}), do: false
   def can?(_, {:sort, _}), do: true
   def can?(_, {:filter_operator, :eq}), do: true
   def can?(_, {:filter_operator, :not_eq}), do: true
@@ -230,9 +257,9 @@ defmodule AshAge.DataLayer do
 
     result =
       if map_size(params) > 0 do
-        {sql, pg_params} = Parameterized.build(query.graph, cypher, params)
-        SQL.query(query.repo, sql, pg_params)
+        build_and_query(query.repo, query.graph, cypher, params)
       else
+        # static build has no params — nothing to encode, no rescue needed
         {sql, pg_params} = Parameterized.build_static(query.graph, cypher)
         SQL.query(query.repo, sql, pg_params)
       end
@@ -254,6 +281,8 @@ defmodule AshAge.DataLayer do
 
         {:ok, records}
 
+      # {:error, :params_not_json_encodable} needs no dedicated clause:
+      # redact_db_error/1 names the encode failure with a value-free reason.
       {:error, error} ->
         {:error,
          QueryFailed.exception(
@@ -288,37 +317,13 @@ defmodule AshAge.DataLayer do
 
         props = changeset_to_properties(resource, changeset)
 
-        # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
-        # map in CREATE is not supported. Must use CREATE + SET pattern instead.
-        set_clauses = set_clauses(props)
-
-        cypher =
-          if set_clauses == "" do
-            "CREATE (n:#{label}) RETURN n"
-          else
-            "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
-          end
-
-        {sql, pg_params} = Parameterized.build(graph, cypher, props)
-
-        case SQL.query(repo, sql, pg_params) do
-          {:ok, %{rows: [[vertex_text]]}} ->
-            attribute_map = Info.attribute_map(resource)
-            attribute_types = Info.attribute_types(resource)
-
-            attrs =
-              vertex_text
-              |> Agtype.decode()
-              |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
-
-            {:ok, struct(resource, attrs)}
-
-          {:error, error} ->
+        case encode_check(props) do
+          {:error, attr} ->
             {:error,
-             CreateFailed.exception(
-               resource: resource,
-               reason: redact_db_error(error)
-             )}
+             CreateFailed.exception(resource: resource, reason: encode_error_reason(attr))}
+
+          :ok ->
+            create_vertex(resource, repo, label, graph, props)
         end
 
       {:error, :tenant_required} ->
@@ -326,6 +331,41 @@ defmodule AshAge.DataLayer do
          CreateFailed.exception(
            resource: resource,
            reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # The single-create write proper (do_create's body after the graph resolution
+  # and encode pre-check both pass), extracted verbatim.
+  defp create_vertex(resource, repo, label, graph, props) do
+    # AGE does NOT support CREATE (n:Label $props) — properties as a parameter
+    # map in CREATE is not supported. Must use CREATE + SET pattern instead.
+    set_clauses = set_clauses(props)
+
+    cypher =
+      if set_clauses == "" do
+        "CREATE (n:#{label}) RETURN n"
+      else
+        "CREATE (n:#{label}) SET #{set_clauses} RETURN n"
+      end
+
+    case build_and_query(repo, graph, cypher, props) do
+      {:ok, %{rows: [[vertex_text]]}} ->
+        attribute_map = Info.attribute_map(resource)
+        attribute_types = Info.attribute_types(resource)
+
+        attrs =
+          vertex_text
+          |> Agtype.decode()
+          |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+
+        {:ok, struct(resource, attrs)}
+
+      {:error, error} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: redact_db_error(error)
          )}
     end
   end
@@ -350,7 +390,18 @@ defmodule AshAge.DataLayer do
     start = %{resource: resource, multitenancy: strategy(resource)}
 
     Telemetry.span(:bulk_create, start, fn ->
-      result = run_bulk_create(resource, entries, opts)
+      # Encode pre-check gates the whole batch BEFORE any DB touch (inside the
+      # span so the {result, metadata} contract is unchanged): a poisoned row
+      # would otherwise raise Jason.EncodeError with the bytes in the message.
+      result =
+        case first_encode_failure(entries) do
+          nil ->
+            run_bulk_create(resource, entries, opts)
+
+          attr ->
+            {:error,
+             CreateFailed.exception(resource: resource, reason: encode_error_reason(attr))}
+        end
 
       {result,
        %{
@@ -432,31 +483,14 @@ defmodule AshAge.DataLayer do
         label = validated_label(resource)
 
         changed_attrs = changeset_to_properties(resource, changeset)
-        set_clauses = set_clauses(changed_attrs)
 
-        # Match on the resource's full primary key (composite or non-:id supported).
-        # `changed_attrs` are reserved so a match param never clobbers a SET param.
-        pk = pk_pairs(resource, changeset)
-        {where_clause, match_params} = pk_match_clause(pk, changed_attrs)
-
-        case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
-          {:ok, full_where, params} ->
-            cypher = """
-            MATCH (n:#{label})
-            WHERE #{full_where}
-            SET #{set_clauses}
-            RETURN n
-            """
-
-            {sql, pg_params} = Parameterized.build(graph, cypher, params)
-            decode_update_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
-
-          {:error, _} ->
+        case encode_check(changed_attrs) do
+          {:error, attr} ->
             {:error,
-             UpdateFailed.exception(
-               resource: resource,
-               reason: "unsupported scoping filter on update"
-             )}
+             UpdateFailed.exception(resource: resource, reason: encode_error_reason(attr))}
+
+          :ok ->
+            update_vertex(resource, changeset, repo, label, graph, changed_attrs)
         end
 
       {:error, :tenant_required} ->
@@ -464,6 +498,40 @@ defmodule AshAge.DataLayer do
          UpdateFailed.exception(
            resource: resource,
            reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  # The single-update write proper (do_update's body after the graph resolution
+  # and encode pre-check both pass), extracted verbatim.
+  defp update_vertex(resource, changeset, repo, label, graph, changed_attrs) do
+    set_clauses = set_clauses(changed_attrs)
+
+    # Match on the resource's full primary key (composite or non-:id supported).
+    # `changed_attrs` are reserved so a match param never clobbers a SET param.
+    pk = pk_pairs(resource, changeset)
+    {where_clause, match_params} = pk_match_clause(pk, changed_attrs)
+
+    case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
+      {:ok, full_where, params} ->
+        cypher = """
+        MATCH (n:#{label})
+        WHERE #{full_where}
+        SET #{set_clauses}
+        RETURN n
+        """
+
+        decode_update_result(
+          resource,
+          redacted_filter(pk),
+          build_and_query(repo, graph, cypher, params)
+        )
+
+      {:error, _} ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason: "unsupported scoping filter on update"
          )}
     end
   end
@@ -510,8 +578,11 @@ defmodule AshAge.DataLayer do
             RETURN n
             """
 
-            {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:n, :agtype}])
-            decode_destroy_result(resource, Map.new(pk), SQL.query(repo, sql, pg_params))
+            decode_destroy_result(
+              resource,
+              redacted_filter(pk),
+              build_and_query(repo, graph, cypher, params, [{:n, :agtype}])
+            )
 
           {:error, _} ->
             {:error,
@@ -636,11 +707,27 @@ defmodule AshAge.DataLayer do
   # can be writable and included in an update's `accept` list, in which case
   # `get_attribute/2` would return the PENDING (new) value, and the WHERE clause
   # would match zero rows (the stored row still has the old value) instead of
-  # matching the row being renamed.
+  # matching the row being renamed. Values are serialized by attribute type so
+  # the match param carries the stored wire form (binary-storage → `$age64$`
+  # tag, dates → ISO8601) — a raw binary PK would otherwise never match.
   defp pk_pairs(resource, changeset) do
+    types = Info.attribute_types(resource)
+
     resource
     |> Ash.Resource.Info.primary_key()
-    |> Enum.map(fn field -> {field, Ash.Changeset.get_data(changeset, field)} end)
+    |> Enum.map(fn field ->
+      value = Ash.Changeset.get_data(changeset, field)
+      {field, Cast.serialize_value(value, Map.get(types, field))}
+    end)
+  end
+
+  @doc false
+  # StaleRecord's message inspects its `filter` into logs (Ash stale_record.ex),
+  # so the filter carries PK field NAMES only — values are redacted (they can be
+  # PII or ciphertext; AGENTS.md rule 5). Public for the unit test and for
+  # AshAge.Changes.DestroyEdge (same contract on the edge path).
+  def redacted_filter(pairs) do
+    Map.new(pairs, fn {field, _value} -> {field, "<redacted>"} end)
   end
 
   @doc false
@@ -711,6 +798,24 @@ defmodule AshAge.DataLayer do
     {:ok, struct(resource, attrs)}
   end
 
+  # AGE enforces no PK uniqueness, so duplicate-keyed vertices are creatable
+  # outside Ash; an update WHERE can then match 2+ rows. Fail closed with a
+  # value-free reason (the count is structural) — never a FunctionClauseError
+  # crossing the callback boundary. Destroy's [_ | _] clause already tolerates
+  # this; update must not silently pick one row, so it errors instead. The SET
+  # has already applied to every matched row by this point: Ash update actions
+  # default `transaction?: true` (and this layer advertises :transact), which
+  # rolls the multi-write back — a `transaction? false` action keeps it and
+  # only surfaces this error.
+  defp decode_update_result(resource, _filter, {:ok, %{rows: [_, _ | _] = rows}}) do
+    {:error,
+     UpdateFailed.exception(
+       resource: resource,
+       reason:
+         "update matched #{length(rows)} rows for one primary key (duplicate rows in graph?)"
+     )}
+  end
+
   defp decode_update_result(resource, filter, {:ok, %{rows: []}}) do
     {:error, StaleRecord.exception(resource: resource, filter: filter)}
   end
@@ -738,6 +843,9 @@ defmodule AshAge.DataLayer do
   # lines echo the offending values (e.g. "Key (email)=(a@b.com) already exists"),
   # so we surface only the SQLSTATE name (and constraint identifier when present),
   # never the free-text message/detail/query.
+  def redact_db_error(:params_not_json_encodable),
+    do: "query parameters not JSON-encodable (raw binary in a non-binary-typed value?)"
+
   def redact_db_error(%Postgrex.Error{postgres: %{code: code} = pg}) do
     case Map.get(pg, :constraint) do
       nil -> "database error (#{code})"
@@ -753,6 +861,54 @@ defmodule AshAge.DataLayer do
   # surface a stacktrace that can echo the query or its bound values.
   def redact_db_error(_other), do: "database error"
 
+  @doc false
+  # Pre-checks that every serialized property is JSON-encodable, returning the
+  # OFFENDING ATTRIBUTE NAME (structural, safe to surface) — never the value.
+  # Raw bytes are only JSON-safe at binary-storage-typed attributes (tagged by
+  # serialize_value); nested inside a :map/:list value they would raise
+  # Jason.EncodeError from Parameterized.build with the bytes in the message.
+  # Public so the unit suite exercises the seam without a DB.
+  def encode_check(props) do
+    case Enum.find(props, fn {_key, value} -> match?({:error, _}, Jason.encode(value)) end) do
+      nil -> :ok
+      {key, _value} -> {:error, String.to_atom(key)}
+    end
+  end
+
+  @doc false
+  # First offending attribute name across a bulk batch's `{changeset, props}`
+  # entries, or nil when every row passes encode_check/1. Public (like its
+  # encode_check/build_and_query siblings) so the unit suite can go red at the
+  # bulk gate seam without a DB.
+  def first_encode_failure(entries) do
+    Enum.find_value(entries, fn {_cs, props} ->
+      case encode_check(props) do
+        {:error, attr} -> attr
+        :ok -> nil
+      end
+    end)
+  end
+
+  defp encode_error_reason(attr) do
+    "attribute #{inspect(attr)} is not JSON-encodable (raw binary nested in a " <>
+      ":map/:list value? encode it app-side, e.g. Base.encode64, or store it " <>
+      "in a :binary-typed attribute)"
+  end
+
+  @doc false
+  # The data layer's build+execute seam: a non-JSON-encodable param fails closed
+  # as a value-free tuple BEFORE any SQL runs, instead of a raise (whose message
+  # embeds the bytes — AGENTS.md rule 5) crossing the callback boundary. The
+  # rescue classifier itself lives ONCE in Parameterized.safe_build/4. Public so
+  # the unit suite can poison the params without a DB (the failure happens at
+  # build time, before the repo is touched).
+  def build_and_query(repo, graph, cypher, params, return_types \\ [{:v, :agtype}]) do
+    case Parameterized.safe_build(graph, cypher, params, return_types) do
+      {:ok, {sql, pg_params}} -> SQL.query(repo, sql, pg_params)
+      {:error, :params_not_json_encodable} = error -> error
+    end
+  end
+
   defp changeset_to_properties(resource, changeset) do
     skip = Info.skip(resource)
     types = Info.attribute_types(resource)
@@ -766,19 +922,10 @@ defmodule AshAge.DataLayer do
   end
 
   @doc false
-  # Serializes an attribute value for AGE storage. Binary-typed values are
-  # tagged + base64-encoded (via `AshAge.Type.Cast.encode_binary/1`, the single
-  # source of truth for the wire format) so raw (non-UTF-8) bytes survive
-  # `Jason.encode!` and read-back is deterministic; the branch is type-gated so
-  # plaintext `:string` values (also Elixir binaries) are untouched.
-  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
-  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
-  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
-
-  def serialize_value(value, type) when is_binary(value) and type in @binary_types,
-    do: Cast.encode_binary(value)
-
-  def serialize_value(value, _type), do: value
+  # Delegates to AshAge.Type.Cast.serialize_value/2 — the encoder moved to Cast
+  # (level 2) in S7 so Query.Filter (level 3) can share it. Kept as a shim so
+  # existing callers keep their entry point.
+  def serialize_value(value, type), do: Cast.serialize_value(value, type)
 
   # Resolves the AGE graph for a bulk batch. An empty batch has no changeset to
   # read `to_tenant` from, so there is nothing to write and the base graph is
@@ -837,9 +984,7 @@ defmodule AshAge.DataLayer do
         "UNWIND $rows AS row CREATE (n:#{label}) SET #{set_clause} RETURN n"
       end
 
-    {sql, pg_params} = Parameterized.build(graph, cypher, %{"rows" => rows})
-
-    case SQL.query(repo, sql, pg_params) do
+    case build_and_query(repo, graph, cypher, %{"rows" => rows}) do
       {:ok, %{rows: result_rows}} ->
         cond do
           not return_records? ->

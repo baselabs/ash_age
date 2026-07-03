@@ -120,4 +120,164 @@ defmodule AshAge.Type.CastTest do
       assert attrs.payload == "not base64 !!!"
     end
   end
+
+  describe "coerce_value/2 tag-prefix gating" do
+    test "a $age64$-prefixed string on a NON-binary type returns verbatim (never guess-decoded)" do
+      literal = "$age64$" <> Base.encode64("x")
+      assert Cast.coerce_value(literal, :string) == literal
+      assert Cast.coerce_value(literal, Ash.Type.String) == literal
+    end
+
+    test "a tagged value with corrupt base64 on a binary type returns as stored" do
+      corrupt = "$age64$not-valid!!!"
+      assert Cast.coerce_value(corrupt, Ash.Type.Binary) == corrupt
+    end
+  end
+
+  describe "binary_storage?/2" do
+    test "true for :binary, Ash.Type.Binary, and binary-storage wrappers" do
+      assert Cast.binary_storage?(:binary)
+      assert Cast.binary_storage?(Ash.Type.Binary)
+      # storage_type resolution, not literal-list membership (spec D6/C3)
+      assert Cast.binary_storage?(Ash.Type.UrlEncodedBinary)
+    end
+
+    test "resolves Ash.Type.NewType wrappers to their subtype's storage" do
+      defmodule WrappedBinary do
+        use Ash.Type.NewType, subtype_of: :binary
+      end
+
+      assert Cast.binary_storage?(WrappedBinary)
+    end
+
+    test "false for nil, non-binary types, non-type atoms, and arrays" do
+      refute Cast.binary_storage?(nil)
+      refute Cast.binary_storage?(:string)
+      refute Cast.binary_storage?(Ash.Type.String)
+      refute Cast.binary_storage?(:not_a_type_at_all)
+      refute Cast.binary_storage?({:array, Ash.Type.Binary})
+    end
+  end
+
+  describe "serialize_value/2 (moved from DataLayer)" do
+    test "tags binary-storage values, passes strings through" do
+      raw = <<0, 255, 1>>
+      assert "$age64$" <> _ = Cast.serialize_value(raw, Ash.Type.Binary)
+      assert Cast.serialize_value("plain", Ash.Type.String) == "plain"
+      assert Cast.serialize_value("plain", nil) == "plain"
+    end
+
+    test "tags values of binary-storage wrapper types (UrlEncodedBinary)" do
+      raw = <<0, 255, 1>>
+      tagged = Cast.serialize_value(raw, Ash.Type.UrlEncodedBinary)
+      assert "$age64$" <> _ = tagged
+      # and the decode gate accepts the same predicate
+      assert Cast.coerce_value(tagged, Ash.Type.UrlEncodedBinary) == raw
+    end
+
+    test "dates serialize to ISO8601 (unchanged behavior)" do
+      assert Cast.serialize_value(~D[2026-07-02], Ash.Type.Date) == "2026-07-02"
+    end
+  end
+
+  describe "storage-class resolution for date/datetime coercion (NewType wrappers)" do
+    defmodule WrappedDate do
+      use Ash.Type.NewType, subtype_of: :date
+    end
+
+    defmodule WrappedUtc do
+      use Ash.Type.NewType, subtype_of: :utc_datetime
+    end
+
+    defmodule WrappedNaive do
+      use Ash.Type.NewType, subtype_of: :naive_datetime
+    end
+
+    test "coerces ISO strings for NewType wrappers over date/datetime, like builtins" do
+      # Pre-fix these returned the STRING (literal type-list dispatch missed
+      # wrappers), silently breaking the traverse F3 keyed map for NewType-date
+      # PKs — the write side serializes %Date{} -> ISO regardless of type, so
+      # coerce must be symmetric for every type whose STORAGE is date/datetime.
+      assert Cast.coerce_value("2020-01-02", WrappedDate) == ~D[2020-01-02]
+      assert Cast.coerce_value("2026-06-30T12:00:00Z", WrappedUtc) == ~U[2026-06-30 12:00:00Z]
+      assert Cast.coerce_value("2026-06-30T12:00:00", WrappedNaive) == ~N[2026-06-30 12:00:00]
+    end
+
+    test "builtin aliases and modules still coerce (regression pins)" do
+      assert Cast.coerce_value("2020-01-02", :date) == ~D[2020-01-02]
+      assert Cast.coerce_value("2020-01-02", Ash.Type.Date) == ~D[2020-01-02]
+
+      assert Cast.coerce_value("2026-06-30T12:00:00Z", :utc_datetime_usec) ==
+               ~U[2026-06-30 12:00:00Z]
+
+      assert Cast.coerce_value("2026-06-30T12:00:00", Ash.Type.NaiveDatetime) ==
+               ~N[2026-06-30 12:00:00]
+    end
+
+    test "serialize -> coerce round-trips a NewType-date value" do
+      iso = Cast.serialize_value(~D[2020-01-02], WrappedDate)
+      assert iso == "2020-01-02"
+      assert Cast.coerce_value(iso, WrappedDate) == ~D[2020-01-02]
+    end
+
+    test "a date-SHAPED string on a non-date type stays a string" do
+      assert Cast.coerce_value("2020-01-02", :string) == "2020-01-02"
+      assert Cast.coerce_value("2020-01-02", nil) == "2020-01-02"
+    end
+  end
+
+  describe "constraints threading ({type, constraints} specs)" do
+    defmodule ConstraintsBin do
+      # A type whose STORAGE depends on instance constraints — the class the
+      # one-predicate rule must not split across gates and encoder: pre-fix the
+      # verifiers/range gate saw constraints but every wire path was
+      # constraints-blind, so this type would verify sensitive-OK yet store
+      # untagged (fail-open w.r.t. the classification).
+      use Ash.Type
+
+      @impl true
+      def storage_type(constraints), do: if(constraints[:bin], do: :binary, else: :string)
+
+      @impl true
+      def cast_input(value, _), do: {:ok, value}
+
+      @impl true
+      def cast_stored(value, _), do: {:ok, value}
+
+      @impl true
+      def dump_to_native(value, _), do: {:ok, value}
+    end
+
+    test "storage_class/binary_storage? honor constraints" do
+      assert Cast.storage_class(ConstraintsBin, bin: true) == :binary
+      assert Cast.storage_class(ConstraintsBin, []) == :string
+      assert Cast.binary_storage?(ConstraintsBin, bin: true)
+      refute Cast.binary_storage?(ConstraintsBin, [])
+    end
+
+    test "serialize/coerce accept a {type, constraints} spec and honor it" do
+      raw = <<0, 255, 5>>
+
+      tagged = Cast.serialize_value(raw, {ConstraintsBin, [bin: true]})
+      assert "$age64$" <> _ = tagged
+      assert Cast.coerce_value(tagged, {ConstraintsBin, [bin: true]}) == raw
+
+      # the SAME type without the constraint stores as string: no tag, no decode
+      assert Cast.serialize_value("plain", {ConstraintsBin, []}) == "plain"
+      assert Cast.coerce_value(tagged, {ConstraintsBin, []}) == tagged
+    end
+
+    test "bare types, nil, and array types are not mistaken for specs" do
+      assert "$age64$" <> _ = Cast.serialize_value(<<0, 255>>, Ash.Type.Binary)
+      assert Cast.serialize_value("plain", nil) == "plain"
+      # {:array, type}'s second element is a type, never a keyword list — it
+      # must resolve as a bare (non-binary-storage) type, not as a spec tuple
+      refute Cast.binary_storage?({:array, Ash.Type.Binary})
+      assert Cast.serialize_value("x", {:array, :binary}) == "x"
+    end
+
+    test "date specs coerce with constraints carried" do
+      assert Cast.coerce_value("2020-01-02", {Ash.Type.Date, []}) == ~D[2020-01-02]
+    end
+  end
 end

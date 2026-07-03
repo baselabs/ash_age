@@ -96,6 +96,37 @@ defmodule AshAge.Integration.CompositePkTest do
     end
   end
 
+  defmodule BinKey do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_s7_binkey
+      repo AshAge.TestRepo
+      label :BinKey
+    end
+
+    attributes do
+      attribute :key, :binary, primary_key?: true, allow_nil?: false, public?: true
+      attribute :name, :string, public?: true
+    end
+
+    actions do
+      default_accept [:key, :name]
+      defaults [:read, :destroy]
+
+      create :create do
+        accept [:key, :name]
+      end
+
+      update :update do
+        accept [:name]
+      end
+    end
+  end
+
   defp create!(resource, attrs) do
     resource |> Ash.Changeset.for_create(:create, attrs) |> Ash.create!()
   end
@@ -173,6 +204,83 @@ defmodule AshAge.Integration.CompositePkTest do
         assert [%{key: "new-key", name: "y"}] = Ash.read!(RenamableKey)
       end,
       vlabels: ["RenamableKey"]
+    )
+  end
+
+  test "update with no changed attributes succeeds as a no-op (no invalid SET cypher)" do
+    with_graph(
+      "itest_s2_stringkey",
+      fn ->
+        created = create!(Coded, %{code: "noop", name: "a"})
+
+        assert {:ok, same} =
+                 created |> Ash.Changeset.for_update(:update, %{}) |> Ash.update()
+
+        assert same.name == "a"
+      end,
+      vlabels: ["Coded"]
+    )
+  end
+
+  test "update matching multiple rows (duplicate PK in graph) fails closed, never a raise" do
+    with_graph(
+      "itest_s2_stringkey",
+      fn ->
+        # AGE enforces no PK uniqueness — duplicate-keyed vertices are creatable
+        # outside Ash. The update WHERE then matches 2 rows; that must surface
+        # as a clean value-free error, not a FunctionClauseError crossing the
+        # data-layer callback boundary.
+        cypher_query("itest_s2_stringkey", "CREATE (:Coded {code: 'collide-k7', name: 'a'})")
+        cypher_query("itest_s2_stringkey", "CREATE (:Coded {code: 'collide-k7', name: 'b'})")
+
+        [record | _] = Ash.read!(Coded)
+
+        assert {:error, error} =
+                 record |> Ash.Changeset.for_update(:update, %{name: "c"}) |> Ash.update()
+
+        message = Exception.message(error)
+        assert message =~ "matched"
+        refute message =~ "collide-k7"
+      end,
+      vlabels: ["Coded"]
+    )
+  end
+
+  test "binary PK: create/read/update/destroy round-trip (S7 match-param encoding)" do
+    key = <<0, 255, 3, 128>>
+
+    with_graph(
+      "itest_s7_binkey",
+      fn ->
+        {:ok, created} =
+          BinKey |> Ash.Changeset.for_create(:create, %{key: key, name: "a"}) |> Ash.create()
+
+        assert created.key == key
+
+        # update matches the stored (tagged) form of the binary PK
+        {:ok, updated} =
+          created |> Ash.Changeset.for_update(:update, %{name: "b"}) |> Ash.update()
+
+        assert updated.name == "b"
+
+        # destroy matches too, and a re-destroy is StaleRecord with a REDACTED filter
+        assert :ok = updated |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy()
+
+        assert {:error, %Ash.Error.Invalid{errors: errors}} =
+                 updated |> Ash.Changeset.for_destroy(:destroy) |> Ash.destroy()
+
+        stale = Enum.find(errors, &match?(%Ash.Error.Changes.StaleRecord{}, &1))
+        assert stale
+        message = Exception.message(stale)
+        refute message =~ Base.encode64(key)
+        refute String.contains?(message, key)
+        # A filter carrying the PRE-serialization raw PK would render via
+        # inspect as <<0, 255, ...>> and dodge the two refutes above — pin
+        # that leak form too (the edge-path twin already does).
+        refute message =~ inspect(key)
+        assert message =~ "<redacted>"
+      end,
+      vlabels: ["BinKey"]
     )
   end
 end

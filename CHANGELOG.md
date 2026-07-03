@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Sensitive classification (S7).** `age do sensitive [:attrs] end` +
+  `AshAge.DataLayer.Info.sensitive/1`: fail-closed compile-time verifier
+  (`ValidateSensitive`) — each sensitive attribute must be binary-storage-typed
+  (app-side-encrypted bytes) or skipped; the multitenancy discriminator cannot be
+  sensitive; sensitive-named edge properties require binary-storage-typed declared
+  arguments (verified again at runtime on the edge write path). Spark surfaces
+  verifier errors as compiler diagnostics; build with `--warnings-as-errors`
+  to make them blocking.
+- `ValidateSkip` verifier: a primary-key attribute in `age skip` is now a verifier
+  error (previously: every update/destroy silently returned StaleRecord).
+- usage-rules/README "Sensitive Data" guidance: searchable-vs-encrypted,
+  erasure/crypto-shred, AshPaperTrail, plaintext-discriminator rationale.
 - **DB-enforced RLS (S6).** Opt-in `:attribute`-only PostgreSQL Row-Level Security,
   a defense-in-depth read-confidentiality backstop beneath Ash's app-layer tenant
   filter:
@@ -151,62 +163,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A missing tenant graph fails **closed**: a query against an unprovisioned
     `:context` graph surfaces a redacted database error, never silent empty
     results.
-
-### Changed
-
-- `update/2` and `destroy/2` now return `Ash.Error.Changes.StaleRecord` (was
-  `Ash.Error.Query.NotFound`) when the primary-key + scoping-filter `WHERE`
-  matches no row — the Ash data-layer contract for a record-based mutation whose
-  row is gone or excluded by a filter (`NotFound` is for identifier lookups;
-  `StaleRecord` is what the reference ETS data layer and Ash core return, and what
-  Ash's bulk update/destroy paths pattern-match). `destroy/2` previously returned
-  `:ok` unconditionally on a no-match (`DETACH DELETE` gives no matched/unmatched
-  signal); it now detects the 0-row case (via `RETURN n`) and surfaces
-  `StaleRecord`, so a scoping-denied or already-deleted destroy is observable and
-  consistent with `update/2`.
-
-### Security
-
-- **Cross-tenant write/delete closed.** ash_age now advertises
-  `can?(:changeset_filter) → true` and honors `changeset.filter` in `update`/
-  `destroy`, translating it into the Cypher `WHERE` (AND-ed with the primary-key
-  match). Previously the data layer matched mutations by primary key only and
-  silently dropped the tenant/policy scoping filter Ash attaches, so a
-  fabricated or non-tenant-scoped changeset carrying another tenant's primary
-  key could modify or delete that tenant's rows. Untranslatable filters fail
-  **closed** (the mutation is rejected, never silently unscoped). This also makes
-  `Ash.Policy` filters apply to mutations.
-
-### Security
-
-- Defense-in-depth against Cypher/SQL injection at every identifier interpolation
-  site. All dynamic values were already parameterized; this hardens the identifiers
-  that are interpolated into the query text:
-  - `AshAge.Query.to_cypher/1` now validates the vertex `label` and every `sort`
-    field as an AGE identifier before interpolation, and requires `offset`/`limit`
-    to be non-negative integers (raising `ArgumentError` otherwise).
-  - `AshAge.DataLayer` create/update validate every property key (`SET n.key = $key`)
-    and the label as AGE identifiers.
-  - `AshAge.Cypher.Parameterized.build/*` now reject any Cypher body containing a
-    `$$` sequence — a final centralized guard against breaking out of AGE's
-    dollar-quoted literal.
-  - `AshAge.Cypher.Parameterized` now validates `return_types` column names and
-    types as AGE identifiers before interpolating them into the outer `AS (...)`
-    record clause (which sits **outside** AGE's `$$` dollar-quote). On the public
-    `AshAge.cypher/5` surface these are caller-controlled, so an unvalidated
-    column name was a SQL-injection vector (S5 closeout).
-  - The `$$`-body rejection no longer echoes the Cypher body in its
-    `ArgumentError` message; that raise bypasses the redaction boundary, so a body
-    carrying an interpolated value would otherwise leak it into logs (S5 closeout).
-- Error messages no longer leak filtered values or database row contents.
-  `AshAge.Errors.UnsupportedFilter` now reports only the operator and referenced
-  field name (never the filtered value). `CreateFailed`/`QueryFailed`/`UpdateFailed`
-  surface only the PostgreSQL SQLSTATE code (and constraint name), never the
-  Postgres `DETAIL` line that echoes offending values. A regression test pins the
-  never-interpolate guarantee: values reach Cypher only as the `$1` parameter.
+- Live-AGE integration-test harness: a test `Ecto.Repo`, a Postgrex agtype types
+  module, `AshAge.TestDomain`, and `AshAge.DataCase` (Ecto SQL Sandbox + AGE
+  session with a `with_graph/3` helper). Integration tests are tagged
+  `:integration` and run only when `AGE_DATABASE_URL` is set; the pure-unit suite
+  still runs with no database.
+- Feasibility probes verifying AGE 1.6.0 behavior later work depends on: bulk
+  `UNWIND … SET n.k = row.k` (supported), parameterized `MATCH (a),(b) … CREATE
+  (a)-[:REL]->(b)` (supported), and that `ag_catalog.cypher()` honors `FORCE`
+  row-level security under a non-superuser role with a GUC-keyed policy
+  (supported — confirms DB-enforced tenant isolation on AGE is viable).
+- CI pins the Apache AGE service image by digest (`release_PG16_1.6.0`, AGE 1.6.0
+  / PostgreSQL 16) and runs the integration lane against it.
+- Unit test coverage for the previously untested query-building path:
+  `AshAge.Cypher.Parameterized`, `AshAge.Query`, `AshAge.Query.Filter`,
+  `AshAge.Type.Agtype`, `AshAge.Type.Cast`, and `AshAge.DataLayer.set_clauses/1`
+  (47 new tests, no database required).
+- `AshAge.DataLayer` declares `can?(_, :composite_primary_key) == true`, so
+  resources with a composite primary key now compile and CRUD correctly.
 
 ### Fixed
 
+- **Sensitive data / binary-storage fixes (S7).** Filter `eq`/`not_eq`/`in`,
+  primary-key match (update/destroy), traversal ids, and edge endpoint params now
+  encode binary-storage values to the stored `$age64$` wire form — equality search
+  on encrypted (binary) attributes and binary primary keys previously never matched
+  (or raised `Jason.EncodeError`).
+- Non-JSON-encodable values (raw bytes nested in `:map`/`:list`, or a struct with no
+  `Jason.Encoder` impl nested in a param) now fail closed with a value-free error
+  naming the attribute; previously `Jason.EncodeError`/`Protocol.UndefinedError`
+  leaked the raw bytes or inspected value into the exception message.
+- `StaleRecord` errors no longer carry primary-key/endpoint values in their `filter`
+  (Ash inspects it into log messages); the filter keeps field names and replaces each
+  value with `"<redacted>"`.
+- An update whose primary-key `WHERE` matches more than one row (duplicate-keyed
+  vertices are creatable outside Ash — AGE enforces no PK uniqueness) now fails closed
+  with a value-free `UpdateFailed` instead of raising `FunctionClauseError` across the
+  data-layer callback boundary.
+- Attribute-to-attribute filter comparisons (`attr1 == attr2`, and a `Ref` nested in an
+  `in` list) now return `UnsupportedFilter` instead of binding the `Ref` struct as a
+  parameter and surfacing downstream as a misleading "not JSON-encodable" error.
+- `Ash.Type.NewType` wrappers over date/datetime types now coerce stored ISO8601
+  values back to `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` on read (previously the
+  raw string was returned, silently breaking traversal key-matching for wrapped date
+  primary keys). Coercion dispatches on the resolved Ash STORAGE class
+  (`AshAge.Type.Cast.storage_class/2`), the same resolution the binary predicate uses.
+- Attribute constraints now reach every wire path (encoder, decode gate, filter cast,
+  edge property guard) — a custom type whose `storage_type/1` depends on instance
+  constraints can no longer pass the sensitive-classification verifier yet store
+  untagged.
 - **`:attribute` traversal scopes off the source strategy too (S5 closeout).**
   `AshAge.ManualRelationships.Traverse` now applies per-node tenant scoping when
   **either** the source or the destination resource is `:attribute`-multitenant.
@@ -252,26 +257,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ash_age did not encode (legacy or out-of-band data) is returned verbatim, never
   guess-decoded, even if it is syntactically valid base64.
 
-### Added
+### Changed
 
-- Live-AGE integration-test harness: a test `Ecto.Repo`, a Postgrex agtype types
-  module, `AshAge.TestDomain`, and `AshAge.DataCase` (Ecto SQL Sandbox + AGE
-  session with a `with_graph/3` helper). Integration tests are tagged
-  `:integration` and run only when `AGE_DATABASE_URL` is set; the pure-unit suite
-  still runs with no database.
-- Feasibility probes verifying AGE 1.6.0 behavior later work depends on: bulk
-  `UNWIND … SET n.k = row.k` (supported), parameterized `MATCH (a),(b) … CREATE
-  (a)-[:REL]->(b)` (supported), and that `ag_catalog.cypher()` honors `FORCE`
-  row-level security under a non-superuser role with a GUC-keyed policy
-  (supported — confirms DB-enforced tenant isolation on AGE is viable).
-- CI pins the Apache AGE service image by digest (`release_PG16_1.6.0`, AGE 1.6.0
-  / PostgreSQL 16) and runs the integration lane against it.
-- Unit test coverage for the previously untested query-building path:
-  `AshAge.Cypher.Parameterized`, `AshAge.Query`, `AshAge.Query.Filter`,
-  `AshAge.Type.Agtype`, `AshAge.Type.Cast`, and `AshAge.DataLayer.set_clauses/1`
-  (47 new tests, no database required).
-- `AshAge.DataLayer` declares `can?(_, :composite_primary_key) == true`, so
-  resources with a composite primary key now compile and CRUD correctly.
+- **Binary-storage behavior changes (S7).** Range filters (`>`, `<`, `>=`, `<=`) on
+  binary-storage attributes return `UnsupportedFilter` (previously compared the
+  tagged-base64 stored form — silently wrong results). Sort on binary storage is
+  rejected at query build (`can?({:sort, :binary})` is false).
+- Stored binary values not written by ash_age (untagged/legacy/external) are readable
+  verbatim but no longer matchable through Ash filters or mutations (read-only grace):
+  match params now send the tagged form. Migrate such rows or store them as `:string`.
+- A binary-storage-typed multitenancy discriminator is now rejected by a verifier (it
+  would scope vertex filters, edge tenant params, traversal, and RLS paths
+  inconsistently).
+- `AshAge.DataLayer.Info.attribute_types/1` now returns `{type, constraints}` tuples
+  (previously bare types) so constraints reach the encode/decode paths;
+  `AshAge.Type.Cast.serialize_value/2` and `coerce_value/2` accept both bare types
+  and `{type, constraints}` specs.
+- `update/2` and `destroy/2` now return `Ash.Error.Changes.StaleRecord` (was
+  `Ash.Error.Query.NotFound`) when the primary-key + scoping-filter `WHERE`
+  matches no row — the Ash data-layer contract for a record-based mutation whose
+  row is gone or excluded by a filter (`NotFound` is for identifier lookups;
+  `StaleRecord` is what the reference ETS data layer and Ash core return, and what
+  Ash's bulk update/destroy paths pattern-match). `destroy/2` previously returned
+  `:ok` unconditionally on a no-match (`DETACH DELETE` gives no matched/unmatched
+  signal); it now detects the 0-row case (via `RETURN n`) and surfaces
+  `StaleRecord`, so a scoping-denied or already-deleted destroy is observable and
+  consistent with `update/2`.
+
+### Security
+
+- **Cross-tenant write/delete closed.** ash_age now advertises
+  `can?(:changeset_filter) → true` and honors `changeset.filter` in `update`/
+  `destroy`, translating it into the Cypher `WHERE` (AND-ed with the primary-key
+  match). Previously the data layer matched mutations by primary key only and
+  silently dropped the tenant/policy scoping filter Ash attaches, so a
+  fabricated or non-tenant-scoped changeset carrying another tenant's primary
+  key could modify or delete that tenant's rows. Untranslatable filters fail
+  **closed** (the mutation is rejected, never silently unscoped). This also makes
+  `Ash.Policy` filters apply to mutations.
+- Defense-in-depth against Cypher/SQL injection at every identifier interpolation
+  site. All dynamic values were already parameterized; this hardens the identifiers
+  that are interpolated into the query text:
+  - `AshAge.Query.to_cypher/1` now validates the vertex `label` and every `sort`
+    field as an AGE identifier before interpolation, and requires `offset`/`limit`
+    to be non-negative integers (raising `ArgumentError` otherwise).
+  - `AshAge.DataLayer` create/update validate every property key (`SET n.key = $key`)
+    and the label as AGE identifiers.
+  - `AshAge.Cypher.Parameterized.build/*` now reject any Cypher body containing a
+    `$$` sequence — a final centralized guard against breaking out of AGE's
+    dollar-quoted literal.
+  - `AshAge.Cypher.Parameterized` now validates `return_types` column names and
+    types as AGE identifiers before interpolating them into the outer `AS (...)`
+    record clause (which sits **outside** AGE's `$$` dollar-quote). On the public
+    `AshAge.cypher/5` surface these are caller-controlled, so an unvalidated
+    column name was a SQL-injection vector (S5 closeout).
+  - The `$$`-body rejection no longer echoes the Cypher body in its
+    `ArgumentError` message; that raise bypasses the redaction boundary, so a body
+    carrying an interpolated value would otherwise leak it into logs (S5 closeout).
+- Error messages no longer leak filtered values or database row contents.
+  `AshAge.Errors.UnsupportedFilter` now reports only the operator and referenced
+  field name (never the filtered value). `CreateFailed`/`QueryFailed`/`UpdateFailed`
+  surface only the PostgreSQL SQLSTATE code (and constraint name), never the
+  Postgres `DETAIL` line that echoes offending values. A regression test pins the
+  never-interpolate guarantee: values reach Cypher only as the `$1` parameter.
 
 ## [0.2.6] - 2026-02-14
 

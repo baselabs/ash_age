@@ -20,7 +20,6 @@ defmodule AshAge.Changes.DestroyEdge do
   alias Ash.Error.Changes.InvalidRelationship
   alias Ash.Error.Changes.StaleRecord
   alias AshAge.Changes.EdgeCypher
-  alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
@@ -48,6 +47,7 @@ defmodule AshAge.Changes.DestroyEdge do
           {:ok, graph} ->
             tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
             src_key = EdgeCypher.source_key(resource, record)
+            dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
             destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
 
           {:error, :tenant_required} ->
@@ -78,22 +78,30 @@ defmodule AshAge.Changes.DestroyEdge do
 
   defp destroy_one(resource, edge, graph, src_key, dest_id, tenant) do
     {cypher, params} = build_destroy(resource, edge, src_key, dest_id, tenant)
-    {sql, pg_params} = Parameterized.build(graph, cypher, params, [{:r, :agtype}])
 
-    case SQL.query(Info.repo(resource), sql, pg_params) do
-      {:ok, %{num_rows: n}} when n >= 1 ->
-        {:ok, :destroyed}
+    case EdgeCypher.safe_build(graph, cypher, params, [{:r, :agtype}]) do
+      {:error, message} ->
+        {:error, InvalidRelationship.exception(relationship: edge.name, message: message)}
 
-      {:ok, %{num_rows: 0}} ->
-        {:error,
-         StaleRecord.exception(resource: resource, filter: Map.put(src_key, "dst", dest_id))}
+      {:ok, {sql, pg_params}} ->
+        case SQL.query(Info.repo(resource), sql, pg_params) do
+          {:ok, %{num_rows: n}} when n >= 1 ->
+            {:ok, :destroyed}
 
-      {:error, error} ->
-        {:error,
-         InvalidRelationship.exception(
-           relationship: edge.name,
-           message: DataLayer.redact_db_error(error)
-         )}
+          {:ok, %{num_rows: 0}} ->
+            {:error,
+             StaleRecord.exception(
+               resource: resource,
+               filter: DataLayer.redacted_filter(Map.put(src_key, "dst", dest_id))
+             )}
+
+          {:error, error} ->
+            {:error,
+             InvalidRelationship.exception(
+               relationship: edge.name,
+               message: DataLayer.redact_db_error(error)
+             )}
+        end
     end
   end
 
@@ -106,6 +114,9 @@ defmodule AshAge.Changes.DestroyEdge do
     dest_label = EdgeCypher.validated_label(edge.destination)
     edge_label = Migration.validate_identifier!(edge.label)
     dest_pk = EdgeCypher.destination_pk!(edge.destination)
+
+    # PRECONDITION: dest_id is already serialized to the stored wire form
+    # (EdgeCypher.serialize_destination_ids/2, hoisted out of the per-dest loop).
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)

@@ -2,8 +2,9 @@ defmodule AshAge.Integration.TraverseTest do
   @moduledoc """
   Live-AGE correctness + SECURITY proof surface for
   `AshAge.ManualRelationships.Traverse`: multi-hop reach, multi-path dedup, all
-  three directions, composite + UUID source PK key-equality, nested-load-through-
-  traversal in-tenant, the two cross-tenant tripwires (`:context` + `:attribute`),
+  three directions, composite + UUID source PK key-equality, binary-PK `$ids`
+  encoding + F3 keyed-map round-trip (S7), nested-load-through-traversal
+  in-tenant, the two cross-tenant tripwires (`:context` + `:attribute`),
   the `row_count` pre-dedup fan-out telemetry signal, and the two fail-closed
   blank-tenant paths. Edges are seeded via the library's own `cypher_query/3`
   seam (S5 dogfoods parameterized Cypher).
@@ -753,6 +754,156 @@ defmodule AshAge.Integration.TraverseTest do
       end,
       vlabels: ["SNode", "GNode"],
       elabels: ["LINK"]
+    )
+  end
+
+  # --- binary-PK resource: S7 `$ids` encoding (tagged stored form must match) ---
+
+  defmodule BinNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_s7_bintrav)
+      repo(AshAge.TestRepo)
+      label(:BinNode)
+
+      edge :links do
+        label(:BINLINK)
+        destination(__MODULE__)
+      end
+    end
+
+    attributes do
+      attribute(:key, :binary, primary_key?: true, allow_nil?: false, public?: true)
+    end
+
+    relationships do
+      has_many :reachable, __MODULE__ do
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :BINLINK, direction: :outgoing, max_depth: 2}
+        )
+      end
+
+      has_many(:links, __MODULE__, source_attribute: :key, destination_attribute: :key)
+    end
+
+    actions do
+      default_accept([:key])
+      defaults([:read, :destroy])
+
+      create :create do
+        accept([:key])
+        argument(:to, {:array, :binary})
+        change({AshAge.Changes.CreateEdge, edge: :links, to: :to})
+      end
+    end
+  end
+
+  # ===================================================================
+  # Test 14 — binary source PK: `$ids` carries the tagged stored form
+  # ===================================================================
+  test "traversal from a binary-PK source returns the F3 keyed map (S7 $ids encoding)" do
+    a = <<0, 255, 10>>
+    b = <<0, 255, 11>>
+
+    with_graph(
+      "itest_s7_bintrav",
+      fn ->
+        {:ok, _} = BinNode |> Ash.Changeset.for_create(:create, %{key: b}) |> Ash.create()
+
+        {:ok, src} =
+          BinNode |> Ash.Changeset.for_create(:create, %{key: a, to: [b]}) |> Ash.create()
+
+        loaded = Ash.load!(src, :reachable)
+        assert [%BinNode{key: ^b}] = loaded.reachable
+      end,
+      vlabels: ["BinNode"],
+      elabels: ["BINLINK"]
+    )
+  end
+
+  defmodule DayKey do
+    use Ash.Type.NewType, subtype_of: :date
+  end
+
+  defmodule DateNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_datetrav)
+      repo(AshAge.TestRepo)
+      label(:DateNode)
+
+      edge :links do
+        label(:DAYLINK)
+        destination(__MODULE__)
+      end
+    end
+
+    attributes do
+      attribute(:key, DayKey, primary_key?: true, allow_nil?: false, public?: true)
+    end
+
+    relationships do
+      has_many :reachable, __MODULE__ do
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :DAYLINK, direction: :outgoing, max_depth: 2}
+        )
+      end
+
+      has_many(:links, __MODULE__, source_attribute: :key, destination_attribute: :key)
+    end
+
+    actions do
+      default_accept([:key])
+      defaults([:read, :destroy])
+
+      create :create do
+        accept([:key])
+        argument(:to, {:array, DayKey})
+        change({AshAge.Changes.CreateEdge, edge: :links, to: :to})
+      end
+    end
+  end
+
+  # ===================================================================
+  # Test 15 — NewType-over-:date source PK: storage-class coercion keeps
+  # the F3 keyed map keyed by %Date{} (pre-fix: coerce returned the ISO
+  # STRING, so the map key never equaled the record key and the
+  # relationship silently loaded empty — the silent-drop class in memory
+  # ash-age-manual-rel-f3-key-coercion).
+  # ===================================================================
+  test "traversal from a NewType-date PK source returns the F3 keyed map" do
+    a = ~D[2026-01-01]
+    b = ~D[2026-01-02]
+
+    with_graph(
+      "itest_datetrav",
+      fn ->
+        {:ok, created_b} =
+          DateNode |> Ash.Changeset.for_create(:create, %{key: b}) |> Ash.create()
+
+        # read-back returns the STRUCT, not the ISO string (storage-class coercion)
+        assert created_b.key == b
+        assert [%DateNode{key: read_key} | _] = Ash.read!(DateNode)
+        assert %Date{} = read_key
+
+        {:ok, src} =
+          DateNode |> Ash.Changeset.for_create(:create, %{key: a, to: [b]}) |> Ash.create()
+
+        loaded = Ash.load!(src, :reachable)
+        assert [%DateNode{key: ^b}] = loaded.reachable
+      end,
+      vlabels: ["DateNode"],
+      elabels: ["DAYLINK"]
     )
   end
 end
