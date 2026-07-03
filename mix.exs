@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "0.2.6"
+  @version "1.0.0"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
@@ -56,7 +56,7 @@ defmodule AshAge.MixProject do
       {:jason, "~> 1.2"},
       {:ecto, "~> 3.10"},
       {:ecto_sql, "~> 3.10"},
-      {:postgrex, ">= 0.0.0"},
+      {:postgrex, "~> 0.19 or ~> 1.0"},
       {:telemetry, "~> 1.0"},
 
       # Dev/Test dependencies

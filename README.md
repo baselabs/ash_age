@@ -35,7 +35,7 @@ database to deploy or operate.
 | **Raw Cypher** | `AshAge.cypher/5` parameterized escape hatch for queries the DSL can't express |
 | **Telemetry** | A `:telemetry` span on every operation, with metadata guaranteed free of values and secrets |
 
-> Pre-1.0 (`0.2.x`): the API is still stabilizing — see the [CHANGELOG](CHANGELOG.md) for changes.
+> `1.0` — the public API is stable and follows [semantic versioning](https://semver.org). Upgrading from `0.2.x`? See the [CHANGELOG](CHANGELOG.md) "Upgrading from 0.2.x" notes.
 
 ## Installation
 
@@ -44,7 +44,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 0.2"}
+    {:ash_age, "~> 1.0"}
   ]
 end
 ```
