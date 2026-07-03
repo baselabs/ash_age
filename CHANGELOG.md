@@ -196,6 +196,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StaleRecord` errors no longer carry primary-key/endpoint values in their `filter`
   (Ash inspects it into log messages); the filter keeps field names and replaces each
   value with `"<redacted>"`.
+- An update whose primary-key `WHERE` matches more than one row (duplicate-keyed
+  vertices are creatable outside Ash — AGE enforces no PK uniqueness) now fails closed
+  with a value-free `UpdateFailed` instead of raising `FunctionClauseError` across the
+  data-layer callback boundary.
+- Attribute-to-attribute filter comparisons (`attr1 == attr2`, and a `Ref` nested in an
+  `in` list) now return `UnsupportedFilter` instead of binding the `Ref` struct as a
+  parameter and surfacing downstream as a misleading "not JSON-encodable" error.
 - `Ash.Type.NewType` wrappers over date/datetime types now coerce stored ISO8601
   values back to `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` on read (previously the
   raw string was returned, silently breaking traversal key-matching for wrapped date
