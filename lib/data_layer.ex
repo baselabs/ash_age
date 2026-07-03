@@ -58,10 +58,12 @@ defmodule AshAge.DataLayer do
         type: {:list, :atom},
         default: [],
         doc:
-          "Attribute names classified as sensitive. Fail-closed compile check " <>
+          "Attribute names classified as sensitive. Fail-closed verifier check " <>
             "(AshAge.DataLayer.Verifiers.ValidateSensitive): each must be " <>
             "binary-storage-typed (app-side-encrypted bytes) or listed in `skip`. " <>
-            "ash_age verifies the type SHAPE — encrypting is the host app's job."
+            "ash_age verifies the type SHAPE — encrypting is the host app's job. " <>
+            "Verifier errors are compiler diagnostics; build with " <>
+            "--warnings-as-errors to make them blocking."
       ],
       tenant_graph: [
         type: :mfa,

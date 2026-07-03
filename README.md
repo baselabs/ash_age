@@ -223,16 +223,17 @@ app-side-encrypted bytes (AshCloak/Cloak) in `:binary` attributes:
 age do
   graph :my_graph
   repo MyApp.Repo
-  sensitive [:ssn]  # compile-time fail-closed: binary-storage-typed or skipped
+  sensitive [:ssn]  # verifier-enforced: binary-storage-typed or skipped
 end
 ```
 
 Deterministic ciphertext is equality-searchable (`eq`/`not_eq`/`in` — ash_age
 encodes filter values to the same encoded form it stores); range filters and
 sort on binary attributes are rejected rather than silently wrong. Erasure is
-`DETACH DELETE`; crypto-shred means destroying the app-side key. See
-`usage-rules.md` "Sensitive Data" for the full guidance (AshPaperTrail, maps,
-migration notes).
+`DETACH DELETE`; crypto-shred means destroying the app-side key. Verifier
+errors surface as compiler diagnostics (Spark-wide behavior) — build with
+`--warnings-as-errors` to make them blocking. See `usage-rules.md`
+"Sensitive Data" for the full guidance (AshPaperTrail, maps, migration notes).
 
 ### Telemetry
 

@@ -1,7 +1,9 @@
 defmodule AshAge.DataLayer.Verifiers.ValidateEdge do
   @moduledoc """
-  Fails compilation when an `edge` entity's `label` or a `properties` key is not
-  a valid AGE identifier.
+  Raises a `Spark.Error.DslError` at compile verification when an `edge`
+  entity's `label` or a `properties` key is not a valid AGE identifier
+  (build-blocking under `--warnings-as-errors` — Spark emits verifier errors
+  as compiler diagnostics).
 
   Edge labels are interpolated directly into Cypher (`MATCH (n)-[r:LABEL]->()`).
   Edge property keys have no query-generation consumer yet, but a later task

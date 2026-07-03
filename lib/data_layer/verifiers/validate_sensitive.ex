@@ -1,7 +1,9 @@
 defmodule AshAge.DataLayer.Verifiers.ValidateSensitive do
   @moduledoc """
-  Fails compilation when the `age do sensitive [...] end` classification cannot
-  hold:
+  Raises a `Spark.Error.DslError` at compile verification when the
+  `age do sensitive [...] end` classification cannot hold (Spark surfaces
+  verifier errors as compiler diagnostics — build-blocking under
+  `--warnings-as-errors`):
 
   - **R1** — every listed name is a declared attribute. A typo would silently
     protect nothing.

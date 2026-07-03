@@ -79,7 +79,7 @@ ash_age stores vertex properties as JSON inside AGE. For classified values
 age do
   graph :my_graph
   repo MyApp.Repo
-  sensitive [:ssn]        # fail-closed compile check
+  sensitive [:ssn]        # fail-closed verifier check
 end
 
 attributes do
@@ -95,6 +95,13 @@ written to the graph). It cannot verify that the bytes are actually encrypted �
 that is your application's job (AshCloak or Cloak; ash_age round-trips the
 ciphertext via the tagged `$age64$` base64 wire format). A `:binary` attribute
 holding plaintext bytes passes the verifier.
+
+**Enforcement point.** Spark surfaces verifier errors as compiler diagnostics:
+a default `mix compile` prints the `Spark.Error.DslError` as a warning and
+still builds the module. Compile with `--warnings-as-errors` (standard CI
+practice; this library's own gate battery uses it) to make every verifier rule
+build-blocking. This is Spark/Ash-ecosystem-wide behavior, not specific to
+ash_age's verifiers.
 
 **Searchable vs. maximally confidential.**
 
@@ -163,9 +170,9 @@ multitenancy do
 end
 ```
 
-- **Do NOT list the multitenancy attribute in `age do skip [...]`** — AshAge fails
-  compilation if you do (skipping it means the tenant discriminator is never
-  written, so the tenant filter would silently match nothing).
+- **Do NOT list the multitenancy attribute in `age do skip [...]`** — AshAge
+  rejects it with a verifier error (skipping it means the tenant discriminator is
+  never written, so the tenant filter would silently match nothing).
 - **Do NOT put the multitenancy attribute in an action's `accept`** — pass the
   tenant via `tenant:`; Ash sets/scopes it. (Listing it in `accept` makes Ash's
   required-input check reject the create.)

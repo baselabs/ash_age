@@ -1,12 +1,14 @@
 defmodule AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr do
   @moduledoc """
-  Fails compilation when a resource using `:attribute` multitenancy lists the
-  multitenancy attribute in `age do skip [...] end`.
+  Raises a `Spark.Error.DslError` at compile verification when a resource using
+  `:attribute` multitenancy lists the multitenancy attribute in
+  `age do skip [...] end` (build-blocking under `--warnings-as-errors` — Spark
+  emits verifier errors as compiler diagnostics).
 
   If the discriminator is skipped, ash_age never writes it as a graph property,
   so the tenant filter Ash core injects on reads silently matches nothing — a
   fail-open isolation hole with no runtime signal. This verifier turns that into
-  a compile error. It is additive to Ash's own `ValidateMultitenancy` (which
+  a verifier error. It is additive to Ash's own `ValidateMultitenancy` (which
   checks the attribute exists); this closes only the skip-list hole.
 
   It also enforces two `age do rls_guc "..." end` invariants. `rls_guc` requires

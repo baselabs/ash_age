@@ -171,7 +171,10 @@ Key changes that affect agent behavior:
   `skip`ped), R3 (the multitenancy discriminator can't be `sensitive`), and R4
   (an edge property naming a sensitive attribute needs a binary-storage-typed
   DECLARED action argument); `ValidateSkip` makes a primary-key attribute in
-  `age skip` a compile error (previously silent perpetual `StaleRecord`). The
+  `age skip` a verifier error (previously silent perpetual `StaleRecord`). Spark
+  emits verifier `DslError`s as compiler diagnostics (warnings) — they are
+  build-blocking only under `--warnings-as-errors` (ecosystem-wide Spark
+  behavior; the docs state the enforcement point explicitly). The
   runtime R4 half lives in `AshAge.Changes.CreateEdge.edge_properties/2`: it
   returns `{:ok, props} | {:error, key}`, halting closed when a sensitive edge
   property's DECLARED argument isn't binary-storage-typed — this catches an
@@ -179,10 +182,10 @@ Key changes that affect agent behavior:
   `ValidateMultitenancyAttr` gained a `with`-chain restructure (four checks:
   discriminator-not-skipped, discriminator-not-binary,
   rls_guc-requires-attribute, rls_guc-not-global) and a new binary-discriminator
-  rule — a binary-storage-typed multitenancy attribute is now a compile error,
-  since the
-  discriminator is a plaintext comparator across the vertex filter, edge
-  `$tenant` scoping, traverse per-hop scoping, and RLS text-cast paths.
+  rule — a binary-storage-typed multitenancy attribute is now a verifier
+  error, since the discriminator is a plaintext comparator across the vertex
+  filter, edge `$tenant` scoping, traverse per-hop scoping, and RLS text-cast
+  paths.
   **`sensitive` verifies TYPE SHAPE, not encryption** — a `:binary` attribute
   holding plaintext bytes passes; encrypting is the host app's job
   (AshCloak/Cloak). **Dependency levels unchanged:** `cast` stays Level 2

@@ -1,6 +1,8 @@
 defmodule AshAge.DataLayer.Verifiers.ValidateSkip do
   @moduledoc """
-  Fails compilation when a primary-key attribute appears in `age do skip [...]`.
+  Raises a `Spark.Error.DslError` at compile verification when a primary-key
+  attribute appears in `age do skip [...]` (build-blocking under
+  `--warnings-as-errors` — Spark emits verifier errors as compiler diagnostics).
 
   A skipped attribute is never written as a graph property, but update/destroy
   always MATCH on the full primary key — so a skipped PK makes every mutation

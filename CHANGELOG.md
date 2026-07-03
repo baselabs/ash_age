@@ -10,13 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Sensitive classification (S7).** `age do sensitive [:attrs] end` +
-  `AshAge.DataLayer.Info.sensitive/1`: fail-closed compile verifier
+  `AshAge.DataLayer.Info.sensitive/1`: fail-closed compile-time verifier
   (`ValidateSensitive`) — each sensitive attribute must be binary-storage-typed
   (app-side-encrypted bytes) or skipped; the multitenancy discriminator cannot be
   sensitive; sensitive-named edge properties require binary-storage-typed declared
-  arguments (verified again at runtime on the edge write path).
-- `ValidateSkip` verifier: a primary-key attribute in `age skip` is now a compile error
-  (previously: every update/destroy silently returned StaleRecord).
+  arguments (verified again at runtime on the edge write path). Spark surfaces
+  verifier errors as compiler diagnostics; build with `--warnings-as-errors`
+  to make them blocking.
+- `ValidateSkip` verifier: a primary-key attribute in `age skip` is now a verifier
+  error (previously: every update/destroy silently returned StaleRecord).
 - usage-rules/README "Sensitive Data" guidance: searchable-vs-encrypted,
   erasure/crypto-shred, AshPaperTrail, plaintext-discriminator rationale.
 
@@ -44,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stored binary values not written by ash_age (untagged/legacy/external) are readable
   verbatim but no longer matchable through Ash filters or mutations (read-only grace):
   match params now send the tagged form. Migrate such rows or store them as `:string`.
-- A binary-storage-typed multitenancy discriminator is now a compile error (it would
-  scope vertex filters, edge tenant params, traversal, and RLS paths inconsistently).
+- A binary-storage-typed multitenancy discriminator is now rejected by a verifier (it
+  would scope vertex filters, edge tenant params, traversal, and RLS paths
+  inconsistently).
 
 ### Added
 
