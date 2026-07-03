@@ -207,6 +207,45 @@ defmodule AshAge.Integration.CompositePkTest do
     )
   end
 
+  test "update with no changed attributes succeeds as a no-op (no invalid SET cypher)" do
+    with_graph(
+      "itest_s2_stringkey",
+      fn ->
+        created = create!(Coded, %{code: "noop", name: "a"})
+
+        assert {:ok, same} =
+                 created |> Ash.Changeset.for_update(:update, %{}) |> Ash.update()
+
+        assert same.name == "a"
+      end,
+      vlabels: ["Coded"]
+    )
+  end
+
+  test "update matching multiple rows (duplicate PK in graph) fails closed, never a raise" do
+    with_graph(
+      "itest_s2_stringkey",
+      fn ->
+        # AGE enforces no PK uniqueness — duplicate-keyed vertices are creatable
+        # outside Ash. The update WHERE then matches 2 rows; that must surface
+        # as a clean value-free error, not a FunctionClauseError crossing the
+        # data-layer callback boundary.
+        cypher_query("itest_s2_stringkey", "CREATE (:Coded {code: 'collide-k7', name: 'a'})")
+        cypher_query("itest_s2_stringkey", "CREATE (:Coded {code: 'collide-k7', name: 'b'})")
+
+        [record | _] = Ash.read!(Coded)
+
+        assert {:error, error} =
+                 record |> Ash.Changeset.for_update(:update, %{name: "c"}) |> Ash.update()
+
+        message = Exception.message(error)
+        assert message =~ "matched"
+        refute message =~ "collide-k7"
+      end,
+      vlabels: ["Coded"]
+    )
+  end
+
   test "binary PK: create/read/update/destroy round-trip (S7 match-param encoding)" do
     key = <<0, 255, 3, 128>>
 

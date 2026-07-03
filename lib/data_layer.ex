@@ -785,6 +785,20 @@ defmodule AshAge.DataLayer do
     {:ok, struct(resource, attrs)}
   end
 
+  # AGE enforces no PK uniqueness, so duplicate-keyed vertices are creatable
+  # outside Ash; an update WHERE can then match 2+ rows. Fail closed with a
+  # value-free reason (the count is structural) — never a FunctionClauseError
+  # crossing the callback boundary. Destroy's [_ | _] clause already tolerates
+  # this; update must not silently pick one row, so it errors instead.
+  defp decode_update_result(resource, _filter, {:ok, %{rows: [_, _ | _] = rows}}) do
+    {:error,
+     UpdateFailed.exception(
+       resource: resource,
+       reason:
+         "update matched #{length(rows)} rows for one primary key (duplicate rows in graph?)"
+     )}
+  end
+
   defp decode_update_result(resource, filter, {:ok, %{rows: []}}) do
     {:error, StaleRecord.exception(resource: resource, filter: filter)}
   end

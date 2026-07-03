@@ -131,27 +131,39 @@ defmodule AshAge.DataLayer.Verifiers.ValidateSensitive do
       offending =
         dsl_state
         |> Verifier.get_entities([:actions])
-        |> Enum.flat_map(fn action -> Map.get(action, :arguments) || [] end)
-        |> Enum.find(fn arg ->
-          arg.name in edge_keys and not Cast.binary_storage?(arg.type, arg.constraints)
-        end)
+        |> Enum.find_value(&offending_argument(&1, edge_keys))
 
       case offending do
         nil ->
           :ok
 
-        arg ->
+        {action_name, arg_name} ->
           {:error,
            DslError.exception(
              module: module,
              path: [:age, :sensitive],
              message:
-               "edge property #{inspect(arg.name)} names a sensitive attribute, so every " <>
+               "edge property #{inspect(arg_name)} names a sensitive attribute, so every " <>
                  "same-named action argument must be a binary-storage-typed declared " <>
                  "action argument — otherwise the classified datum reaches edges as " <>
-                 "plaintext. Retype the argument :binary or rename it."
+                 "plaintext. Offending argument on action #{inspect(action_name)}; " <>
+                 "retype it :binary or rename it."
            )}
       end
+    end
+  end
+
+  # `{action_name, arg_name}` for the first non-binary-storage declared argument
+  # whose name collides with a sensitive edge-property key; nil when the action
+  # is clean. Keeps the action name so the R4 error can say WHERE.
+  defp offending_argument(action, edge_keys) do
+    (Map.get(action, :arguments) || [])
+    |> Enum.find(fn arg ->
+      arg.name in edge_keys and not Cast.binary_storage?(arg.type, arg.constraints)
+    end)
+    |> case do
+      nil -> nil
+      arg -> {action.name, arg.name}
     end
   end
 end

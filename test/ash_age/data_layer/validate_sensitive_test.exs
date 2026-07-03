@@ -195,6 +195,8 @@ defmodule AshAge.DataLayer.ValidateSensitiveTest do
 
     assert error.message =~ "ssn"
     assert error.message =~ "binary-storage-typed declared action argument"
+    # names the offending action so a multi-action resource is debuggable
+    assert error.message =~ "action :create"
   end
 
   test "R4 passes when the same-named argument is binary-typed" do
