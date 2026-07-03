@@ -1,16 +1,41 @@
 # ash_age
 
-> **⚠️ AI-Generated Code - Use at Your Own Risk**
->
-> This package was initially created using AI tools as part of a larger project
-> integration effort. While functional, it may not reflect production-ready
-> standards or best practices for a standalone library.
->
-> **Use this code at your own discretion.** Review it carefully before
-> using in production. Pull requests and contributions to improve the
-> implementation and documentation are welcome.
+**An [Ash Framework](https://hexdocs.pm/ash) data layer for [Apache AGE](https://age.apache.org) — model your Ash resources as a property graph (vertices and edges) inside the PostgreSQL you already run.**
 
-Ash DataLayer for Apache AGE graph database.
+Apache AGE adds openCypher graph queries to PostgreSQL. `ash_age` maps Ash
+resources onto it: a resource becomes a labeled vertex, its relationships become
+real graph edges, and reachability questions become bounded traversals — all
+behind the full Ash stack (actions, changes, policies, multitenancy, code
+interfaces) and running on your existing `Ecto.Repo`. There is no separate graph
+database to deploy or operate.
+
+## Why ash_age
+
+- **Graph modeling in Ash.** Edges are first-class and traversals are
+  depth-bounded — reachability without hand-written recursive CTEs.
+- **On the Postgres you already have.** Reuses the Ecto connection pool; no new
+  datastore, driver, or operational surface.
+- **The whole Ash stack still applies.** Actions, changes, calculations,
+  policies, multitenancy, and code interfaces all work over graph-backed
+  resources.
+- **Secure by construction.** Every value is bound as a query parameter, every
+  interpolated identifier is validated, database errors are redacted, and
+  classified attributes are checked by compile-time verifiers.
+
+## Capabilities
+
+| Area | What you get |
+|------|--------------|
+| **CRUD & bulk** | Resources as labeled vertices; `Ash.bulk_create` via `UNWIND`; single and composite primary keys |
+| **Edges** | Create/destroy graph edges from actions, edge properties, incoming / outgoing / undirected |
+| **Traversal** | Bounded variable-length traversal as an Ash manual relationship — per-source dedup, cardinality-aware |
+| **Multitenancy** | Both Ash strategies — `:attribute` (one tenant-filtered graph) and `:context` (graph-per-tenant) — plus opt-in DB-enforced Row-Level Security |
+| **Sensitive data** | Fail-closed classification verifiers; deterministic-encryption equality search on ciphertext |
+| **Filtering** | `eq` / `not_eq` / `in` / `is_nil`, ranges, boolean and nested expressions, sort, limit, offset |
+| **Raw Cypher** | `AshAge.cypher/5` parameterized escape hatch for queries the DSL can't express |
+| **Telemetry** | A `:telemetry` span on every operation, with metadata guaranteed free of values and secrets |
+
+> Pre-1.0 (`0.2.x`): the API is still stabilizing — see the [CHANGELOG](CHANGELOG.md) for changes.
 
 ## Installation
 
@@ -32,7 +57,10 @@ expected to work but are not covered by CI.
 
 ## Usage
 
-See `lib/ash_age.ex` for full documentation.
+The Quick Start below gets a resource reading and writing to a graph. For the
+complete reference, see the [DSL reference](documentation/dsls/DSL-AshAge.DataLayer.md),
+[usage-rules.md](usage-rules.md) (the full behavioral contract), and the
+[troubleshooting guide](documentation/troubleshooting.md).
 
 ### Quick Start
 
