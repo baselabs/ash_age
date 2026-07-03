@@ -825,4 +825,85 @@ defmodule AshAge.Integration.TraverseTest do
       elabels: ["BINLINK"]
     )
   end
+
+  defmodule DayKey do
+    use Ash.Type.NewType, subtype_of: :date
+  end
+
+  defmodule DateNode do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph(:itest_datetrav)
+      repo(AshAge.TestRepo)
+      label(:DateNode)
+
+      edge :links do
+        label(:DAYLINK)
+        destination(__MODULE__)
+      end
+    end
+
+    attributes do
+      attribute(:key, DayKey, primary_key?: true, allow_nil?: false, public?: true)
+    end
+
+    relationships do
+      has_many :reachable, __MODULE__ do
+        manual(
+          {AshAge.ManualRelationships.Traverse,
+           edge_label: :DAYLINK, direction: :outgoing, max_depth: 2}
+        )
+      end
+
+      has_many(:links, __MODULE__, source_attribute: :key, destination_attribute: :key)
+    end
+
+    actions do
+      default_accept([:key])
+      defaults([:read, :destroy])
+
+      create :create do
+        accept([:key])
+        argument(:to, {:array, DayKey})
+        change({AshAge.Changes.CreateEdge, edge: :links, to: :to})
+      end
+    end
+  end
+
+  # ===================================================================
+  # Test 15 — NewType-over-:date source PK: storage-class coercion keeps
+  # the F3 keyed map keyed by %Date{} (pre-fix: coerce returned the ISO
+  # STRING, so the map key never equaled the record key and the
+  # relationship silently loaded empty — the silent-drop class in memory
+  # ash-age-manual-rel-f3-key-coercion).
+  # ===================================================================
+  test "traversal from a NewType-date PK source returns the F3 keyed map" do
+    a = ~D[2026-01-01]
+    b = ~D[2026-01-02]
+
+    with_graph(
+      "itest_datetrav",
+      fn ->
+        {:ok, created_b} =
+          DateNode |> Ash.Changeset.for_create(:create, %{key: b}) |> Ash.create()
+
+        # read-back returns the STRUCT, not the ISO string (storage-class coercion)
+        assert created_b.key == b
+        assert [%DateNode{key: read_key} | _] = Ash.read!(DateNode)
+        assert %Date{} = read_key
+
+        {:ok, src} =
+          DateNode |> Ash.Changeset.for_create(:create, %{key: a, to: [b]}) |> Ash.create()
+
+        loaded = Ash.load!(src, :reachable)
+        assert [%DateNode{key: ^b}] = loaded.reachable
+      end,
+      vlabels: ["DateNode"],
+      elabels: ["DAYLINK"]
+    )
+  end
 end

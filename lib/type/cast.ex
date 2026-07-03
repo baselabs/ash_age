@@ -5,25 +5,6 @@ defmodule AshAge.Type.Cast do
 
   alias AshAge.Type.Vertex
 
-  @date_types [
-    :date,
-    Ash.Type.Date
-  ]
-
-  @datetime_types [
-    :utc_datetime,
-    :utc_datetime_usec,
-    Ash.Type.DateTime,
-    Ash.Type.UtcDatetime,
-    Ash.Type.UtcDatetimeUsec
-  ]
-
-  @naive_datetime_types [
-    :naive_datetime,
-    :naive_datetime_usec,
-    Ash.Type.NaiveDatetime
-  ]
-
   # Wire-format tag prefixing every ash_age-encoded binary value. Its purpose is
   # to make read-back deterministic: a stored string carries the tag iff ash_age
   # base64-encoded it, so decoding is never a guess. Legacy or externally-written
@@ -40,19 +21,26 @@ defmodule AshAge.Type.Cast do
   def encode_binary(value) when is_binary(value), do: @binary_tag <> Base.encode64(value)
 
   @doc false
-  # TRUE when `type` stores as raw bytes (storage type `:binary`), resolving
-  # builtin aliases (`:binary`) and `Ash.Type.NewType` wrappers exactly the way
-  # Ash itself keys sort capability (`Ash.Type.storage_type/2`). This is the ONE
-  # binary-type predicate — the encoder, the decode gate, the filter cast, and
-  # the classification verifiers all key off it, so a type can never be encoded
-  # by one path and missed by another. `nil`/unknown types → false.
-  def binary_storage?(type, constraints \\ [])
-  def binary_storage?(nil, _constraints), do: false
+  # Resolves `type` to its Ash STORAGE class (`:binary`, `:date`,
+  # `:utc_datetime`, `:naive_datetime`, `:string`, ...), through builtin
+  # aliases and `Ash.Type.NewType` wrappers, honoring `constraints` exactly
+  # the way Ash itself keys sort capability (`Ash.Type.storage_type/2`). This
+  # is the ONE type-resolution home — the encoder, the decode gate, the filter
+  # cast, and the classification verifiers all key off it (directly or via
+  # binary_storage?/2), so a type can never be handled by one path and missed
+  # by another. `nil`/unknown types → nil.
+  def storage_class(type, constraints \\ [])
+  def storage_class(nil, _constraints), do: nil
 
-  def binary_storage?(type, constraints) do
+  def storage_class(type, constraints) do
     resolved = Ash.Type.get_type(type)
-    Ash.Type.ash_type?(resolved) and Ash.Type.storage_type(resolved, constraints) == :binary
+    if Ash.Type.ash_type?(resolved), do: Ash.Type.storage_type(resolved, constraints), else: nil
   end
+
+  @doc false
+  # TRUE when `type` stores as raw bytes — the classification predicate the
+  # verifiers, the range/sort gates, and the encoder share.
+  def binary_storage?(type, constraints \\ []), do: storage_class(type, constraints) == :binary
 
   @doc false
   # Serializes an attribute/argument value for AGE storage or match-param use.
@@ -121,38 +109,39 @@ defmodule AshAge.Type.Cast do
   (`AshAge.ManualRelationships.Traverse`). A `nil`/unknown `type` returns the
   value verbatim (identity), so callers may pass a type map that omits a field.
   """
-  @spec coerce_value(term(), atom() | nil) :: term()
-  def coerce_value(value, type) when is_binary(value) and type in @date_types do
-    coerce_date(value)
-  end
-
-  def coerce_value(value, type) when is_binary(value) and type in @datetime_types do
-    coerce_datetime(value)
-  end
-
-  def coerce_value(value, type) when is_binary(value) and type in @naive_datetime_types do
-    coerce_naive_datetime(value)
-  end
-
-  def coerce_value(@binary_tag <> encoded = original, type) do
-    if binary_storage?(type) do
-      case Base.decode64(encoded) do
-        {:ok, decoded} -> decoded
-        # A tagged value that fails to decode is corrupt/unexpected; return it
-        # as stored rather than crash the read path.
-        :error -> original
-      end
-    else
-      original
+  @spec coerce_value(term(), atom() | module() | nil) :: term()
+  def coerce_value(value, type) when is_binary(value) do
+    # Dispatch by STORAGE class (not literal type lists) so NewType wrappers
+    # coerce exactly like the builtin they store as — the write side
+    # serializes %Date{}/%DateTime{} structurally, so the read side must be
+    # symmetric for every type whose storage is date/datetime, or a wrapped
+    # date PK silently breaks key equality (traverse F3 keyed map).
+    case storage_class(type) do
+      :date -> coerce_date(value)
+      :utc_datetime -> coerce_datetime(value)
+      :naive_datetime -> coerce_naive_datetime(value)
+      :binary -> coerce_binary(value)
+      _ -> value
     end
   end
 
-  # Untagged binary-storage values (legacy/pre-tag or externally written) fall
-  # through to the identity clause below and are returned verbatim — READ-ONLY
-  # grace: as of S7 the match paths (filter/PK/traverse/edge) send the tagged
-  # form, so untagged rows are readable but not matchable through Ash. Never
-  # guess-decode a string that merely looks like base64.
   def coerce_value(value, _type), do: value
+
+  # Tag-gated decode. Untagged binary-storage values (legacy/pre-tag or
+  # externally written) are returned verbatim — READ-ONLY grace: as of S7 the
+  # match paths (filter/PK/traverse/edge) send the tagged form, so untagged
+  # rows are readable but not matchable through Ash. Never guess-decode a
+  # string that merely looks like base64.
+  defp coerce_binary(@binary_tag <> encoded = original) do
+    case Base.decode64(encoded) do
+      {:ok, decoded} -> decoded
+      # A tagged value that fails to decode is corrupt/unexpected; return it
+      # as stored rather than crash the read path.
+      :error -> original
+    end
+  end
+
+  defp coerce_binary(value), do: value
 
   defp coerce_date(value) do
     case Date.from_iso8601(value) do

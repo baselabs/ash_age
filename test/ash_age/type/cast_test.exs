@@ -179,4 +179,50 @@ defmodule AshAge.Type.CastTest do
       assert Cast.serialize_value(~D[2026-07-02], Ash.Type.Date) == "2026-07-02"
     end
   end
+
+  describe "storage-class resolution for date/datetime coercion (NewType wrappers)" do
+    defmodule WrappedDate do
+      use Ash.Type.NewType, subtype_of: :date
+    end
+
+    defmodule WrappedUtc do
+      use Ash.Type.NewType, subtype_of: :utc_datetime
+    end
+
+    defmodule WrappedNaive do
+      use Ash.Type.NewType, subtype_of: :naive_datetime
+    end
+
+    test "coerces ISO strings for NewType wrappers over date/datetime, like builtins" do
+      # Pre-fix these returned the STRING (literal type-list dispatch missed
+      # wrappers), silently breaking the traverse F3 keyed map for NewType-date
+      # PKs — the write side serializes %Date{} -> ISO regardless of type, so
+      # coerce must be symmetric for every type whose STORAGE is date/datetime.
+      assert Cast.coerce_value("2020-01-02", WrappedDate) == ~D[2020-01-02]
+      assert Cast.coerce_value("2026-06-30T12:00:00Z", WrappedUtc) == ~U[2026-06-30 12:00:00Z]
+      assert Cast.coerce_value("2026-06-30T12:00:00", WrappedNaive) == ~N[2026-06-30 12:00:00]
+    end
+
+    test "builtin aliases and modules still coerce (regression pins)" do
+      assert Cast.coerce_value("2020-01-02", :date) == ~D[2020-01-02]
+      assert Cast.coerce_value("2020-01-02", Ash.Type.Date) == ~D[2020-01-02]
+
+      assert Cast.coerce_value("2026-06-30T12:00:00Z", :utc_datetime_usec) ==
+               ~U[2026-06-30 12:00:00Z]
+
+      assert Cast.coerce_value("2026-06-30T12:00:00", Ash.Type.NaiveDatetime) ==
+               ~N[2026-06-30 12:00:00]
+    end
+
+    test "serialize -> coerce round-trips a NewType-date value" do
+      iso = Cast.serialize_value(~D[2020-01-02], WrappedDate)
+      assert iso == "2020-01-02"
+      assert Cast.coerce_value(iso, WrappedDate) == ~D[2020-01-02]
+    end
+
+    test "a date-SHAPED string on a non-date type stays a string" do
+      assert Cast.coerce_value("2020-01-02", :string) == "2020-01-02"
+      assert Cast.coerce_value("2020-01-02", nil) == "2020-01-02"
+    end
+  end
 end
