@@ -135,12 +135,19 @@ Key changes that affect agent behavior:
 - Unreleased (S7): Sensitive-data classification. **`age do sensitive [:attrs] end`**
   (`AshAge.DataLayer.Info.sensitive/1`) declares attributes that must be
   app-side-encrypted (or excluded) before they reach the graph. **One
-  predicate/one encoder rule:** `AshAge.Type.Cast.binary_storage?/2` (via
-  `Ash.Type.storage_type/2`, builtin `:binary` and `Ash.Type.NewType` wrappers
-  alike) is the SOLE binary-storage test, and `Cast.serialize_value/2` (moved
+  predicate/one encoder rule:** `AshAge.Type.Cast.storage_class/2` (via
+  `Ash.Type.storage_type/2`, builtin aliases and `Ash.Type.NewType` wrappers
+  alike, constraints honored) is the SOLE type-resolution home:
+  `binary_storage?/2` delegates to it, and `coerce_value/2` dispatches
+  date/datetime/binary coercion on the resolved STORAGE class, not literal
+  type lists (a wrapped date PK previously read back as the ISO string and
+  silently broke traversal F3 key equality). `Cast.serialize_value/2` (moved
   to `cast.ex`, Level 2, in S7 so `Query.Filter`, Level 3, can share it) is the
   SOLE value encoder — `AshAge.DataLayer.serialize_value/2` is now a delegating
-  shim. Every match param routes through it: filter `eq`/`not_eq`/`in`,
+  shim. Serialize/coerce accept a type SPEC (bare type or `{type, constraints}`);
+  `Info.attribute_types/1` emits the tuple form so attribute constraints reach
+  every wire path — the same inputs the verifiers and range/sort gates resolve
+  with. Every match param routes through it: filter `eq`/`not_eq`/`in`,
   `pk_pairs` (update/destroy PK match), traversal source `$ids`, and edge
   `src_key`/`dst` params (the destination is typed by the DESTINATION
   RESOURCE's PK attribute, not the source's). **Range/sort rejected on binary

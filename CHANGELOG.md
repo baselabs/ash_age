@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StaleRecord` errors no longer carry primary-key/endpoint values in their `filter`
   (Ash inspects it into log messages); the filter keeps field names and replaces each
   value with `"<redacted>"`.
+- `Ash.Type.NewType` wrappers over date/datetime types now coerce stored ISO8601
+  values back to `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` on read (previously the
+  raw string was returned, silently breaking traversal key-matching for wrapped date
+  primary keys). Coercion dispatches on the resolved Ash STORAGE class
+  (`AshAge.Type.Cast.storage_class/2`), the same resolution the binary predicate uses.
+- Attribute constraints now reach every wire path (encoder, decode gate, filter cast,
+  edge property guard) — a custom type whose `storage_type/1` depends on instance
+  constraints can no longer pass the sensitive-classification verifier yet store
+  untagged.
 
 ### Changed
 
@@ -49,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A binary-storage-typed multitenancy discriminator is now rejected by a verifier (it
   would scope vertex filters, edge tenant params, traversal, and RLS paths
   inconsistently).
+- `AshAge.DataLayer.Info.attribute_types/1` now returns `{type, constraints}` tuples
+  (previously bare types) so constraints reach the encode/decode paths;
+  `AshAge.Type.Cast.serialize_value/2` and `coerce_value/2` accept both bare types
+  and `{type, constraints}` specs.
 
 ### Added
 
