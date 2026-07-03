@@ -149,6 +149,30 @@ defmodule AshAge.Query.FilterTest do
       assert query.params == %{"param1" => Enum.map(raws, &Cast.encode_binary/1)}
     end
 
+    test "not_eq on a binary-storage attribute sends the tagged form" do
+      raw = <<0, 255, 1>>
+
+      {:ok, query, clause} =
+        Filter.translate(%NotEq{left: typed_ref(:payload, Ash.Type.Binary), right: raw}, q())
+
+      assert clause == "n.payload <> $param1"
+      assert query.params == %{"param1" => Cast.encode_binary(raw)}
+    end
+
+    test "attribute-to-attribute comparison is UnsupportedFilter, not a poisoned param" do
+      # A Ref on the RIGHT side has no bindable value; binding the struct would
+      # surface downstream as a misleading "params not JSON-encodable" error.
+      right = %Ref{attribute: %{name: :other, type: Ash.Type.String, constraints: []}}
+
+      for op <- [Eq, NotEq, GreaterThan] do
+        assert {:error, %UnsupportedFilter{field: :payload}} =
+                 Filter.translate(
+                   struct(op, left: typed_ref(:payload, Ash.Type.Binary), right: right),
+                   q()
+                 )
+      end
+    end
+
     test "eq on a string attribute is untouched (tenant filters stay raw)" do
       {:ok, query, _} =
         Filter.translate(%Eq{left: typed_ref(:tenant_id, Ash.Type.String), right: "t1"}, q())

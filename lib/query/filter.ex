@@ -58,6 +58,25 @@ defmodule AshAge.Query.Filter do
     end
   end
 
+  # Attribute-to-attribute comparisons (`attr1 == attr2`) carry a Ref on the
+  # RIGHT side — there is no bindable value. Without this clause the Ref struct
+  # itself would be bound as a param and fail downstream as "params not
+  # JSON-encodable" (fail-closed, but a misleading error class). Reject it
+  # structurally as unsupported instead. Must precede every operator clause.
+  defp do_translate(%mod{left: %Ash.Query.Ref{}, right: %Ash.Query.Ref{}} = expr, _query)
+       when mod in [
+              Ash.Query.Operator.Eq,
+              Ash.Query.Operator.NotEq,
+              Ash.Query.Operator.In,
+              Ash.Query.Operator.GreaterThan,
+              Ash.Query.Operator.LessThan,
+              Ash.Query.Operator.GreaterThanOrEqual,
+              Ash.Query.Operator.LessThanOrEqual
+            ] do
+    {operator, field} = unsupported_shape(expr)
+    {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+  end
+
   # Equality
   defp do_translate(
          %Ash.Query.Operator.Eq{left: %Ash.Query.Ref{attribute: attr}, right: value},
