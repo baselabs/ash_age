@@ -58,7 +58,7 @@ defmodule AshAge.DataLayer.Info do
   @doc """
   Gets the attribute type specs for a resource (name → `{type, constraints}`).
 
-  Carries constraints so every wire path (`AshAge.Type.Cast.serialize_value/2`,
+  Carries constraints so every wire path (`AshAge.Type.Cast.serialize_value`,
   `coerce_value/2`) resolves storage classes with the SAME inputs the
   verifiers and range/sort gates use (`Ash.Type.storage_type/2`) — a type
   whose storage class depends on constraints must never verify one way and

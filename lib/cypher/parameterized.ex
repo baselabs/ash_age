@@ -42,7 +42,7 @@ defmodule AshAge.Cypher.Parameterized do
   embeds the raw bytes in its message, and `Protocol.UndefinedError` (a struct
   with no `Jason.Encoder` impl nested in a param) inspects the value into its
   message. This is the ONE home for that classifier — every executing caller
-  (`AshAge.DataLayer.build_and_query/5`, `AshAge.Changes.EdgeCypher.safe_build/4`,
+  (`AshAge.DataLayer.build_and_query`, `AshAge.Changes.EdgeCypher.safe_build`,
   `AshAge.cypher/5`, the traverse path) routes through it, so the redaction
   logic cannot drift between copies. Identifier/`$$`-breakout `ArgumentError`s
   propagate unchanged: they are value-free by design and must stay loud.

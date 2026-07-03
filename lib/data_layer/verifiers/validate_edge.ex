@@ -7,7 +7,7 @@ defmodule AshAge.DataLayer.Verifiers.ValidateEdge do
 
   Edge labels are interpolated directly into Cypher (`MATCH (n)-[r:LABEL]->()`).
   Edge property keys have no query-generation consumer yet, but a later task
-  will interpolate them the same way `set_clauses/1` handles vertex property
+  will interpolate them the same way `set_clauses` handles vertex property
   keys (`SET e.<key> = $<key>`), so they are validated here at declaration time
   rather than deferred to when that path lands.
   """

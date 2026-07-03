@@ -84,6 +84,9 @@ defmodule AshAge.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url: @source_url,
+      # The changelog references internal and historical functions by name;
+      # those are expected not to resolve as hexdocs links.
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"],
       extras: [
         "README.md",
         "usage-rules.md",
