@@ -87,12 +87,14 @@ defmodule AshAge.MixProject do
       extras: [
         "README.md",
         "usage-rules.md",
+        "documentation/troubleshooting.md",
         "documentation/dsls/DSL-AshAge.DataLayer.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
       ],
       groups_for_extras: [
+        Guides: ["documentation/troubleshooting.md"],
         Reference: ["documentation/dsls/DSL-AshAge.DataLayer.md", "usage-rules.md"]
       ],
       groups_for_modules: [
