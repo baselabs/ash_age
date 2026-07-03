@@ -142,3 +142,33 @@ jobs:
 
       - run: mix deps.get
       - run: mix dialyzer
+
+  notebook:
+    name: Notebook
+    runs-on: ubuntu-latest
+    services:
+      age:
+        image: apache/age@sha256:16aa423d20a31aed36a3313244bf7aa00731325862f20ed584510e381f2feaed
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ash_age_test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
+      ASH_AGE_SRC: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - run: elixir scripts/run_notebook.exs notebooks/getting_started.livemd
