@@ -225,4 +225,59 @@ defmodule AshAge.Type.CastTest do
       assert Cast.coerce_value("2020-01-02", nil) == "2020-01-02"
     end
   end
+
+  describe "constraints threading ({type, constraints} specs)" do
+    defmodule ConstraintsBin do
+      # A type whose STORAGE depends on instance constraints — the class the
+      # one-predicate rule must not split across gates and encoder: pre-fix the
+      # verifiers/range gate saw constraints but every wire path was
+      # constraints-blind, so this type would verify sensitive-OK yet store
+      # untagged (fail-open w.r.t. the classification).
+      use Ash.Type
+
+      @impl true
+      def storage_type(constraints), do: if(constraints[:bin], do: :binary, else: :string)
+
+      @impl true
+      def cast_input(value, _), do: {:ok, value}
+
+      @impl true
+      def cast_stored(value, _), do: {:ok, value}
+
+      @impl true
+      def dump_to_native(value, _), do: {:ok, value}
+    end
+
+    test "storage_class/binary_storage? honor constraints" do
+      assert Cast.storage_class(ConstraintsBin, bin: true) == :binary
+      assert Cast.storage_class(ConstraintsBin, []) == :string
+      assert Cast.binary_storage?(ConstraintsBin, bin: true)
+      refute Cast.binary_storage?(ConstraintsBin, [])
+    end
+
+    test "serialize/coerce accept a {type, constraints} spec and honor it" do
+      raw = <<0, 255, 5>>
+
+      tagged = Cast.serialize_value(raw, {ConstraintsBin, [bin: true]})
+      assert "$age64$" <> _ = tagged
+      assert Cast.coerce_value(tagged, {ConstraintsBin, [bin: true]}) == raw
+
+      # the SAME type without the constraint stores as string: no tag, no decode
+      assert Cast.serialize_value("plain", {ConstraintsBin, []}) == "plain"
+      assert Cast.coerce_value(tagged, {ConstraintsBin, []}) == tagged
+    end
+
+    test "bare types, nil, and array types are not mistaken for specs" do
+      assert "$age64$" <> _ = Cast.serialize_value(<<0, 255>>, Ash.Type.Binary)
+      assert Cast.serialize_value("plain", nil) == "plain"
+      # {:array, type}'s second element is a type, never a keyword list — it
+      # must resolve as a bare (non-binary-storage) type, not as a spec tuple
+      refute Cast.binary_storage?({:array, Ash.Type.Binary})
+      assert Cast.serialize_value("x", {:array, :binary}) == "x"
+    end
+
+    test "date specs coerce with constraints carried" do
+      assert Cast.coerce_value("2020-01-02", {Ash.Type.Date, []}) == ~D[2020-01-02]
+    end
+  end
 end

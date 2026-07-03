@@ -196,12 +196,13 @@ defmodule AshAge.Query.Filter do
     {:error, UnsupportedFilter.exception(operator: operator, field: field)}
   end
 
-  # Value casting for AGE compatibility, typed by the ref's attribute. Binary-
-  # storage values are tagged (so equality matches the stored wire form —
+  # Value casting for AGE compatibility, typed by the ref's attribute (type AND
+  # constraints — the same inputs rangeable/2 and the verifiers resolve with).
+  # Binary-storage values are tagged (so equality matches the stored wire form —
   # deterministic-encryption search); dates become ISO8601; refs without a type
   # (bare maps in unit tests, non-attribute refs) pass values through unchanged.
   defp cast_value(value, attr) do
-    Cast.serialize_value(value, attr_type(attr))
+    Cast.serialize_value(value, {attr_type(attr), attr_constraints(attr)})
   end
 
   defp attr_type(%{type: type}), do: type

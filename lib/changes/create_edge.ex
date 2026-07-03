@@ -205,21 +205,25 @@ defmodule AshAge.Changes.CreateEdge do
     |> Enum.map(fn key -> {key, Ash.Changeset.get_argument(changeset, key)} end)
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Enum.reduce_while({:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      type = Map.get(arg_types, key)
+      # {type, constraints} spec — the guard and the encoder resolve the
+      # storage class with the SAME inputs the compile-time verifier (R4)
+      # uses, so a declared argument can never verify one way and store
+      # another. An undeclared (set_argument-injected) key has no spec:
+      # {nil, []} → binary_storage? false → fail-closed halt.
+      {type, constraints} = Map.get(arg_types, key, {nil, []})
 
-      # Deliberately constraints-blind (unlike the verifier's
-      # binary_storage?(type, constraints)) to stay aligned with the encoder
-      # Cast.serialize_value/2 -- the divergence direction is fail-closed.
-      if key in sensitive and not Cast.binary_storage?(type) do
+      if key in sensitive and not Cast.binary_storage?(type, constraints) do
         {:halt, {:error, key}}
       else
-        {:cont, {:ok, Map.put(acc, key, Cast.serialize_value(value, type))}}
+        {:cont, {:ok, Map.put(acc, key, Cast.serialize_value(value, {type, constraints}))}}
       end
     end)
   end
 
   defp argument_types(%{action: %{arguments: arguments}}) when is_list(arguments) do
-    Map.new(arguments, fn %{name: name, type: type} -> {name, type} end)
+    Map.new(arguments, fn %{name: name, type: type} = arg ->
+      {name, {type, Map.get(arg, :constraints) || []}}
+    end)
   end
 
   defp argument_types(_changeset), do: %{}

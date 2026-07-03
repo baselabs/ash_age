@@ -46,11 +46,19 @@ defmodule AshAge.DataLayer.Info do
     |> Map.new(fn attr -> {attr.name, Atom.to_string(attr.name)} end)
   end
 
-  @doc "Gets the attribute types for a resource (name → Ash type)."
+  @doc """
+  Gets the attribute type specs for a resource (name → `{type, constraints}`).
+
+  Carries constraints so every wire path (`AshAge.Type.Cast.serialize_value/2`,
+  `coerce_value/2`) resolves storage classes with the SAME inputs the
+  verifiers and range/sort gates use (`Ash.Type.storage_type/2`) — a type
+  whose storage class depends on constraints must never verify one way and
+  encode another.
+  """
   def attribute_types(resource) do
     resource
     |> ResourceInfo.attributes()
-    |> Map.new(fn attr -> {attr.name, attr.type} end)
+    |> Map.new(fn attr -> {attr.name, {attr.type, attr.constraints}} end)
   end
 
   defp default_label(resource) do

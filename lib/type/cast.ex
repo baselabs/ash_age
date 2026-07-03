@@ -42,21 +42,34 @@ defmodule AshAge.Type.Cast do
   # verifiers, the range/sort gates, and the encoder share.
   def binary_storage?(type, constraints \\ []), do: storage_class(type, constraints) == :binary
 
+  # A "type spec" is a bare type (atom / module / `{:array, inner}`) or a
+  # `{type, constraints}` tuple. Constraints are ALWAYS a keyword list, and an
+  # array type's second element is always a type — the `is_list` guard cannot
+  # confuse the two shapes. `Info.attribute_types/1` emits the tuple form, so
+  # attribute constraints reach every wire path (encoder, decode gate, filter
+  # cast) — the same constraints the verifiers and range/sort gates check;
+  # without this, a type whose storage class depends on constraints would
+  # verify one way and store another.
+  defp normalize_spec({type, constraints}) when is_list(constraints), do: {type, constraints}
+  defp normalize_spec(type), do: {type, []}
+
   @doc false
   # Serializes an attribute/argument value for AGE storage or match-param use.
   # Binary-storage values are tagged + base64-encoded so raw bytes survive
   # `Jason.encode!` and read-back is deterministic; date/datetime values become
-  # ISO8601; everything else passes through. Moved from AshAge.DataLayer in S7
-  # so level-3 modules (Query.Filter) can call it without importing level 5.
-  def serialize_value(%DateTime{} = dt, _type), do: DateTime.to_iso8601(dt)
-  def serialize_value(%NaiveDateTime{} = ndt, _type), do: NaiveDateTime.to_iso8601(ndt)
-  def serialize_value(%Date{} = d, _type), do: Date.to_iso8601(d)
+  # ISO8601; everything else passes through. Accepts a type spec (see
+  # normalize_spec/1). Moved from AshAge.DataLayer in S7 so level-3 modules
+  # (Query.Filter) can call it without importing level 5.
+  def serialize_value(%DateTime{} = dt, _spec), do: DateTime.to_iso8601(dt)
+  def serialize_value(%NaiveDateTime{} = ndt, _spec), do: NaiveDateTime.to_iso8601(ndt)
+  def serialize_value(%Date{} = d, _spec), do: Date.to_iso8601(d)
 
-  def serialize_value(value, type) when is_binary(value) do
-    if binary_storage?(type), do: encode_binary(value), else: value
+  def serialize_value(value, spec) when is_binary(value) do
+    {type, constraints} = normalize_spec(spec)
+    if binary_storage?(type, constraints), do: encode_binary(value), else: value
   end
 
-  def serialize_value(value, _type), do: value
+  def serialize_value(value, _spec), do: value
 
   @doc """
   Converts a vertex to a map of resource attributes.
@@ -109,14 +122,16 @@ defmodule AshAge.Type.Cast do
   (`AshAge.ManualRelationships.Traverse`). A `nil`/unknown `type` returns the
   value verbatim (identity), so callers may pass a type map that omits a field.
   """
-  @spec coerce_value(term(), atom() | module() | nil) :: term()
-  def coerce_value(value, type) when is_binary(value) do
+  @spec coerce_value(term(), atom() | module() | tuple() | nil) :: term()
+  def coerce_value(value, spec) when is_binary(value) do
+    {type, constraints} = normalize_spec(spec)
+
     # Dispatch by STORAGE class (not literal type lists) so NewType wrappers
     # coerce exactly like the builtin they store as — the write side
     # serializes %Date{}/%DateTime{} structurally, so the read side must be
     # symmetric for every type whose storage is date/datetime, or a wrapped
     # date PK silently breaks key equality (traverse F3 keyed map).
-    case storage_class(type) do
+    case storage_class(type, constraints) do
       :date -> coerce_date(value)
       :utc_datetime -> coerce_datetime(value)
       :naive_datetime -> coerce_naive_datetime(value)
@@ -125,7 +140,7 @@ defmodule AshAge.Type.Cast do
     end
   end
 
-  def coerce_value(value, _type), do: value
+  def coerce_value(value, _spec), do: value
 
   # Tag-gated decode. Untagged binary-storage values (legacy/pre-tag or
   # externally written) are returned verbatim — READ-ONLY grace: as of S7 the
