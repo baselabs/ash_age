@@ -20,14 +20,14 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: deps-cache
         with:
           path: |
@@ -47,14 +47,14 @@ jobs:
     name: Compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: deps-cache
         with:
           path: |
@@ -90,14 +90,14 @@ jobs:
     env:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: deps-cache
         with:
           path: |
@@ -114,7 +114,7 @@ jobs:
     name: Dialyzer
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         id: setup-beam
@@ -122,7 +122,7 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: deps-cache
         with:
           path: |
@@ -132,7 +132,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         id: plt-cache
         with:
           path: priv/plts
