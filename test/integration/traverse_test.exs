@@ -2,8 +2,9 @@ defmodule AshAge.Integration.TraverseTest do
   @moduledoc """
   Live-AGE correctness + SECURITY proof surface for
   `AshAge.ManualRelationships.Traverse`: multi-hop reach, multi-path dedup, all
-  three directions, composite + UUID source PK key-equality, nested-load-through-
-  traversal in-tenant, the two cross-tenant tripwires (`:context` + `:attribute`),
+  three directions, composite + UUID source PK key-equality, binary-PK `$ids`
+  encoding + F3 keyed-map round-trip (S7), nested-load-through-traversal
+  in-tenant, the two cross-tenant tripwires (`:context` + `:attribute`),
   the `row_count` pre-dedup fan-out telemetry signal, and the two fail-closed
   blank-tenant paths. Edges are seeded via the library's own `cypher_query/3`
   seam (S5 dogfoods parameterized Cypher).

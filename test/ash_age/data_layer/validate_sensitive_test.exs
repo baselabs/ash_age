@@ -87,6 +87,35 @@ defmodule AshAge.DataLayer.ValidateSensitiveTest do
     assert error.message =~ "binary-storage-typed or listed in `skip`"
   end
 
+  test "R2: an {:array, :binary} sensitive attribute fails (arrays are not binary storage)" do
+    # binary_storage?({:array, :binary}) is deliberately false (elements are
+    # never tagged; the JSON substrate cannot hold raw bytes in lists) — R2 must
+    # reject a sensitive array-of-binary rather than let it store untagged.
+    error =
+      assert_dsl_error %Spark.Error.DslError{} do
+        defmodule Elixir.AshAge.DataLayer.ValidateSensitiveTest.ArrayBin do
+          use Ash.Resource,
+            domain: AshAge.TestDomain,
+            validate_domain_inclusion?: false,
+            data_layer: AshAge.DataLayer
+
+          age do
+            graph(:vs_array_bin)
+            repo(AshAge.TestRepo)
+            sensitive([:hashes])
+          end
+
+          attributes do
+            uuid_primary_key(:id)
+            attribute(:hashes, {:array, :binary}, public?: true)
+          end
+        end
+      end
+
+    assert error.message =~ "hashes"
+    assert error.message =~ "binary-storage-typed or listed in `skip`"
+  end
+
   test "R3: the multitenancy discriminator cannot be sensitive" do
     # tenant_id is deliberately :string — a :binary discriminator would ALSO trip
     # ValidateMultitenancyAttr's binary-discriminator rule (Task 11), and

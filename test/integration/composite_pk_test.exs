@@ -235,6 +235,10 @@ defmodule AshAge.Integration.CompositePkTest do
         message = Exception.message(stale)
         refute message =~ Base.encode64(key)
         refute String.contains?(message, key)
+        # A filter carrying the PRE-serialization raw PK would render via
+        # inspect as <<0, 255, ...>> and dodge the two refutes above — pin
+        # that leak form too (the edge-path twin already does).
+        refute message =~ inspect(key)
         assert message =~ "<redacted>"
       end,
       vlabels: ["BinKey"]
