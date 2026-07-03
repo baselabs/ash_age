@@ -1,10 +1,7 @@
 defmodule AshAge.DataLayer.Transformers.EnsureLabelled do
-  @moduledoc """
-  Transformer that ensures resources have a label set.
-
-  If no `:label` is configured, defaults to the resource module's short name
-  (e.g., `MyApp.Entity` → `"Entity"`).
-  """
+  @moduledoc false
+  # Internal DSL-compile transformer: if no `:label` is configured, defaults it
+  # to the resource module's short name (e.g. `MyApp.Entity` → `"Entity"`).
 
   use Spark.Dsl.Transformer
 

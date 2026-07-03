@@ -1,7 +1,7 @@
 defmodule AshAge.DataLayer.Transformers.ValidateGraph do
-  @moduledoc """
-  Transformer that validates the graph name is a valid AGE identifier.
-  """
+  @moduledoc false
+  # Internal DSL-compile transformer: validates the graph name is a valid AGE
+  # identifier.
 
   use Spark.Dsl.Transformer
 

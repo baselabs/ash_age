@@ -70,11 +70,11 @@ defmodule AshAge.MixProject do
   defp package do
     [
       maintainers: ["rjpalermo"],
-      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG*),
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* usage-rules.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
-        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md"
+        "Changelog" => "#{@source_url}/blob/master/CHANGELOG.md"
       }
     ]
   end
@@ -86,15 +86,41 @@ defmodule AshAge.MixProject do
       source_url: @source_url,
       extras: [
         "README.md",
+        "usage-rules.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
       ],
       groups_for_modules: [
-        "Data Layer": [AshAge.DataLayer],
-        Types: [AshAge.Type.Agtype, AshAge.Type.Vertex, AshAge.Type.Edge, AshAge.Type.Path],
+        "Data Layer": [AshAge, AshAge.DataLayer, AshAge.DataLayer.Info, AshAge.Edge],
+        Types: [
+          AshAge.Type.Agtype,
+          AshAge.Type.Vertex,
+          AshAge.Type.Edge,
+          AshAge.Type.Path,
+          AshAge.Type.Cast,
+          AshAge.Postgrex.AgtypeExtension
+        ],
         Cypher: [AshAge.Cypher.Parameterized],
         Query: [AshAge.Query, AshAge.Query.Filter],
+        Relationships: [
+          AshAge.ManualRelationships.Traverse,
+          AshAge.Changes.CreateEdge,
+          AshAge.Changes.DestroyEdge
+        ],
+        "Multitenancy & RLS": [AshAge.Multitenancy],
+        Verifiers: [
+          AshAge.DataLayer.Verifiers.ValidateSensitive,
+          AshAge.DataLayer.Verifiers.ValidateSkip,
+          AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
+          AshAge.DataLayer.Verifiers.ValidateEdge
+        ],
+        Errors: [
+          AshAge.Errors.CreateFailed,
+          AshAge.Errors.QueryFailed,
+          AshAge.Errors.UpdateFailed,
+          AshAge.Errors.UnsupportedFilter
+        ],
         Utilities: [AshAge.Graph, AshAge.Session, AshAge.Migration],
         "Mix Tasks": [
           Mix.Tasks.AshAge.Install,
