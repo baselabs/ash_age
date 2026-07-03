@@ -314,11 +314,15 @@ end
   - Use CREATE + SET pattern instead
   - For idempotency: MATCH first, then CREATE if not found
 
-**Known Issues:**
-- AGE 1.1.0 has several Cypher implementation bugs
-- collect() IS supported (despite some docs claiming otherwise)
-- OPTIONAL MATCH works for simple patterns but bugs with multi-pattern
-- datetime() function not supported (use application-side timestamp conversion)
+**AGE 1.6.0 Cypher notes** (verified against the pinned `release_PG16_1.6.0` build):
+- `collect()` and `count()` aggregates are supported.
+- `OPTIONAL MATCH` is supported, including the multi-pattern form
+  (`OPTIONAL MATCH (a:P), (b:P)`).
+- `datetime()` is NOT supported (`function datetime does not exist`); `timestamp()`
+  works and returns epoch milliseconds. Do date/datetime handling application-side —
+  ash_age serializes `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` to ISO8601 on write
+  and coerces back to the struct on read (by storage class, so `Ash.Type.NewType`
+  wrappers over those types round-trip too).
 
 **Binary attributes use a self-identifying wire format.** Values for
 `:binary`/`Ash.Type.Binary` attributes are stored as `"$age64$" <> base64(value)`.
@@ -386,8 +390,9 @@ so the rest of your suite still runs with no database:
 - Tag AGE tests `@moduletag :integration` and run them with `async: false` (AGE does not
   support concurrent transactions).
 - Graph/label creation is DDL and is **not** rolled back by the Sandbox transaction —
-  create each test's graph (unique name) on an unboxed connection and `drop_graph/2` it
-  afterward for isolation, rather than relying on transactional rollback.
+  create each test's graph (unique name) on an unboxed connection and drop it afterward
+  (`SELECT ag_catalog.drop_graph(name, true)`, or `AshAge.Migration.drop_age_graph/1`
+  in a migration) for isolation, rather than relying on transactional rollback.
 - Run locally against a throwaway AGE container mapped to a free host port, e.g.
   `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
 
