@@ -47,6 +47,7 @@ defmodule AshAge.Changes.DestroyEdge do
           {:ok, graph} ->
             tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
             src_key = EdgeCypher.source_key(resource, record)
+            dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
             destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
 
           {:error, :tenant_required} ->
@@ -114,7 +115,8 @@ defmodule AshAge.Changes.DestroyEdge do
     edge_label = Migration.validate_identifier!(edge.label)
     dest_pk = EdgeCypher.destination_pk!(edge.destination)
 
-    dest_id = EdgeCypher.destination_id(edge.destination, dest_id)
+    # PRECONDITION: dest_id is already serialized to the stored wire form
+    # (EdgeCypher.serialize_destination_ids/2, hoisted out of the per-dest loop).
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
