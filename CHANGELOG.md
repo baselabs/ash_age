@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-07-03
+## [1.0.0] - 2026-07-03
 
-A large, mostly **additive** release: multitenancy (`:attribute` and `:context`),
+The first stable release. A large, mostly **additive** expansion over `0.2.x`:
+multitenancy (`:attribute` and `:context`),
 graph edges, bounded traversal, DB-enforced RLS, sensitive-data classification,
 raw Cypher, bulk create, and composite primary keys. Existing `0.2.x` builds are
 unaffected until you upgrade.
@@ -457,8 +458,8 @@ resources.
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/baselabs/ash_age/compare/v0.2.6...v0.3.0
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/baselabs/ash_age/compare/v0.2.6...v1.0.0
 [0.2.6]: https://github.com/baselabs/ash_age/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/baselabs/ash_age/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/baselabs/ash_age/compare/v0.2.3...v0.2.4

@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "1.0.0"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
