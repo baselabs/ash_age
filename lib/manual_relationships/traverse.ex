@@ -140,7 +140,7 @@ defmodule AshAge.ManualRelationships.Traverse do
             rows,
             %{
               src_pkey: src_pkey,
-              src_types: Info.attribute_types(source),
+              src_types: src_types,
               dest_pkey: dest_pkey,
               dest: dest
             },

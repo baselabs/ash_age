@@ -52,6 +52,17 @@ defmodule AshAge.Changes.EdgeCypher do
   end
 
   @doc false
+  # The destination endpoint value serialized by the DESTINATION RESOURCE's PK
+  # attribute type — the `to:` argument's declared type does not govern the
+  # stored wire form (spec C6). Call destination_pk!/1 first: it enforces the
+  # single-attribute PK, so this match cannot fail. Shared by CreateEdge and
+  # DestroyEdge for the same anti-divergence reason as source_key/2.
+  def destination_id(destination, dest_id) do
+    [dest_pk_attr] = Ash.Resource.Info.primary_key(destination)
+    Cast.serialize_value(dest_id, Map.get(Info.attribute_types(destination), dest_pk_attr))
+  end
+
+  @doc false
   # A map of source PK field (string) => value, read from the PERSISTED record
   # (its original identity), not the pending changeset. Values are serialized by
   # the SOURCE RESOURCE's attribute types (binary-storage → tagged) so the WHERE

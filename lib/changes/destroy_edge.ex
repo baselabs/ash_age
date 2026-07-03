@@ -24,7 +24,6 @@ defmodule AshAge.Changes.DestroyEdge do
   alias AshAge.DataLayer.Info
   alias AshAge.Migration
   alias AshAge.Telemetry
-  alias AshAge.Type.Cast
   alias Ecto.Adapters.SQL
 
   @impl true
@@ -115,14 +114,7 @@ defmodule AshAge.Changes.DestroyEdge do
     edge_label = Migration.validate_identifier!(edge.label)
     dest_pk = EdgeCypher.destination_pk!(edge.destination)
 
-    # dst is typed by the DESTINATION RESOURCE's PK attribute — the `to:`
-    # argument's declared type does not govern the stored wire form (spec C6).
-    # destination_pk! above already enforced the single-attribute PK, so this
-    # match cannot fail.
-    [dest_pk_attr] = Ash.Resource.Info.primary_key(edge.destination)
-
-    dest_id =
-      Cast.serialize_value(dest_id, Map.get(Info.attribute_types(edge.destination), dest_pk_attr))
+    dest_id = EdgeCypher.destination_id(edge.destination, dest_id)
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
