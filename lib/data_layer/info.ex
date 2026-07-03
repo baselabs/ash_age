@@ -11,32 +11,41 @@ defmodule AshAge.DataLayer.Info do
   alias Spark.Dsl.Extension
 
   @doc "Gets the graph name for a resource."
+  @spec graph(Ash.Resource.t()) :: atom() | nil
   def graph(resource), do: Extension.get_opt(resource, [:age], :graph)
 
   @doc "Gets the repo for a resource."
+  @spec repo(Ash.Resource.t()) :: module() | nil
   def repo(resource), do: Extension.get_opt(resource, [:age], :repo)
 
   @doc "Gets the label for a resource."
+  @spec label(Ash.Resource.t()) :: atom() | String.t()
   def label(resource) do
     Extension.get_opt(resource, [:age], :label) || default_label(resource)
   end
 
   @doc "Gets attributes to skip."
+  @spec skip(Ash.Resource.t()) :: [atom()]
   def skip(resource), do: Extension.get_opt(resource, [:age], :skip, [])
 
   @doc "Gets the sensitive-classified attribute names (default [])."
+  @spec sensitive(Ash.Resource.t()) :: [atom()]
   def sensitive(resource), do: Extension.get_opt(resource, [:age], :sensitive, [])
 
   @doc "Gets the tenant_graph MFA override for a resource, or nil."
+  @spec tenant_graph(Ash.Resource.t()) :: {module(), atom(), list()} | nil
   def tenant_graph(resource), do: Extension.get_opt(resource, [:age], :tenant_graph, nil)
 
   @doc "Gets the RLS GUC name for a resource, or nil (RLS not enabled)."
+  @spec rls_guc(Ash.Resource.t()) :: String.t() | nil
   def rls_guc(resource), do: Extension.get_opt(resource, [:age], :rls_guc, nil)
 
   @doc "Gets the configured edge entities for a resource."
+  @spec edges(Ash.Resource.t()) :: [struct()]
   def edges(resource), do: Extension.get_entities(resource, [:age])
 
   @doc "Gets the attribute map for a resource (name → graph property name)."
+  @spec attribute_map(Ash.Resource.t()) :: %{atom() => String.t()}
   def attribute_map(resource) do
     skip_attrs = skip(resource)
 
@@ -55,6 +64,7 @@ defmodule AshAge.DataLayer.Info do
   whose storage class depends on constraints must never verify one way and
   encode another.
   """
+  @spec attribute_types(Ash.Resource.t()) :: %{atom() => {Ash.Type.t(), keyword()}}
   def attribute_types(resource) do
     resource
     |> ResourceInfo.attributes()

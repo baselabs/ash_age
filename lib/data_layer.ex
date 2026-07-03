@@ -15,9 +15,11 @@ defmodule AshAge.DataLayer do
   age do
     graph :my_graph
     repo MyApp.Repo
-    label :MyLabel   # optional, defaults to module short module name
-    skip [:computed]  # optional, properties to exclude from AGE
-    sensitive [:ssn]  # optional, classified attributes (binary-storage or skipped)
+    label :MyLabel     # optional, defaults to the module's short name
+    skip [:computed]   # optional, attributes excluded from AGE properties
+    sensitive [:ssn]   # optional, classified attributes (binary-storage or skipped)
+    rls_guc "myapp.tenant_id"  # optional, :attribute-only DB-enforced RLS backstop
+    # tenant_graph {MyApp.Graphs, :for_tenant, []}  # optional, :context graph-name override
 
     edge :related_to do
       label :RELATES_TO
@@ -26,6 +28,17 @@ defmodule AshAge.DataLayer do
     end
   end
   ```
+
+  ## Capabilities
+
+  Supports `:read`, `:create`, `:update`, `:destroy`, `:bulk_create`, `:filter`
+  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions),
+  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute` and
+  `:context`), `:composite_primary_key`, and `:changeset_filter`. Not supported:
+  `:upsert`, aggregates, and lateral joins. One subtlety: binary-storage
+  attributes are **unsortable** (`can?({:sort, :binary})` is `false`) because
+  the stored `$age64$`-tagged base64 form is not byte-order-preserving —
+  sorting on one raises `Ash.Error.Query.UnsortableField` at query build.
   """
 
   require Spark.Dsl

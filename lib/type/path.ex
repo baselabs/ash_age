@@ -7,6 +7,6 @@ defmodule AshAge.Type.Path do
 
   @type t :: %__MODULE__{
           vertices: list(AshAge.Type.Vertex.t()),
-          edges: list(term())
+          edges: list(AshAge.Type.Edge.t())
         }
 end
