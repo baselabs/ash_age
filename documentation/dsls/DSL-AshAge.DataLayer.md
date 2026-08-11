@@ -43,6 +43,21 @@ attributes are **unsortable** (`can?({:sort, :binary})` is `false`) because
 the stored `$age64$`-tagged base64 form is not byte-order-preserving —
 sorting on one raises `Ash.Error.Query.UnsortableField` at query build.
 
+## Pagination
+
+Both Ash pagination strategies work: **offset** (`SKIP .. LIMIT ..`) and
+**keyset**. Keyset is supported *without* a native data-layer keyset
+capability — `can?(:keyset)` is intentionally not declared, so
+`Ash.Actions.Read.use_data_layer_keyset?/2` returns `false` and Ash takes
+its rewrite branch: it over-fetches by `limit + 1` and rewrites
+`page: [after: <keyset>]` into a compound sort + filter expression
+(`(rank > $x) OR (rank = $x AND id > $y)`, fully parameterized) built only
+from the comparison and boolean operators AshAge already supports. The
+practical win: keyset pages cost a constant-time `WHERE` filter instead of
+the O(page_offset) walk-and-discard deep `SKIP N` pages impose on the AGE
+planner. Binary-storage attributes are not keyset-sortable for the same
+reason they are not sortable (see above) — sort on a non-binary attribute.
+
 
 ## age
 Configuration for the AGE graph data layer

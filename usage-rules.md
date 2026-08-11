@@ -630,6 +630,7 @@ Attach a handler the usual way:
 - Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
 - Boolean expressions: `and`, `or`, `not`
 - Sort, limit, offset
+- Pagination: both offset (`SKIP .. LIMIT ..`) and keyset (`page: [after: <keyset>]`); keyset is served via Ash's sort+filter rewrite (no native `can?(:keyset)`), so it compiles to a `WHERE` filter rather than deep-page `SKIP N`
 - Bulk create: `UNWIND` grouping, order-preserving, atomic-per-batch
 - Edges: create/destroy via `AshAge.Changes.{CreateEdge, DestroyEdge}`, properties, `:both` direction
 - Traversal: bounded variable-length via `AshAge.ManualRelationships.Traverse` (all directions incl. `:both`, per-source dedup, cardinality-aware, fail-closed tenancy)

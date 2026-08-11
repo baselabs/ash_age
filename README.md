@@ -34,6 +34,7 @@ database to deploy or operate.
 | **Multitenancy** | Both Ash strategies — `:attribute` (one tenant-filtered graph) and `:context` (graph-per-tenant) — plus opt-in DB-enforced Row-Level Security |
 | **Sensitive data** | Fail-closed classification verifiers; deterministic-encryption equality search on ciphertext |
 | **Filtering** | `eq` / `not_eq` / `in` / `is_nil`, ranges, boolean and nested expressions, sort, limit, offset |
+| **Pagination** | Offset **and** keyset pagination — keyset compiles to a filter (`WHERE rank > $x`), avoiding the deep-page `SKIP N` cost of offset |
 | **Raw Cypher** | `AshAge.cypher/5` parameterized escape hatch for queries the DSL can't express |
 | **Telemetry** | A `:telemetry` span on every operation, with metadata guaranteed free of values and secrets |
 
@@ -219,6 +220,33 @@ isolation boundary. See `usage-rules.md` for the full contract.
 their key-set so sparse rows don't null-fill to match others. Record order is
 preserved, and failures are atomic per batch. See `usage-rules.md` for transaction
 semantics and tenant handling.
+
+### Pagination
+
+Both Ash pagination strategies work: **offset** (`SKIP .. LIMIT ..`) and **keyset**.
+Declare `pagination keyset?: true` on a read action and page with
+`Ash.read(Resource, page: [limit: n, after: keyset])` exactly as you would on any
+other Ash data layer.
+
+```elixir
+actions do
+  # Omit :read here so the explicit action below is the unique read.
+  defaults [:create, :update, :destroy]
+
+  read :read do
+    primary? true
+    pagination keyset?: true, default_limit: 100
+  end
+end
+```
+
+Keyset works without a data-layer-native keyset capability: AshAge does not declare
+`can?(:keyset)`, so Ash rewrites `page: [after: <keyset>]` into a compound sort +
+filter expression — `(rank > $x) OR (rank = $x AND id > $y)`, fully parameterized —
+which AshAge answers with the same comparison and boolean operators it already
+supports. Prefer keyset for large result sets: each page costs a constant-time
+`WHERE` filter rather than the O(page_offset) walk-and-discard that deep `SKIP N`
+pages force the AGE planner into.
 
 ### Multitenancy
 
