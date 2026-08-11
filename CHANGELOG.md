@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Documented **keyset pagination** as supported. Keyset already worked at
+  runtime via Ash's sort+filter rewrite (`AshAge.DataLayer` does not declare
+  `can?(:keyset)`, so Ash rewrites `page: [after: <keyset>]` into a compound
+  parameterized filter expression built from the comparison and boolean
+  operators AshAge already supports), but the capability was previously
+  undocumented. Prefer keyset over offset for large result sets: each page
+  costs a constant-time `WHERE` filter rather than the O(page_offset)
+  walk-and-discard that deep `SKIP N` pages force on the AGE planner. Backed
+  by `test/integration/keyset_pagination_test.exs`.
+
 ## [1.0.1] - 2026-07-03
 
 ### Added
