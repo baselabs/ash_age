@@ -16,9 +16,6 @@ defmodule AshAge.Query.Filter do
   - Exists subqueries
   """
 
-  require Ash.Filter
-  require Ash.Query
-
   alias AshAge.Errors.UnsupportedFilter
   alias AshAge.Query
   alias AshAge.Type.Cast

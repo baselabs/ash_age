@@ -56,9 +56,6 @@ defmodule AshAge.DataLayer do
   reason they are not sortable (see above) — sort on a non-binary attribute.
   """
 
-  require Spark.Dsl
-  require Spark.Dsl.Entity
-
   @age %Spark.Dsl.Section{
     name: :age,
     describe: "Configuration for the AGE graph data layer",
