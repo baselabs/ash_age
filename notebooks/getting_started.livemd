@@ -119,6 +119,19 @@ defmodule GettingStarted.Migrations.CreateGraph do
   def down, do: drop_age_graph("getting_started")
 end
 
+# Tear down first so the notebook re-runs cleanly against a persistent DB.
+# `up` alone is a no-op once the version is recorded, but the demo cells below
+# create Alice/Bob unconditionally — without a reset the seed data accumulates
+# and the single-element matches (e.g. `[only_alice]`) fail on the second run.
+# `down` returns `:already_down` on a pristine DB, so CI's fresh container is
+# unaffected.
+Ecto.Migrator.down(
+  GettingStarted.Repo,
+  20_260_703_000_001,
+  GettingStarted.Migrations.CreateGraph,
+  all: true
+)
+
 Ecto.Migrator.up(
   GettingStarted.Repo,
   20_260_703_000_001,
@@ -251,6 +264,15 @@ defmodule GettingStarted.Migrations.CreateTenantGraph do
 
   def down, do: drop_age_graph("getting_started_tenants")
 end
+
+# Tear down first so the tenant-graph demo re-runs cleanly against a persistent
+# DB (same rationale as the `getting_started` migration above).
+Ecto.Migrator.down(
+  GettingStarted.Repo,
+  20_260_703_000_002,
+  GettingStarted.Migrations.CreateTenantGraph,
+  all: true
+)
 
 Ecto.Migrator.up(
   GettingStarted.Repo,
