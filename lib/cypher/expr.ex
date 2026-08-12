@@ -386,6 +386,11 @@ defmodule AshAge.Cypher.Expr do
 
   defp unsupported(node, reason), do: UnsupportedExpression.exception(node: node, reason: reason)
 
+  # Structural label for the `node` field of `UnsupportedExpression` (whose
+  # message inspects `node`). A struct → its module; anything else → a fixed
+  # `:value` atom — NEVER the bare value, which could be PII/secret (cross-vendor
+  # closeout finding: the prior `{:value, other}` captured + inspected the value,
+  # contradicting the value-free error boundary).
   defp node_label(%{__struct__: mod}), do: mod
-  defp node_label(other), do: {:value, other}
+  defp node_label(_other), do: :value
 end

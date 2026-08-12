@@ -142,9 +142,15 @@ defmodule AshAge.Query do
       if query.limit == nil and query.offset == nil do
         ["DETACH DELETE n"]
       else
-        # `WITH n` passes the WHERE-matched set into the SKIP/LIMIT, bounding the
-        # DETACH DELETE to the limited slice (standard Cypher).
-        ["WITH n"] ++ build_skip(query.offset) ++ build_limit(query.limit) ++ ["DETACH DELETE n"]
+        # `WITH n` passes the WHERE-matched set into the ORDER BY/SKIP/LIMIT,
+        # bounding the DETACH DELETE to the limited slice (standard Cypher).
+        # ORDER BY is honored when present so a sorted+limited destroy deletes
+        # the deterministically-sorted slice, not an arbitrary one.
+        ["WITH n"] ++
+          build_order_by(query.sort) ++
+          build_skip(query.offset) ++
+          build_limit(query.limit) ++
+          ["DETACH DELETE n"]
       end
 
     {Enum.join(base ++ delete, " "), query.params}
@@ -172,7 +178,12 @@ defmodule AshAge.Query do
       if query.limit == nil and query.offset == nil do
         ["SET #{set_clauses_str}", "RETURN n"]
       else
+        # `WITH n` passes the WHERE-matched set into the ORDER BY/SKIP/LIMIT.
+        # ORDER BY is honored when present so a sorted+limited bulk_update updates
+        # the deterministically-sorted slice, not an arbitrary one (cross-vendor
+        # closeout finding: SKIP/LIMIT without ORDER BY selected arbitrary rows).
         ["WITH n"] ++
+          build_order_by(query.sort) ++
           build_skip(query.offset) ++
           build_limit(query.limit) ++
           ["SET #{set_clauses_str}", "RETURN n"]

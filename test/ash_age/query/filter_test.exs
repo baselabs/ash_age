@@ -7,6 +7,7 @@ defmodule AshAge.Query.FilterTest do
   alias AshAge.Type.Cast
 
   alias Ash.Query.BooleanExpression
+  alias Ash.Query.Function.{Error, If}
   alias Ash.Query.Not
 
   alias Ash.Query.Operator.{
@@ -116,6 +117,19 @@ defmodule AshAge.Query.FilterTest do
     test "not wraps its clause" do
       {:ok, _, clause} = Filter.translate(%Not{expression: %Eq{left: ref(:a), right: 1}}, q())
       assert clause == "NOT (n.`a` = $param1)"
+    end
+
+    test "the policy wrapper if(filter, true, error) strips to the filter" do
+      # Ash attaches `if policy_filter do true else error(...) end` to an atomic
+      # update's query under a filter-producing policy (can.ex). In a WHERE that
+      # IS the policy_filter (excluded rows are denied). Strip the wrapper.
+      wrapper = %If{arguments: [%Eq{left: ref(:org_id), right: "org-a"}, true, %Error{arguments: [:forbidden]}]}
+      {:ok, _, clause} = Filter.translate(wrapper, q())
+      assert clause == "n.`org_id` = $param1"
+    end
+
+    test "a bare Error node in a filter is rejected (unsupported)" do
+      assert {:error, %UnsupportedFilter{}} = Filter.translate(%Error{arguments: [:x]}, q())
     end
   end
 

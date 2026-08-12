@@ -1158,12 +1158,15 @@ defmodule AshAge.DataLayer do
   defp update_many_body(resource, changesets, opts, tenant) do
     label = validated_label(resource)
 
-    # Fail closed on a blank tenant for ANY multitenant resource. :context is
-    # caught by update_many_graph below; :attribute is caught HERE — applying the
-    # parse fn to nil would scope the SET to a phantom tenant (wrong-empty, not
-    # an error), and a missing discriminator would be a silent cross-tenant write
-    # (the recurring class). Non-multitenant resources need no tenant.
+    # Fail closed on a blank tenant for a multitenant resource that REQUIRES one.
+    # :context is caught by update_many_graph below; :attribute is caught HERE —
+    # applying the parse fn to nil would scope the SET to a phantom tenant
+    # (wrong-empty, not an error), and a missing discriminator would be a silent
+    # cross-tenant write (the recurring class). A `global? true` :attribute
+    # resource legitimately allows a nil tenant (cross-vendor closeout finding:
+    # the prior guard over-rejected it), so consult multitenancy_global?/1.
     if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute and
+         not Ash.Resource.Info.multitenancy_global?(resource) and
          tenant in [nil, ""] do
       {:error,
        UpdateFailed.exception(resource: resource, reason: "tenant required for update_many")}

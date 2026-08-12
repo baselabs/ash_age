@@ -85,4 +85,35 @@ defmodule AshAge.QueryTest do
       assert q.params == %{"param2" => "seeded", "param3" => "new"}
     end
   end
+
+  describe "update_cypher/3" do
+    test "a sorted+limited query emits ORDER BY before LIMIT (deterministic slice)" do
+      # Cross-vendor closeout finding: SKIP/LIMIT without ORDER BY selected an
+      # arbitrary slice. The sort must precede SKIP/LIMIT so a sorted+limited
+      # bulk_update updates the deterministically-first N rows.
+      q = query(sort: [{:count, :desc}], limit: 2)
+      {cypher, _} = Query.update_cypher(q, :Person, "n.`name` = $name")
+
+      assert cypher =~ "WITH n ORDER BY n.count DESC LIMIT 2"
+      assert cypher =~ "SET n.`name` = $name"
+    end
+
+    test "a no-sort limited query omits ORDER BY" do
+      q = query(limit: 5)
+      {cypher, _} = Query.update_cypher(q, :Person, "n.`name` = $name")
+      refute cypher =~ "ORDER BY"
+      assert cypher =~ "WITH n LIMIT 5"
+    end
+
+    test "a sorted+limited+offset query emits ORDER BY between SKIP and LIMIT" do
+      q = query(sort: [{:count, :asc}], offset: 3, limit: 2)
+      {cypher, _} = Query.update_cypher(q, :Person, "n.`name` = $name")
+      assert cypher =~ "WITH n ORDER BY n.count ASC SKIP 3 LIMIT 2"
+    end
+
+    test "an unbounded query (no limit/offset) is a plain SET ... RETURN" do
+      {cypher, _} = Query.update_cypher(query(), :Person, "n.`name` = $name")
+      assert cypher == "MATCH (n:Person) SET n.`name` = $name RETURN n"
+    end
+  end
 end
