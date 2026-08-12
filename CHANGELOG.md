@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Bump `ash` to 3.31.2 — clears `EEF-CVE-2026-69659` (memory exhaustion via
+  unbounded deserialization of keyset pagination cursors in `Ash.Page.Keyset`)
+  and `EEF-CVE-2026-70395` (predicate injection in `manage_relationship`
+  belongs_to lookup disclosing secret lookup keys), both fixed upstream in
+  ash 3.31.1.
+- Bump `postgrex` to 0.22.4 — clears `EEF-CVE-2026-58225` (SQL injection via
+  unescaped dollar-quote in `Postgrex.Notifications` reconnect replay) and
+  `EEF-CVE-2026-66838` (SQL injection via the `:comment` option in
+  `Postgrex.stream/4`).
+
+### Changed
+
+- Dependency bumps: `ash` 3.29.3 → 3.31.2, `postgrex` 0.22.2 → 0.22.4,
+  `ecto` 3.14.0 → 3.14.1, `credo` 1.7.16 → 1.7.19 (dev), `ex_doc` 0.40.1 →
+  0.40.3 (dev), plus transitive resolutions (`ymlr`, `reactor`, `splode`,
+  `db_connection`, `makeup_erlang`, others). No `mix.exs` version bounds were
+  widened. Supersedes dependabot PRs #26–#30, whose own proposed targets
+  (`ash` 3.31.0, `postgrex` 0.22.3) were themselves affected by the advisories
+  above and could not clear the `mix hex.audit` CI gate.
+
 ## [1.0.1] - 2026-07-03
 
 ### Added
