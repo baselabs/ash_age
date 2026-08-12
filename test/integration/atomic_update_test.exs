@@ -317,6 +317,35 @@ defmodule AshAge.Integration.AtomicUpdateTest do
       end)
     end
 
+    test "a duplicate-PK-in-graph anomaly fails closed on the default bulk_update path" do
+      # AGE enforces no PK uniqueness; a duplicate-PK vertex (external) under a
+      # bulk_update filter would SET every physical row. The fail-closed guard
+      # runs on the DEFAULT return_records?: false path too (cross-vendor
+      # delta-7: gating it on return_records? bypassed it here).
+      with_graph(:itest_atomic_update, fn ->
+        {:ok, c} = Ash.create(Counter, %{count: 5, name: "dup"})
+
+        # Inject a same-graph duplicate sharing c's id (AGE allows it; Ash never would).
+        AshAge.DataCase.cypher_query(
+          :itest_atomic_update,
+          "CREATE (:Counter {id: $id, count: 5, name: 'dup'})",
+          %{"id" => c.id}
+        )
+
+        query = Counter |> Ash.Query.for_read(:read) |> Ash.Query.filter(name == "dup")
+
+        # Default bulk_update (return_records?: false) — the guard must still fire.
+        result =
+          Ash.bulk_update(query, :update, %{},
+            atomic_update: %{count: plus(1)},
+            return_errors?: true
+          )
+
+        assert result.status == :error
+        assert result.error_count >= 1
+      end)
+    end
+
     test "return_records? returns the updated records" do
       with_graph(:itest_atomic_update, fn ->
         {:ok, _} = Ash.create(Counter, %{count: 1, name: "go"})

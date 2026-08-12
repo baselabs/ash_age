@@ -214,6 +214,34 @@ defmodule AshAge.Integration.UpdateManyTest do
         assert Ash.get!(SkipWidget, w.id).count == 5
       end)
     end
+
+    test "a same-tenant duplicate-PK anomaly fails closed (not silent multi-row write)" do
+      # AGE enforces no PK uniqueness, so a duplicate-PK vertex is creatable
+      # externally. A bulk update of that PK would SET every physical row (silent
+      # multi-row corruption for one logical update) — fail CLOSED instead.
+      # (cross-vendor delta-6/7: dedup masked it; the guard must run on the
+      # default return_records?: false path too.)
+      with_graph(:itest_update_many_skip, fn ->
+        {:ok, w} = Ash.create(SkipWidget, %{count: 5, computed: "x"})
+
+        # Inject a same-graph duplicate sharing w's id (AGE allows it; Ash never would).
+        cypher_query(:itest_update_many_skip, "CREATE (:SkipWidget {id: $id, count: 5})", %{
+          "id" => w.id
+        })
+
+        result =
+          Ash.update_many(
+            [{w, %{count: 99}}],
+            SkipWidget,
+            :update,
+            return_records?: true,
+            return_errors?: true
+          )
+
+        assert result.status == :error
+        assert result.error_count >= 1
+      end)
+    end
   end
 
   describe "cross-tenant isolation (update_many F5 tripwire)" do

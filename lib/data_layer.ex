@@ -1326,6 +1326,24 @@ defmodule AshAge.DataLayer do
     end
   end
 
+  # Single-record duplicate-PK error (Ash's per-record wrapper requires exactly 1).
+  defp duplicate_pk_error(resource, n) do
+    {:error,
+     UpdateFailed.exception(
+       resource: resource,
+       reason: "update matched #{n} rows for one primary key (duplicate rows in graph?)"
+     )}
+  end
+
+  # Bulk-path result: fail-closed on duplicate-PK, else return records (or :ok).
+  defp bulk_update_result(resource, decoded, return_records?) do
+    case fail_closed_on_duplicate_pk(resource, decoded) do
+      {:ok, decoded} when return_records? -> {:ok, decoded}
+      {:ok, _} -> :ok
+      {:error, _} = e -> e
+    end
+  end
+
   # Fail-closed translation of the group's changeset.filter into a pre-built
   # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
   # `build_where` swallows). Threaded params land in `query.params`. `nil` and
@@ -1537,42 +1555,36 @@ defmodule AshAge.DataLayer do
     params = changed_attrs |> Map.merge(where_params) |> Map.merge(atomic_params)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
-      {:ok, %{rows: rows}} when return_records? ->
+      {:ok, %{rows: rows}} ->
+        # update_cypher ALWAYS emits `RETURN n`, so the matched rows are present
+        # whether or not Ash asked for records. Decode + duplicate-PK check run
+        # on EVERY path (the default bulk_update has return_records?: false —
+        # gating the check on return_records? let the duplicate-PK multi-row
+        # write go undetected on the common path, cross-vendor delta-7 finding).
         decoded = decode_records(resource, rows)
 
         if single_record? and length(decoded) > 1 do
-          # Duplicate PK in the graph (AGE enforces no uniqueness). A
-          # single-record update matching 2+ rows is ambiguous; fail CLOSED
-          # with a value-free reason (the count is structural) rather than
-          # returning 2+ records and crashing Ash's per-record wrapper
-          # (update.ex:210 matches `records: [record]`). The SET has already
-          # applied to every matched row; the single-record reroute runs under
-          # Ash's action transaction (`:transact` advertised), which rolls it
-          # back. Mirrors the per-record decode_update_result/3 guard.
-          {:error,
-           UpdateFailed.exception(
-             resource: resource,
-             reason:
-               "update matched #{length(decoded)} rows for one primary key (duplicate rows in graph?)"
-           )}
+          # Single-record reroute: Ash's per-record wrapper (update.ex:210)
+          # pattern-matches `records: [record]` — exactly one. 2+ is a
+          # duplicate-PK anomaly (AGE enforces no uniqueness); fail CLOSED rather
+          # than crash the wrapper. The action transaction rolls the SET back.
+          duplicate_pk_error(resource, length(decoded))
         else
-          # Bulk path (or single-record with exactly one match). Fail CLOSED on a
-          # duplicate-PK-in-graph anomaly: AGE enforces no uniqueness, so a bulk
-          # update by PK-IN can match 2+ physical rows for one input PK — and the
-          # SET has already written every match. Deduping the returned records
-          # would hide that multi-row write (silent corruption for one logical
-          # update); fail-closed surfaces it (the surrounding transaction rolls
-          # the write back). Consistent with the single-record guard above.
-          # (cross-vendor delta-6 finding: dedup masked the multi-row write.)
-          fail_closed_on_duplicate_pk(resource, decoded)
+          # Bulk path: fail CLOSED on a duplicate-PK anomaly (one input PK
+          # matching 2+ physical rows). BEST-EFFORT, post-write: under Ash's
+          # DEFAULT transaction the SET rolls back on the error; under an explicit
+          # `transaction: false` opt-out (caller chose no atomicity) the multi-row
+          # write persists but the error still surfaces — loud either way, never
+          # silent. The guard groups by the POST-update PK, so it does NOT catch a
+          # writable-PK atomic SET that renames duplicate source rows to distinct
+          # new keys (don't atomically rename PKs on duplicate-bearing data — AGE
+          # enforces no uniqueness; Ash-managed creates enforce UUID uniqueness,
+          # so duplicates only arise from external corruption). A pre-write
+          # cardinality check would close those edges but costs a query per bulk
+          # update for an external-corruption-only anomaly — judged
+          # disproportionate; documented here instead.
+          bulk_update_result(resource, decoded, return_records?)
         end
-
-      {:ok, _} ->
-        # Bulk 0-row contract: `:ok` (the query simply matched nothing). This is
-        # NOT StaleRecord (that's the per-record update/destroy contract); the
-        # single-record 0-row case is turned into StaleRecord by Ash's wrapper
-        # (update.ex:217), not here.
-        :ok
 
       {:error, error} ->
         {:error, QueryFailed.exception(query: "AGE update_query", reason: redact_db_error(error))}
