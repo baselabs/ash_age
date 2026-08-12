@@ -14,7 +14,8 @@ defmodule AshAge.Query do
     :offset,
     filters: [],
     sort: [],
-    params: %{}
+    params: %{},
+    aggregates: []
   ]
 
   @type t :: %__MODULE__{
@@ -28,7 +29,8 @@ defmodule AshAge.Query do
           offset: non_neg_integer() | nil,
           filters: [String.t()],
           sort: [{atom(), :asc | :desc}],
-          params: map()
+          params: map(),
+          aggregates: [Ash.Query.Aggregate.t()]
         }
 
   @doc """
@@ -53,6 +55,99 @@ defmodule AshAge.Query do
         build_limit(query.limit)
 
     {Enum.join(parts, " "), query.params}
+  end
+
+  @doc """
+  Builds the Cypher for a single aggregate over the query's filtered set.
+
+  `MATCH (n:LABEL) WHERE <main filter> [AND <aggregate sub-filter>] RETURN <expr> AS agg`.
+  Deliberately emits NO `LIMIT`/`SKIP`/`ORDER BY` even when the query carries them
+  (the AshPostgres/ETS contract): an aggregate is computed over the FULL filtered
+  set, not a page of it. The aggregate's own sub-query filter (its `query` field)
+  is AND-ed into the WHERE so each aggregate narrows independently (one query is
+  issued per aggregate by `run_aggregate_query/3`).
+  """
+  @spec aggregate_cypher(t(), Ash.Query.Aggregate.t(), atom() | String.t()) ::
+          {String.t(), map()}
+  def aggregate_cypher(query, aggregate, label) do
+    label = AshAge.Migration.validate_identifier!(label)
+
+    {main_parts, query} = build_where(query)
+    {sub_parts, query} = sub_filter_clause(aggregate, query)
+    where_parts = main_parts ++ sub_parts
+
+    expr = AshAge.Query.Aggregate.expr({aggregate.kind, aggregate.field, uniq_opts(aggregate)})
+
+    parts =
+      ["MATCH (n:#{label})"] ++
+        build_where_clause(where_parts) ++
+        ["RETURN #{expr} AS agg"]
+
+    {Enum.join(parts, " "), query.params}
+  end
+
+  # The aggregate's own sub-query filter → a WHERE fragment via the read-path
+  # Filter translator. `aggregate.query` may be an Ash.Query (resolved), a keyword
+  # list (resolved later by Ash — treated as no sub-filter here), or nil.
+  defp sub_filter_clause(%Ash.Query.Aggregate{query: %Ash.Query{} = agg_query} = _agg, query) do
+    case agg_query.filter do
+      nil -> {[], query}
+      filter -> translate_sub_filter(filter, query)
+    end
+  end
+
+  defp sub_filter_clause(_agg, query), do: {[], query}
+
+  defp translate_sub_filter(filter, query) do
+    case AshAge.Query.Filter.translate(filter, query) do
+      {:ok, query, ""} ->
+        {[], query}
+
+      {:ok, query, clause} ->
+        {[clause], query}
+
+      # Fail CLOSED: silently dropping an aggregate sub-filter would broaden the
+      # set (a count meant to be narrowed) — a silent-correctness leak. The
+      # UnsupportedFilter is structural (operator + field), value-free, so safe
+      # to raise across the callback boundary (AGENTS.md rule 5).
+      {:error, %AshAge.Errors.UnsupportedFilter{} = err} ->
+        raise err
+    end
+  end
+
+  defp uniq_opts(%Ash.Query.Aggregate{uniq?: true}), do: [uniq?: true]
+  defp uniq_opts(_), do: []
+
+  @doc """
+  Builds the Cypher for a bulk destroy by query.
+
+  `MATCH (n:LABEL) WHERE <translated filter> [WITH n SKIP .. LIMIT ..] DETACH DELETE n`.
+  Uses the SAME `build_where` as the read path, so destroy_query deletes exactly the
+  rows a read would return — including the tenant predicate Ash attaches for
+  `:attribute` multitenancy. LIMIT/SKIP are honored via a `WITH n` pass-through:
+  Ash does NOT slice the query above the data layer for destroy_query
+  (`bulk.ex:622-723 do_atomic_destroy` passes it through), so a user-supplied limit
+  must bound the deletion here or it over-deletes (the ETS `destroy_query` reference
+  honors limit too). No `ORDER BY`: without a deterministic sort, which rows die is
+  unspecified — same as ETS, which sorts by PK only.
+  """
+  @spec delete_cypher(t(), atom() | String.t()) :: {String.t(), map()}
+  def delete_cypher(query, label) do
+    label = AshAge.Migration.validate_identifier!(label)
+    {where_parts, query} = build_where(query)
+
+    base = ["MATCH (n:#{label})"] ++ build_where_clause(where_parts)
+
+    delete =
+      if query.limit == nil and query.offset == nil do
+        ["DETACH DELETE n"]
+      else
+        # `WITH n` passes the WHERE-matched set into the SKIP/LIMIT, bounding the
+        # DETACH DELETE to the limited slice (standard Cypher).
+        ["WITH n"] ++ build_skip(query.offset) ++ build_limit(query.limit) ++ ["DETACH DELETE n"]
+      end
+
+    {Enum.join(base ++ delete, " "), query.params}
   end
 
   @doc """
