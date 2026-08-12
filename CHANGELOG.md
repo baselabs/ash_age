@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Aggregates: `count`/`sum`/`avg`/`min`/`max`/`exists` over a resource's own
+  records (no relationship path), with optional per-aggregate sub-filters. AGE
+  ships these natively; `first`/`list`/`custom` and relationship-pathed aggregates
+  remain unsupported. Aggregates honor RLS (`with_rls`) and `:attribute`
+  multitenancy, ignore query `limit`/`offset`/`sort` (full filtered set), and the
+  result map is atom-keyed by aggregate name. `min`/`max`/`sum`/`avg` over a
+  binary-storage field are rejected (the `$age64$` base64 wire form isn't
+  byte-order-preserving).
+
+- Upsert (`can?(:upsert)`) via a non-MERGE two-statement path: an existence MATCH
+  on the identity, then a CREATE branch (absent) or a SET branch (present). AGE
+  enforces no PK uniqueness and MERGE is banned, so this provides create-or-update
+  by a declared identity without MERGE. The cross-tenant match comes from Ash's
+  `identity_fields` (which prepends the multitenancy attribute for per-tenant
+  identities and excludes it for `all_tenants?` global identities). Not atomic
+  across concurrent upserts of the same identity (inherent AGE constraint);
+  documented.
+
+- Bulk destroy by query (`can?(:destroy_query)`): `Ash.bulk_destroy/3` against a
+  query runs as a single `MATCH ... WHERE <translated filter> DETACH DELETE n`
+  instead of N per-record destroys, honoring the query's `limit`/`offset`. The
+  WHERE matches the read path — including the tenant predicate for `:attribute`
+  multitenancy.
+
 ### Security
 
 - Bump `ash` to 3.31.2 — clears `EEF-CVE-2026-69659` (memory exhaustion via

@@ -134,7 +134,7 @@ defmodule AshAge.DataLayer do
   alias Ash.Error.Changes.StaleRecord
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
-  alias AshAge.Errors.{CreateFailed, QueryFailed, UpdateFailed}
+  alias AshAge.Errors.{CreateFailed, QueryFailed, UnsupportedFilter, UpdateFailed}
   alias AshAge.Query.Filter
   alias AshAge.Telemetry
   alias AshAge.Type.{Agtype, Cast}
@@ -196,9 +196,26 @@ defmodule AshAge.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.BooleanExpression{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
-  def can?(_, :upsert), do: false
+  def can?(_, :upsert), do: true
   def can?(_, :bulk_create), do: true
+  def can?(_, :destroy_query), do: true
   def can?(_, {:lateral_join, _}), do: false
+  # Aggregates (Slice A): count/sum/avg/min/max/exists over the resource's own
+  # records (no relationship path). A no-path aggregate is `is_unrelated?` in Ash
+  # (`query.ex:3507-3510`), which requires BOTH `{:aggregate, kind}` AND
+  # `{:aggregate, :unrelated}` — declaring only the former rejects every aggregate
+  # at `Ash.Query` build (AggregatesNotSupported). `{:query_aggregate, kind}` gates
+  # `Ash.aggregate/3` and countable pagination (`aggregate.ex:215`,
+  # `set_primary_actions.ex:148`) — delegate to the kind whitelist.
+  def can?(_, {:aggregate, kind})
+      when kind in [:count, :sum, :avg, :min, :max, :exists],
+      do: true
+
+  def can?(_, {:aggregate, :unrelated}), do: true
+  def can?(resource, {:query_aggregate, kind}), do: can?(resource, {:aggregate, kind})
+  def can?(_, :aggregate_filter), do: true
+  # first/list/custom/relationship-pathed aggregates are not supported (AGE has no
+  # documented list aggregate; relationship aggregates compose Traverse — follow-on).
   def can?(_, {:aggregate, _}), do: false
   def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
@@ -291,6 +308,102 @@ defmodule AshAge.DataLayer do
          )}
     end
   end
+
+  # === Aggregate Callbacks (Slice A) ===
+
+  @impl true
+  def add_aggregate(query, aggregate, _resource) do
+    {:ok, %{query | aggregates: query.aggregates ++ [aggregate]}}
+  end
+
+  @impl true
+  def add_aggregates(query, aggregates, resource) do
+    # add_aggregate/3 always returns {:ok, _} (it appends and never fails), so the
+    # reduce threads {:ok, query} straight through. (A `case … err -> {:halt, err}`
+    # clause here would be unreachable — dialyzer pattern_match_cov.)
+    Enum.reduce(aggregates, {:ok, query}, fn agg, {:ok, q} ->
+      add_aggregate(q, agg, resource)
+    end)
+  end
+
+  @impl true
+  def run_aggregate_query(query, aggregates, resource) do
+    Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          run_aggregate_query_body(query, aggregates, resource)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         aggregate_count: length(aggregates),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
+  end
+
+  defp run_aggregate_query_body(query, aggregates, resource) do
+    # One Cypher per aggregate. AGE Cypher has no per-aggregate FILTER clause, so
+    # aggregates with distinct sub-filters cannot share one MATCH...RETURN. Each
+    # aggregate narrows independently; the cost is N round-trips for N aggregates
+    # (rarely more than a few).
+    Enum.reduce_while(aggregates, {:ok, %{}}, fn agg, {:ok, acc} ->
+      case run_one_aggregate(query, agg, resource) do
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, agg.name, value)}}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp run_one_aggregate(query, agg, resource) do
+    label = validated_label(resource)
+
+    # S7 invariant: a binary-storage field is stored as `$age64$` base64, which is
+    # NOT byte-order-preserving. min/max over it would return the
+    # lexicographically-extreme base64 string (silently wrong + a type mismatch);
+    # sum/avg are nonsensical on ciphertext. Reject as UnsupportedFilter — the
+    # same guard `Filter.rangeable/2` applies to the filter path (filter.ex:214).
+    with :ok <- aggregate_field_rangeable?(resource, agg) do
+      {cypher, params} = AshAge.Query.aggregate_cypher(query, agg, label)
+
+      case build_and_query(query.repo, query.graph, cypher, params, [{:agg, :agtype}]) do
+        {:ok, %{rows: [[val_text]]}} ->
+          {:ok, AshAge.Query.Aggregate.decode_value(agg.kind, Agtype.decode(val_text))}
+
+        # count/exists over an empty set still return [[0]] in AGE; this guard is
+        # for the should-not-happen no-row case. Return the kind's zero value.
+        {:ok, %{rows: []}} ->
+          {:ok, AshAge.Query.Aggregate.decode_value(agg.kind, 0)}
+
+        {:error, error} ->
+          {:error,
+           QueryFailed.exception(query: "AGE aggregate query", reason: redact_db_error(error))}
+      end
+    end
+  end
+
+  # Only the field-bearing comparison/arithmetic aggregates can hit the binary
+  # hole. count/exists take no field (they count vertices), so they are always OK.
+  defp aggregate_field_rangeable?(_resource, %Ash.Query.Aggregate{kind: kind})
+       when kind in [:count, :exists],
+       do: :ok
+
+  defp aggregate_field_rangeable?(resource, %Ash.Query.Aggregate{kind: kind, field: field})
+       when kind in [:min, :max, :sum, :avg] do
+    attr = Ash.Resource.Info.attribute(resource, field)
+    type = if attr, do: attr.type, else: nil
+    constraints = if attr && is_list(attr.constraints), do: attr.constraints, else: []
+
+    if Cast.binary_storage?(type, constraints) do
+      {:error, UnsupportedFilter.exception(operator: kind, field: field)}
+    else
+      :ok
+    end
+  end
+
+  defp aggregate_field_rangeable?(_resource, _agg), do: :ok
 
   # === CRUD Callbacks ===
 
@@ -598,6 +711,227 @@ defmodule AshAge.DataLayer do
            query: "AGE delete query",
            reason: "multitenancy tenant required for :context write"
          )}
+    end
+  end
+
+  # === Upsert (Slice B) ===
+  #
+  # Two-statement, NON-MERGE path (AGENTS.md rule 2: AGE MERGE has catastrophic
+  # perf bugs). Inside the existing transaction (`:transact`): an existence MATCH
+  # (identity AND tenant predicate) → CREATE branch if absent/cross-tenant-excluded,
+  # SET branch if present (same tenant). Not atomic across concurrent upserts of
+  # the same identity (both see c==0, both create → duplicate); AGE enforces no PK
+  # uniqueness, so this is the inherent AGE contract — documented, same shape as
+  # the existing "no idempotent create" reality. A host needing race protection
+  # must enforce uniqueness outside AGE (a UNIQUE index over the agtype property is
+  # unprobed on this build).
+
+  @impl true
+  def upsert(resource, changeset, identity_fields, _identity) do
+    Telemetry.span(:upsert, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, Map.get(changeset, :to_tenant), Info.repo(resource), fn ->
+          do_upsert(resource, changeset, identity_fields)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: tenant?(changeset),
+         stale?: stale?(result),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
+  end
+
+  defp do_upsert(resource, changeset, identity_fields) do
+    case write_graph(resource, changeset) do
+      {:ok, graph} ->
+        repo = Info.repo(resource)
+        label = validated_label(resource)
+        props = changeset_to_properties(resource, changeset)
+
+        case encode_check(props) do
+          {:error, attr} ->
+            {:error,
+             CreateFailed.exception(resource: resource, reason: encode_error_reason(attr))}
+
+          :ok ->
+            upsert_vertex(resource, changeset, repo, label, graph, props, identity_fields)
+        end
+
+      {:error, :tenant_required} ->
+        {:error,
+         CreateFailed.exception(
+           resource: resource,
+           reason: "multitenancy tenant required for :context write"
+         )}
+    end
+  end
+
+  defp upsert_vertex(resource, changeset, repo, label, graph, props, identity_fields) do
+    # `identity_fields` (built by Ash at create.ex:298-313) already carries the
+    # cross-tenant scoping where it belongs: for `:attribute` multitenancy Ash
+    # PREPENDS the multitenancy attribute to a per-tenant identity
+    # (`Enum.uniq([mt_attr | keys])`); for `all_tenants?: true` identities it
+    # intentionally excludes it (global upsert); for PK-based upsert it passes the
+    # primary key. So identity_pairs is the COMPLETE, correct match — no separate
+    # tenant predicate is needed (and adding one would WRONGLY scope `all_tenants?`
+    # identities, breaking global upsert). Verified: the C2 design-adversarial
+    # concern (changeset.filter is nil on the create path) is resolved by Ash's
+    # identity construction, not by a layer-level predicate.
+    identity_pairs = identity_pairs(resource, changeset, identity_fields)
+
+    case upsert_existence(repo, label, graph, identity_pairs) do
+      {:ok, count} when count > 0 ->
+        # Present (same tenant — identity_fields excluded cross-tenant rows).
+        upsert_update_branch(resource, repo, label, graph, props, identity_pairs)
+
+      {:ok, 0} ->
+        # Absent OR cross-tenant-excluded → CREATE (Ash force-set the tenant attr
+        # for :attribute; :context resolved the tenant's graph via write_graph).
+        create_vertex(resource, repo, label, graph, props)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # F1: identity match values come from `Ash.Changeset.get_attribute/2` — the
+  # PENDING new value — NOT `get_data/2` (which reads `changeset.data`, an empty
+  # struct on the create-path → nil → always-CREATE). Each value is serialized by
+  # the attribute's type+constraints so the match carries the stored wire form.
+  defp identity_pairs(resource, changeset, identity_fields) do
+    Enum.map(identity_fields, fn field ->
+      attr = Ash.Resource.Info.attribute(resource, field)
+      type = if attr, do: attr.type, else: nil
+      constraints = if attr && is_list(attr.constraints), do: attr.constraints, else: []
+      value = Ash.Changeset.get_attribute(changeset, field)
+      {field, Cast.serialize_value(value, {type, constraints})}
+    end)
+  end
+
+  defp upsert_match_clause(identity_pairs) do
+    pk_match_clause(identity_pairs, %{})
+  end
+
+  # Existence check: MATCH by identity_fields, count, LIMIT 1. identity_fields is
+  # the barrier (tenant-scoped for per-tenant identities via Ash's mt-attr
+  # prepend); with_rls adds defense-in-depth read-confidentiality around it.
+  defp upsert_existence(repo, label, graph, identity_pairs) do
+    {where, match_params} = upsert_match_clause(identity_pairs)
+    cypher = "MATCH (n:#{label}) WHERE #{where} RETURN count(n) AS c LIMIT 1"
+
+    case build_and_query(repo, graph, cypher, match_params, [{:c, :agtype}]) do
+      {:ok, %{rows: [[count_text]]}} -> {:ok, Agtype.decode(count_text)}
+      {:ok, %{rows: []}} -> {:ok, 0}
+      {:error, _} = error -> error
+    end
+  end
+
+  # Update branch: MATCH by identity_fields, SET the non-PK attrs, RETURN n.
+  # identity_fields carries the same tenant scoping as the existence check, so the
+  # SET is bounded to the caller's tenant (a cross-tenant duplicate sharing the
+  # identity is excluded by identity_fields' mt-attr). decode_update_result
+  # handles 1-row / multi-row / empty (multi-row = within-tenant duplicates, an
+  # error since AGE allows them outside Ash).
+  defp upsert_update_branch(resource, repo, label, graph, props, identity_pairs) do
+    # Exclude the primary key from the SET: Ash generates a fresh PK per changeset,
+    # so SETting it would overwrite the matched row's identity (a uuid PK would be
+    # rewritten to the new changeset's id, desyncing Ash's reference to the row).
+    # AshPostgres upsert semantics: conflict on the identity, PK unchanged.
+    pk_fields = resource |> Ash.Resource.Info.primary_key() |> MapSet.new()
+
+    update_props =
+      Map.reject(props, fn {key, _} ->
+        MapSet.member?(pk_fields, String.to_existing_atom(key))
+      end)
+
+    set_clause = set_clauses(update_props)
+    {where, match_params} = upsert_match_clause(identity_pairs)
+    params = Map.merge(props, match_params)
+
+    cypher =
+      if set_clause == "" do
+        # No non-PK attrs to update — a no-op MATCH...RETURN (the existence check
+        # already proved the row exists).
+        "MATCH (n:#{label}) WHERE #{where} RETURN n"
+      else
+        "MATCH (n:#{label}) WHERE #{where} SET #{set_clause} RETURN n"
+      end
+
+    decode_update_result(
+      resource,
+      redacted_filter(identity_pairs),
+      build_and_query(repo, graph, cypher, params)
+    )
+  end
+
+  # === destroy_query (Slice C) ===
+  #
+  # Bulk destroy by query: one `MATCH ... WHERE <translated filter> DETACH DELETE n`
+  # over the full filtered set (Ash's `:destroy_query` gate). The WHERE is the SAME
+  # translated filter the read path uses (`build_where`), so destroy_query deletes
+  # EXACTLY the rows a read would return — including the tenant predicate Ash
+  # attaches to the bulk-action query for :attribute multitenancy (verified at
+  # Ash `destroy/bulk.ex:714` -> `read.ex:2749 handle_attribute_multitenancy`).
+  # Ash rejects unsupported filter operators at `Ash.Query` build via
+  # `can?({:filter_expr, _})`, so an untranslatable filter cannot reach this path
+  # (the catastrophic unscoped-delete case is gated upstream). `return_records?`
+  # uses read-then-delete: Cypher cannot RETURN deleted nodes.
+
+  @impl true
+  def destroy_query(query, changeset, resource, opts) do
+    # `changeset` is the destroy-action template (no attribute changes for a plain
+    # destroy); it is unused here. Ash attaches before/after-action hooks to it
+    # out-of-band — when a destroy action carries hooks, Ash falls back to
+    # per-record `destroy/2` (already safe) instead of calling destroy_query.
+    _ = changeset
+
+    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          destroy_query_body(query, resource, opts)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
+  end
+
+  defp destroy_query_body(query, resource, opts) do
+    label = validated_label(resource)
+    return_records? = Map.get(opts, :return_records?, false)
+
+    if return_records? do
+      # Cypher can't RETURN deleted nodes — materialize the matched records first
+      # (via the read path), then DELETE. The two statements run inside with_rls's
+      # transaction (when RLS is on) so the read and delete see the same scoped view.
+      with {:ok, records} <- run_query_body(query, resource),
+           :ok <- destroy_query_delete(query, label) do
+        {:ok, records}
+      end
+    else
+      destroy_query_delete(query, label)
+    end
+  end
+
+  defp destroy_query_delete(query, label) do
+    {cypher, params} = AshAge.Query.delete_cypher(query, label)
+
+    case build_and_query(query.repo, query.graph, cypher, params) do
+      {:ok, _} ->
+        :ok
+
+      {:error, error} ->
+        {:error,
+         QueryFailed.exception(query: "AGE destroy_query", reason: redact_db_error(error))}
     end
   end
 
