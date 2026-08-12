@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ash` 3.31.0, `postgrex` 0.22.3) were themselves affected by the advisories
   above and could not clear the `mix hex.audit` CI gate.
 
+### Fixed
+
+- The getting-started notebook now re-runs cleanly against a persistent
+  database. Its graph-setup ran a versioned Ecto migration (a no-op once
+  recorded) while the demo cells created `Alice`/`Bob` unconditionally, so
+  seed data accumulated across runs and the single-element match
+  (`{:ok, [only_alice]}`) failed on the second run. Each setup now tears the
+  graph down before creating it (`Ecto.Migrator.down/4`, `:already_down` on a
+  pristine DB), so the notebook is idempotent. CI is unaffected (fresh
+  container per job).
+
 ## [1.0.1] - 2026-07-03
 
 ### Added
