@@ -133,6 +133,31 @@ defmodule AshAge.Integration.UpdateManyTest do
         assert hd(Ash.read!(Widget)).count == 7
       end)
     end
+
+    test "a no-op batch (no changes) reports existing records as success, not stale" do
+      # Cross-vendor closeout: a no-op update_many group must NOT report existing
+      # records as stale. The honest path runs a READ (filter + PK) and returns
+      # the matched records unchanged; Ash matches them by PK → success.
+      with_graph(:itest_update_many, fn ->
+        {:ok, a} = Ash.create(Widget, %{count: 1, name: "a"})
+        {:ok, b} = Ash.create(Widget, %{count: 1, name: "b"})
+
+        result =
+          Ash.update_many(
+            [{a, %{}}, {b, %{}}],
+            Widget,
+            :update,
+            return_records?: true,
+            return_errors?: true
+          )
+
+        # Both records exist and match → success (not all-stale). No values changed.
+        assert result.status == :success
+        assert result.error_count == 0
+        assert length(List.wrap(result.records)) == 2
+        assert hd(Ash.read!(Widget)).count == 1
+      end)
+    end
   end
 
   describe "cross-tenant isolation (update_many F5 tripwire)" do

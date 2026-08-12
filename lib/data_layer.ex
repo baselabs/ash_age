@@ -1221,6 +1221,12 @@ defmodule AshAge.DataLayer do
       tenant: tenant
     }
 
+    # Reserve every attribute name before any scoping param allocation so a
+    # PK/tenant/filter `$paramN` can never share a name with a SET attr (the
+    # `param<N>`-collision class). Same discipline as `filter/3` on the
+    # update_query path; covers update_many's synthesized query.
+    query = reserve_attr_params(query, resource)
+
     # Translate the group's shared changeset.filter EAGERLY and fail CLOSED on an
     # untranslatable operator. Putting the filter into `query.expression` instead
     # (as a prior revision did) lets `build_where` swallow translation errors
@@ -1242,7 +1248,6 @@ defmodule AshAge.DataLayer do
     # corruption or an authz bypass. A documented known limitation.
     query = scope_to_filter(query, representative.filter)
 
-
     case query do
       {:error, _} = e ->
         e
@@ -1254,9 +1259,40 @@ defmodule AshAge.DataLayer do
         query = scope_to_tenant(query, resource, tenant)
         query = scope_to_group_pks(query, resource, group_changesets)
 
-        # Delegate to the bulk-update machinery. representative carries the
-        # group's shared atomics + plain attrs; update_query_body translates both.
-        update_query_body(query, representative, resource, opts)
+        if no_op_changeset?(representative) do
+          # A no-op group (no atomics AND no plain attrs): run a READ with the
+          # filter + tenant + PK scope and return the matched records UNCHANGED.
+          # The filter gates the result (a filter-carrying no-op — optimistic
+          # lock, policy filter — excludes denied rows, which Ash then classifies
+          # stale, correctly); matching records are returned so Ash does not mark
+          # them stale. This is the honest path between a bare `:ok` (Ash reads
+          # as all-stale) and an early return of the inputs (which bypassed the
+          # filter — cross-vendor delta-2 finding). No SET, no write.
+          read_update_many_matches(query, resource)
+        else
+          # Delegate to the bulk-update machinery. representative carries the
+          # group's shared atomics + plain attrs; update_query_body translates both.
+          update_query_body(query, representative, resource, opts)
+        end
+    end
+  end
+
+  defp no_op_changeset?(changeset),
+    do: changeset.atomics == [] and changeset.attributes == %{}
+
+  # The no-op read: `MATCH (n:L) WHERE <filter + tenant + PK> RETURN n`, decode,
+  # return. The scoped query already carries filter/tenant/PK in `filters`; no
+  # SET, no write — only verifies which inputs match (filter + existence) so Ash
+  # can classify them (matching → success-unchanged, excluded/missing → stale).
+  defp read_update_many_matches(query, resource) do
+    {cypher, params} = AshAge.Query.to_cypher(query)
+
+    case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
+      {:ok, %{rows: rows}} ->
+        {:ok, decode_records(resource, rows)}
+
+      {:error, error} ->
+        {:error, QueryFailed.exception(query: "AGE update_many no-op read", reason: redact_db_error(error))}
     end
   end
 
@@ -1462,6 +1498,12 @@ defmodule AshAge.DataLayer do
          single_record?
        ) do
     {cypher, where_params} = AshAge.Query.update_cypher(query, label, set_str)
+
+    # Drop the changed-attribute reservation seeds (reserve_attr_params) so the
+    # real SET values in `changed_attrs` win the merge. Filter/PK/tenant params
+    # were allocated as `$paramN` SKIPPING attr names, so they are not attr names
+    # and survive this drop — only the `nil` seeds for changed attrs are removed.
+    where_params = Map.drop(where_params, Map.keys(changed_attrs))
     params = changed_attrs |> Map.merge(where_params) |> Map.merge(atomic_params)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
@@ -1539,7 +1581,18 @@ defmodule AshAge.DataLayer do
   # === Filter/Sort/Limit/Offset ===
 
   @impl true
-  def filter(query, filter, _resource) do
+  def filter(query, filter, resource) do
+    # Reserve every attribute name BEFORE translating the filter so the filter's
+    # `$paramN` allocations (Query.add_param → next_param_key) can never pick a
+    # name that a SET attribute uses. Without this, an attribute literally named
+    # `param<N>` would share its `$paramN` ref between the WHERE and the SET on
+    # the bulk-update path (filter translated here at query-build, before SET
+    # attrs are known) — a silent wrong-write (cross-vendor finding). The
+    # per-record path already reserves changed_attrs in `changeset_where`; this
+    # covers the bulk path + reads. Seeds are `nil` placeholders dropped before
+    # the SET merge in run_update_query.
+    query = reserve_attr_params(query, resource)
+
     case Filter.translate(filter, query) do
       {:ok, query, where_clause} ->
         {:ok, %{query | filters: query.filters ++ [where_clause]}}
@@ -1695,6 +1748,24 @@ defmodule AshAge.DataLayer do
             err
         end
     end
+  end
+
+  @doc false
+  # Seeds every attribute name (string key, `nil` placeholder) into `query.params`
+  # so `Query.add_param`'s `next_param_key` skips them when allocating `$paramN`
+  # refs for filters / PK / tenant scoping. Structurally prevents a scoping
+  # `$paramN` from sharing a name with a SET attr (`$<attr>`) — which, for an
+  # attribute literally named `param<N>`, would bind one value to both the WHERE
+  # and the SET (silent wrong-write, cross-vendor finding). Existing real params
+  # are preserved (Map.merge: `query.params` wins). The seeds are dropped from
+  # `where_params` in `run_update_query` before the SET values merge.
+  def reserve_attr_params(query, resource) do
+    reserved =
+      resource
+      |> Ash.Resource.Info.attributes()
+      |> Map.new(fn %{name: name} -> {Atom.to_string(name), nil} end)
+
+    %{query | params: Map.merge(reserved, query.params)}
   end
 
   # Decodes the AGE result of an update's `MATCH ... SET ... RETURN n`. A returned

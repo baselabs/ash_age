@@ -129,16 +129,6 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
   closed instead of corrupting (see Fixed), which means a changeset carrying such
   a validation is not translated to an atomic write. Run those updates per-record
   (the validation fires in Elixir there) until AGE-side enforcement lands.
-- **An attribute literally named `param<N>` (e.g. `:param1`) on the bulk-update
-  path** can share its `$paramN` ref with a filter/PK param, binding the wrong
-  value. Pathological (filter params are allocated `$paramN` at query-build,
-  before SET attrs are known, so the collision can't be reserved away without a
-  separate filter param-namespace — a follow-up). Don't name attributes `param<N>`.
-- **A no-op `update_many` group** (no atomics AND no attrs) returns `:ok` with no
-  records; Ash classifies the input PKs as stale. Conservative (the records were
-  not modified; a filter-carrying no-op is NOT falsely reported success — the
-  query runs and the filter gates the result), but a true no-op reports stale.
-  Run a no-op `update_many` only when you expect the conservative stale result.
 
 ### Changed
 
@@ -166,10 +156,28 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
   the SET fell back to PK+tenant scope, updating rows the filter excluded. The
   filter is now translated eagerly and fail-closed before any write.
 - **Policy-authorized atomic updates hard-errored.** Advertising `:expr_error`
-  flipped the single-record reroute to `authorize_changeset_with: :error`, which
-  attaches `if policy_filter do true else error(...) end` to the query; the filter
-  translator had no `If` clause and rejected it. The wrapper is now stripped to
-  the policy condition (in a WHERE, "authorized if filter holds" IS the filter).
+  flipped the single-record/bulk reroute to `authorize_changeset_with: :error`,
+  which attaches Ash.Policy's `if policy_filter do true else error(...) end` to
+  the query; the filter translator had no `If` clause and rejected it. The wrapper
+  is now stripped to the policy condition (in a WHERE, "authorized if filter
+  holds" IS the filter). End-to-end proven against a real `Ash.Policy.Authorizer`
+  filter-producing policy (the policy filter gates the update — only authorized
+  rows are touched); `:simple_sat` is now a dev/test dep so the suite can exercise
+  Ash.Policy (host apps bring their own SAT solver).
+- **`$paramN` / SET-attribute name collision (silent wrong-write).** A filter/PK/
+  tenant `$paramN` ref could share its name with a SET attribute literally named
+  `param<N>`, binding one value to both the WHERE and the SET. Every attribute
+  name is now reserved (`reserve_attr_params`) before scoping-param allocation —
+  in `filter/3` (covers `update_query`/reads) and `update_many_group` (covers the
+  synthesized query) — so `$paramN` allocations skip attr names; the seeds are
+  dropped from WHERE params so the real SET values win. Tamper-proven (disabling
+  the reservation turns the tripwire red).
+- **No-op `update_many` reported existing records as stale.** A no-op group (no
+  atomics AND no attrs) returned `:ok` with no records, so Ash classified every
+  input as stale. It now runs a scoped READ (filter + tenant + PK gate it) and
+  returns the matched records unchanged — excluded/missing inputs go stale
+  correctly, matching records do not. (An earlier short-circuit returned the
+  inputs directly and bypassed `changeset.filter`; reverted.)
 - **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
   applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
   before SKIP/LIMIT when a sort is present. Sort fields are backtick-quoted
