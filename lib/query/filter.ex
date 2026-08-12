@@ -83,7 +83,7 @@ defmodule AshAge.Query.Filter do
          query
        ) do
     {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-    {:ok, query, "n.#{attr.name} = #{param_ref}"}
+    {:ok, query, "#{prop_ref(attr)} = #{param_ref}"}
   end
 
   # Not equal
@@ -92,7 +92,7 @@ defmodule AshAge.Query.Filter do
          query
        ) do
     {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-    {:ok, query, "n.#{attr.name} <> #{param_ref}"}
+    {:ok, query, "#{prop_ref(attr)} <> #{param_ref}"}
   end
 
   # Greater than
@@ -102,7 +102,7 @@ defmodule AshAge.Query.Filter do
        ) do
     with :ok <- rangeable(attr, Ash.Query.Operator.GreaterThan) do
       {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{attr.name} > #{param_ref}"}
+      {:ok, query, "#{prop_ref(attr)} > #{param_ref}"}
     end
   end
 
@@ -113,7 +113,7 @@ defmodule AshAge.Query.Filter do
        ) do
     with :ok <- rangeable(attr, Ash.Query.Operator.LessThan) do
       {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{attr.name} < #{param_ref}"}
+      {:ok, query, "#{prop_ref(attr)} < #{param_ref}"}
     end
   end
 
@@ -127,7 +127,7 @@ defmodule AshAge.Query.Filter do
        ) do
     with :ok <- rangeable(attr, Ash.Query.Operator.GreaterThanOrEqual) do
       {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{attr.name} >= #{param_ref}"}
+      {:ok, query, "#{prop_ref(attr)} >= #{param_ref}"}
     end
   end
 
@@ -141,7 +141,7 @@ defmodule AshAge.Query.Filter do
        ) do
     with :ok <- rangeable(attr, Ash.Query.Operator.LessThanOrEqual) do
       {query, param_ref} = Query.add_param(query, cast_value(value, attr))
-      {:ok, query, "n.#{attr.name} <= #{param_ref}"}
+      {:ok, query, "#{prop_ref(attr)} <= #{param_ref}"}
     end
   end
 
@@ -169,7 +169,7 @@ defmodule AshAge.Query.Filter do
       {:error, UnsupportedFilter.exception(operator: Ash.Query.Operator.In, field: attr.name)}
     else
       {query, param_ref} = Query.add_param(query, Enum.map(values, &cast_value(&1, attr)))
-      {:ok, query, "n.#{attr.name} IN #{param_ref}"}
+      {:ok, query, "#{prop_ref(attr)} IN #{param_ref}"}
     end
   end
 
@@ -178,14 +178,14 @@ defmodule AshAge.Query.Filter do
          %Ash.Query.Operator.IsNil{left: %Ash.Query.Ref{attribute: attr}, right: true},
          query
        ) do
-    {:ok, query, "n.#{attr.name} IS NULL"}
+    {:ok, query, "#{prop_ref(attr)} IS NULL"}
   end
 
   defp do_translate(
          %Ash.Query.Operator.IsNil{left: %Ash.Query.Ref{attribute: attr}, right: false},
          query
        ) do
-    {:ok, query, "n.#{attr.name} IS NOT NULL"}
+    {:ok, query, "#{prop_ref(attr)} IS NOT NULL"}
   end
 
   # Catch-all: unsupported filter. Surface only the operator/function module and
@@ -203,6 +203,17 @@ defmodule AshAge.Query.Filter do
   # (bare maps in unit tests, non-attribute refs) pass values through unchanged.
   defp cast_value(value, attr) do
     Cast.serialize_value(value, {attr_type(attr), attr_constraints(attr)})
+  end
+
+  # Property ref on the matched `n` node: identifier-validate + backtick-quote.
+  # Mandatory — a bare `n.count` (Cypher keyword colliding with the `count()`
+  # aggregate) mis-parses in AGE as a syntax error at the following operator
+  # (live probe). Mirrors the SET-side expr translator (`AshAge.Cypher.Expr`).
+  # `validate_identifier!/1` raises on a malformed name, which is correct here:
+  # the name came from a compiled resource attribute, so a failure is a
+  # programmer error, not a user input to redact.
+  defp prop_ref(attr) do
+    "n.`#{AshAge.Migration.validate_identifier!(attr.name)}`"
   end
 
   defp attr_type(%{type: type}), do: type

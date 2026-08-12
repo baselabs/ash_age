@@ -399,7 +399,7 @@ defmodule AshAge.MultitenancyTest do
                  %{"match_id" => 1}
                )
 
-      assert where == "n.id = $match_id AND n.org_id = $param2"
+      assert where == "n.id = $match_id AND n.`org_id` = $param2"
       assert params == %{"match_id" => 1, "param2" => "org_a"}
     end
 
