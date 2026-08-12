@@ -1202,9 +1202,8 @@ defmodule AshAge.DataLayer do
   defp run_update_many_groups(groups, resource, graph, label, tenant, opts) do
     Enum.reduce_while(groups, {:ok, []}, fn {_group_key, group_changesets}, {:ok, acc_records} ->
       case update_many_group(resource, graph, label, tenant, hd(group_changesets), group_changesets, opts) do
-        # A no-op group (no atomics AND no plain attrs) returns `:ok` with no
-        # records — continue without crashing the reducer (cross-vendor closeout
-        # finding: the bare-`:ok` return previously hit no case clause).
+        # A non-no-op group that matched 0 rows (return_records?: false) returns
+        # bare `:ok` — continue (Ash classifies the absent PKs stale upstream).
         :ok -> {:cont, {:ok, acc_records}}
         {:ok, records} -> {:cont, {:ok, acc_records ++ records}}
         {:error, _} = e -> {:halt, e}
@@ -1237,15 +1236,13 @@ defmodule AshAge.DataLayer do
     # closeout finding B2; violates the `can?(:changeset_filter)` fail-closed
     # contract). Pre-translating here makes the error loud before any write.
     #
-    # NOTE: a no-op group (no atomics AND no attrs) deliberately does NOT short-
-    # circuit here. An early-return of the input records would bypass
-    # changeset.filter (an optimistic-lock or policy filter could exclude them),
-    # reporting denied/stale rows as success (cross-vendor delta-2 finding).
-    # Instead update_query_body short-circuits a no-op to `:ok` with NO DB touch
-    # (the filter is still translated above, fail-closed on an untranslatable
-    # operator, but never executed). Ash treats the unreturned records as stale —
-    # conservative on a true no-op (the records were not modified), never a
-    # corruption or an authz bypass. A documented known limitation.
+    # NOTE: a no-op group (no atomics AND no effective attrs — `age skip` attrs
+    # don't count) is handled below `case query do` by running a scoped READ and
+    # returning the matched records unchanged (read_update_many_matches). That is
+    # the honest path between a bare `:ok` (Ash reads as all-stale) and an early
+    # return of the inputs (which bypassed changeset.filter — cross-vendor
+    # delta-2 finding, reverted). The filter is translated above (fail-closed on
+    # an untranslatable operator); the read gates the result on it.
     query = scope_to_filter(query, representative.filter)
 
     case query do
@@ -1259,7 +1256,7 @@ defmodule AshAge.DataLayer do
         query = scope_to_tenant(query, resource, tenant)
         query = scope_to_group_pks(query, resource, group_changesets)
 
-        if no_op_changeset?(representative) do
+        if no_op_changeset?(resource, representative) do
           # A no-op group (no atomics AND no plain attrs): run a READ with the
           # filter + tenant + PK scope and return the matched records UNCHANGED.
           # The filter gates the result (a filter-carrying no-op — optimistic
@@ -1277,23 +1274,44 @@ defmodule AshAge.DataLayer do
     end
   end
 
-  defp no_op_changeset?(changeset),
-    do: changeset.atomics == [] and changeset.attributes == %{}
+  # A no-op group: no atomics AND no EFFECTIVE plain attrs. Keyed on the
+  # EFFECTIVE changed attrs (changeset_to_properties, which rejects `age skip`
+  # attrs), NOT raw `changeset.attributes` — a changeset modifying only skip-
+  # listed attrs has non-empty `attributes` but empty `changed_attrs`, and must
+  # still take the no-op read path or Ash marks the existing rows stale
+  # (cross-vendor delta-4 finding).
+  defp no_op_changeset?(resource, changeset) do
+    changeset.atomics == [] and map_size(changeset_to_properties(resource, changeset)) == 0
+  end
 
   # The no-op read: `MATCH (n:L) WHERE <filter + tenant + PK> RETURN n`, decode,
-  # return. The scoped query already carries filter/tenant/PK in `filters`; no
-  # SET, no write — only verifies which inputs match (filter + existence) so Ash
-  # can classify them (matching → success-unchanged, excluded/missing → stale).
+  # return — deduped by primary key so a same-tenant duplicate-PK anomaly (AGE
+  # enforces no uniqueness) turns one input into one record, not several (which
+  # would multi-fire after-action hooks). No SET, no write — only verifies which
+  # inputs match (filter + existence) so Ash can classify them (matching →
+  # success-unchanged, excluded/missing → stale).
   defp read_update_many_matches(query, resource) do
     {cypher, params} = AshAge.Query.to_cypher(query)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
       {:ok, %{rows: rows}} ->
-        {:ok, decode_records(resource, rows)}
+        records = decode_records(resource, rows)
+        {:ok, dedup_by_pk(resource, records)}
 
       {:error, error} ->
         {:error, QueryFailed.exception(query: "AGE update_many no-op read", reason: redact_db_error(error))}
     end
+  end
+
+  # One record per primary-key value (last wins). AGE has no PK uniqueness, so a
+  # duplicate-PK-in-graph match returns 2+ rows for one input PK; returning all
+  # of them would multi-fire Ash's after-action/notification hooks for one input.
+  defp dedup_by_pk(resource, records) do
+    pk_fields = Ash.Resource.Info.primary_key(resource)
+
+    records
+    |> Enum.reverse()
+    |> Enum.uniq_by(fn record -> Map.take(record, pk_fields) end)
   end
 
   # Fail-closed translation of the group's changeset.filter into a pre-built

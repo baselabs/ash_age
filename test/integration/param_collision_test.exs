@@ -9,8 +9,9 @@ defmodule AshAge.Integration.ParamCollisionTest do
   attribute name before scoping-param allocation so `$param<N>` skips them.
 
   This test would FAIL on the unfixed code (the filter grabs `$param1`, the SET
-  of `:param1` gets the filter value) and PASSES with the fix (the filter grabs
-  `$param2`, `:param1` keeps its SET value).
+  of `:param1` gets the filter value) and PASSES with the fix (every attr name is
+  reserved, so the filter allocates a `$paramN` past them and `:param1` keeps its
+  SET value — the exact `$paramN` index depends on how many attrs are seeded).
   """
   use AshAge.DataCase, async: false
   @moduletag :integration

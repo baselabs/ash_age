@@ -160,6 +160,62 @@ defmodule AshAge.Integration.UpdateManyTest do
     end
   end
 
+  # A resource with an `age skip` attribute — one the graph never stores (computed
+  # client-side). An update_many modifying ONLY a skip attr is a true no-op for the
+  # graph; it must still report the existing records as success (not stale). The
+  # no-op detection keys on the EFFECTIVE changed attrs (after skip rejection),
+  # not raw `changeset.attributes` (cross-vendor delta-4 finding).
+  defmodule SkipWidget do
+    use Ash.Resource,
+      domain: AshAge.TestDomain,
+      validate_domain_inclusion?: false,
+      data_layer: AshAge.DataLayer
+
+    age do
+      graph :itest_update_many_skip
+      repo AshAge.TestRepo
+      label :SkipWidget
+      skip [:computed]
+    end
+
+    attributes do
+      uuid_primary_key :id
+      attribute :count, :integer, allow_nil?: false, public?: true
+      attribute :computed, :string, public?: true
+    end
+
+    actions do
+      default_accept [:count, :computed]
+      defaults [:read, :create, :destroy, update: :*]
+    end
+  end
+
+  describe "update_many with age-skip attributes" do
+    test "a skip-attr-only update is a no-op that reports success, not stale" do
+      with_graph(:itest_update_many_skip, fn ->
+        {:ok, w} = Ash.create(SkipWidget, %{count: 5, computed: "x"})
+
+        # Modifying ONLY the skip attr → no graph write. Without effective-no-op
+        # detection this returned `:ok` (no records) and Ash marked `w` stale.
+        result =
+          Ash.update_many(
+            [{w, %{computed: "y"}}],
+            SkipWidget,
+            :update,
+            return_records?: true,
+            return_errors?: true
+          )
+
+        assert result.status == :success
+        assert result.error_count == 0
+        # The existing record is returned (matched by the no-op read), not stale.
+        assert length(List.wrap(result.records)) == 1
+        # count unchanged (no write occurred).
+        assert Ash.get!(SkipWidget, w.id).count == 5
+      end)
+    end
+  end
+
   describe "cross-tenant isolation (update_many F5 tripwire)" do
     test "an A-tenant batch does not touch a duplicate-PK row in B's tenant" do
       # AGE enforces NO primary-key uniqueness, so a vertex with org_a's PK can
