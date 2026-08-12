@@ -1202,8 +1202,8 @@ defmodule AshAge.DataLayer do
   defp run_update_many_groups(groups, resource, graph, label, tenant, opts) do
     Enum.reduce_while(groups, {:ok, []}, fn {_group_key, group_changesets}, {:ok, acc_records} ->
       case update_many_group(resource, graph, label, tenant, hd(group_changesets), group_changesets, opts) do
-        # A non-no-op group that matched 0 rows (return_records?: false) returns
-        # bare `:ok` — continue (Ash classifies the absent PKs stale upstream).
+        # `:ok` arises from run_update_query whenever `return_records?` is false
+        # (Ash does not request records for this batch) — continue with no records.
         :ok -> {:cont, {:ok, acc_records}}
         {:ok, records} -> {:cont, {:ok, acc_records ++ records}}
         {:error, _} = e -> {:halt, e}
@@ -1544,7 +1544,15 @@ defmodule AshAge.DataLayer do
                "update matched #{length(decoded)} rows for one primary key (duplicate rows in graph?)"
            )}
         else
-          {:ok, decoded}
+          # Bulk path (or single-record with exactly one match). Dedup by primary
+          # key: AGE enforces no uniqueness, so a duplicate-PK-in-graph anomaly
+          # returns 2+ rows for one input PK — returning all would multi-fire
+          # Ash's after-action/notification hooks for one input. One record per
+          # input PK is the consistent bulk behavior (the single-record reroute
+          # fail-closes above because Ash's per-record wrapper requires exactly 1;
+          # bulk handles many). No-op for the normal distinct-PK case.
+          # (cross-vendor delta-5 finding: the no-op read deduped but this path did not.)
+          {:ok, dedup_by_pk(resource, decoded)}
         end
 
       {:ok, _} ->

@@ -112,23 +112,16 @@ noted adjustment; code that doesn't is unaffected.
 Identified by the cross-vendor closeout; each needs attribute-type threading
 through the translator or AGE-verified semantics, deferred to a follow-up:
 
-- **Atomic-expr equality/IN against a binary-storage attribute** does not type-
-  encode the literal (`$age64$` tag missing), so `expr(ref) == binary_attr` never
-  matches the stored wire form. Range ops on binary attrs are already rejected;
-  equality/IN in an atomic expr are the gap. Workaround: use the plain-attribute
-  update path for binary attrs, or filter outside the atomic.
 - **`type(expr, :type)` casts are dropped** in the translator (AGE is dynamically
-  typed, so the cast is treated as a no-op). A user-authored cast that changes
-  comparison semantics (e.g. `type(1, :string)` vs a stored string) diverges
-  silently. The Ash-generated `allow_nil?` wrapper cast is unaffected.
-- **`Ash.update_many` with a duplicate-PK-in-graph row** (AGE enforces no PK
-  uniqueness; creatable externally) updates every physical row sharing that PK
-  within the same tenant. Same-tenant only (no cross-tenant leak — the tenant
-  discriminator holds); a per-PK-count guard on the bulk path is the follow-up.
+  typed — there is no general cast function in Cypher, so the cast is treated as
+  a no-op). A user-authored cast that changes comparison semantics (e.g.
+  `type(1, :string)` vs a stored string) diverges silently. The Ash-generated
+  `allow_nil?` wrapper cast is unaffected. Inherent AGE limitation (no cast fn).
 - **Atomic-update atomic validations** (e.g. `validate compare(...)`) now fail
   closed instead of corrupting (see Fixed), which means a changeset carrying such
   a validation is not translated to an atomic write. Run those updates per-record
-  (the validation fires in Elixir there) until AGE-side enforcement lands.
+  (the validation fires in Elixir there) — AGE's SET expression cannot raise, so
+  atomic-side validation enforcement is inherently impossible until AGE adds one.
 
 ### Changed
 
@@ -178,6 +171,16 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
   returns the matched records unchanged — excluded/missing inputs go stale
   correctly, matching records do not. (An earlier short-circuit returned the
   inputs directly and bypassed `changeset.filter`; reverted.)
+- **Atomic-expr equality/IN against a binary-storage attribute** never matched:
+  the literal was stored raw instead of `$age64$`-tagged. Eq/NotEq/In now
+  serialize the literal operand with the Ref's attr type (binary → tagged, same
+  encoder the read path uses).
+- **Duplicate-PK-in-graph anomaly** (AGE enforces no PK uniqueness) is now
+  handled consistently: single-record updates fail closed (Ash's per-record
+  wrapper requires exactly one record); the bulk write + no-op read paths dedup
+  by primary key (one record per input PK — returning all would multi-fire
+  Ash's after-action/notification hooks). Same-tenant only; the tenant
+  discriminator prevents any cross-tenant effect.
 - **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
   applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
   before SKIP/LIMIT when a sort is present. Sort fields are backtick-quoted
