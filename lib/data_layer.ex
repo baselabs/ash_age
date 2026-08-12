@@ -1552,14 +1552,15 @@ defmodule AshAge.DataLayer do
     # SET (keyed on SOURCE PKs) means the failure is clean under any transaction
     # mode, and a SET that rewrites the PK can't evade it. One grouped-count query.
     #
-    # Irreducible AGE limitation (not an ash_age defect): the check and SET are
-    # separate statements, so a concurrent same-PK INSERT between them (under READ
-    # COMMITTED, Ash's default) can slip through — a TOCTOU window. AGE has no PK
-    # constraints (unlike Postgres/ETS), so ash_age cannot make check+set atomic.
-    # The post-write defense-in-depth below + the action transaction catch the
-    # common case; for airtight protection on duplicate-bearing data use
-    # SERIALIZABLE isolation or dedupe externally. Ash-managed creates enforce UUID
-    # uniqueness, so duplicates only arise from external corruption.
+    # The check and SET are separate statements. Under READ COMMITTED (Ash's
+    # default) a concurrent same-PK INSERT between them is a TOCTOU window; and a
+    # LIMIT-without-ORDER-BY update has a non-deterministic slice (the check and
+    # SET could pick different rows). AGE provides no PK constraints (Postgres/ETS
+    # enforce these at the DB), so ash_age cannot make check+set atomic. The
+    # post-write defense-in-depth below + the action transaction catch the common
+    # case; airtight protection on duplicate-bearing data needs SERIALIZABLE
+    # isolation or external dedup. Ash-managed creates enforce UUID uniqueness, so
+    # duplicates only arise from external corruption.
     with :ok <- precheck_no_duplicate_pk(query, label, pk_fields, resource) do
       run_update_set(query, label, set_str, changed_attrs, atomic_params, resource, return_records?, single_record?)
     end
