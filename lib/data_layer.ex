@@ -1213,19 +1213,6 @@ defmodule AshAge.DataLayer do
   end
 
   defp update_many_group(resource, graph, label, tenant, representative, group_changesets, opts) do
-    changed_attrs = changeset_to_properties(resource, representative)
-
-    # No-op group: no atomics AND no plain attrs. The records exist (unchanged) —
-    # return them so Ash does not classify every input PK as stale (cross-vendor
-    # delta finding: a bare `:ok` discarded them and Ash marked the batch stale).
-    if map_size(changed_attrs) == 0 and representative.atomics == [] do
-      {:ok, Enum.map(group_changesets, & &1.data)}
-    else
-      update_many_group_run(resource, graph, label, tenant, representative, group_changesets, opts, changed_attrs)
-    end
-  end
-
-  defp update_many_group_run(resource, graph, label, tenant, representative, group_changesets, opts, changed_attrs) do
     query = %AshAge.Query{
       resource: resource,
       graph: graph,
@@ -1233,15 +1220,6 @@ defmodule AshAge.DataLayer do
       repo: Info.repo(resource),
       tenant: tenant
     }
-
-    # Reserve the SET-attribute names in the params map BEFORE filter/PK
-    # translation so `Query.add_param`'s `next_param_key` skips them. Without
-    # this, an attribute literally named `param<N>` would share its `$paramN`
-    # with a filter/PK param, and the merged params could carry the filter value
-    # into the SET (or vice versa) — a silent wrong-write (cross-vendor finding,
-    # flagged twice). The seeds are placeholders; run_update_query drops them
-    # from where_params before the merge so the real SET values win.
-    query = reserve_set_attr_params(query, changed_attrs)
 
     # Translate the group's shared changeset.filter EAGERLY and fail CLOSED on an
     # untranslatable operator. Putting the filter into `query.expression` instead
@@ -1252,7 +1230,17 @@ defmodule AshAge.DataLayer do
     # tenant scope — updating rows the filter was meant to exclude (cross-vendor
     # closeout finding B2; violates the `can?(:changeset_filter)` fail-closed
     # contract). Pre-translating here makes the error loud before any write.
+    #
+    # NOTE: a no-op group (no atomics AND no attrs) deliberately does NOT short-
+    # circuit here. An early-return of the input records would bypass
+    # changeset.filter (an optimistic-lock or policy filter could exclude them),
+    # reporting denied/stale rows as success (cross-vendor delta-2 finding). The
+    # honest path runs the query (a 0-row SET verifies the filter); Ash then
+    # classifies the result. update_query_body short-circuits a no-op to `:ok`,
+    # which Ash treats as "no records returned" — conservative on a true no-op
+    # (the records were not modified), never a corruption or an authz bypass.
     query = scope_to_filter(query, representative.filter)
+
 
     case query do
       {:error, _} = e ->
@@ -1292,18 +1280,6 @@ defmodule AshAge.DataLayer do
     end
   end
 
-  # Pre-seed `query.params` with the SET-attribute names as placeholders so
-  # `Query.add_param`'s `next_param_key` skips them when allocating filter/PK
-  # `$paramN` refs. Prevents an attribute literally named `param<N>` from sharing
-  # its param ref with a filter param (silent wrong-write; cross-vendor finding).
-  # `run_update_query` drops these seed keys from `where_params` before the merge
-  # so the real SET values (changed_attrs) win. Existing real params are not
-  # clobbered (Map.merge puts reserved first, existing params overwrite).
-  defp reserve_set_attr_params(query, changed_attrs) do
-    reserved = Map.new(Map.keys(changed_attrs), fn k -> {k, :__reserved_set_attr__} end)
-    %{query | params: Map.merge(reserved, query.params)}
-  end
-
   # :context → per-tenant graph (fail-closed on blank tenant). :attribute / none
   # → the resource's base graphs (the tenant discriminator is a WHERE predicate,
   # not a graph choice).
@@ -1328,10 +1304,14 @@ defmodule AshAge.DataLayer do
   defp scope_to_tenant(query, resource, tenant) do
     strategy = Ash.Resource.Info.multitenancy_strategy(resource)
 
-    # A `global? true` :attribute resource legitimately allows a nil tenant (no
-    # discriminator); applying the parse fn to nil would raise for a custom
-    # parser and add a phantom predicate (cross-vendor delta finding).
-    if strategy == :attribute and not Ash.Resource.Info.multitenancy_global?(resource) do
+    # Gate on TENANT PRESENCE, not on `global?`. Ash's `handle_attribute_multitenancy`
+    # (read.ex:2749-2756) adds the discriminator whenever `query.tenant` is set;
+    # `global? true` only permits a NIL tenant (read.ex:2861), it does NOT disable
+    # scoping when a tenant IS supplied. Gating on `not global?` (a prior revision)
+    # skipped the discriminator for every global resource even with a tenant — a
+    # cross-tenant write on a duplicate-PK row (cross-vendor delta-2 finding).
+    # Non-multitenant resources and a nil/blank tenant get no discriminator.
+    if strategy == :attribute and tenant not in [nil, ""] do
       attr = Ash.Resource.Info.multitenancy_attribute(resource)
 
       if attr do
@@ -1404,11 +1384,6 @@ defmodule AshAge.DataLayer do
 
     changed_attrs = changeset_to_properties(resource, changeset)
     plain_set = set_clauses(changed_attrs)
-
-    # Reserve SET-attr names so the filter/PK `$paramN` refs allocated inside
-    # update_cypher (run_update_query) skip them (same collision guard as
-    # update_many_group — an attr named `param<N>` would otherwise share its ref).
-    query = reserve_set_attr_params(query, changed_attrs)
 
     # Translate atomics, threading the in-flight param names (plain attrs + the
     # WHERE params from build_where) so positional atomic params can't collide.
@@ -1485,11 +1460,6 @@ defmodule AshAge.DataLayer do
          single_record?
        ) do
     {cypher, where_params} = AshAge.Query.update_cypher(query, label, set_str)
-
-    # Drop any SET-attribute-name seeds reserved before filter/PK translation
-    # (reserve_set_attr_params) so the real SET values (changed_attrs) win in the
-    # merge. Filter/PK params were allocated avoiding those names, so they remain.
-    where_params = Map.drop(where_params, Map.keys(changed_attrs))
     params = changed_attrs |> Map.merge(where_params) |> Map.merge(atomic_params)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do

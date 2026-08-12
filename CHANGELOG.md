@@ -129,6 +129,16 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
   closed instead of corrupting (see Fixed), which means a changeset carrying such
   a validation is not translated to an atomic write. Run those updates per-record
   (the validation fires in Elixir there) until AGE-side enforcement lands.
+- **An attribute literally named `param<N>` (e.g. `:param1`) on the bulk-update
+  path** can share its `$paramN` ref with a filter/PK param, binding the wrong
+  value. Pathological (filter params are allocated `$paramN` at query-build,
+  before SET attrs are known, so the collision can't be reserved away without a
+  separate filter param-namespace — a follow-up). Don't name attributes `param<N>`.
+- **A no-op `update_many` group** (no atomics AND no attrs) returns `:ok` with no
+  records; Ash classifies the input PKs as stale. Conservative (the records were
+  not modified; a filter-carrying no-op is NOT falsely reported success — the
+  query runs and the filter gates the result), but a true no-op reports stale.
+  Run a no-op `update_many` only when you expect the conservative stale result.
 
 ### Changed
 
@@ -162,11 +172,18 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
   the policy condition (in a WHERE, "authorized if filter holds" IS the filter).
 - **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
   applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
-  before SKIP/LIMIT when a sort is present.
-- `update_many` no-op (no atomics AND no attrs) crashed the group reducer with
-  `CaseClauseError` — the reducer now handles the bare `:ok` return.
+  before SKIP/LIMIT when a sort is present. Sort fields are backtick-quoted
+  (`n.`<field>`) and any `:desc*` direction (`:desc_nils_first`/`_last`) maps to
+  DESC — AGE has no NULLS FIRST/LAST syntax, so the prior `:desc`-only check
+  selected the reversed slice, and a bare keyword field collided with the
+  `count()` aggregate.
 - `update_many` blank-tenant guard over-rejected `global? true` `:attribute`
-  resources; it now consults `multitenancy_global?/1`.
+  resources; it now consults `multitenancy_global?/1` (a nil tenant is allowed for
+  global resources). `scope_to_tenant` now gates the discriminator on TENANT
+  PRESENCE (matching Ash's `handle_attribute_multitenancy`), not on `global?` —
+  a global resource WITH a tenant still gets the discriminator (an earlier
+  revision skipped it for all global resources, a cross-tenant write on a
+  duplicate-PK row).
 - The catch-all `node_label` leaked the bare unsupported value into
   `UnsupportedExpression.node` (whose message inspects it); it now carries a
   structural `:value` atom, never the value.
