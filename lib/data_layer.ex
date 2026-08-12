@@ -1550,9 +1550,16 @@ defmodule AshAge.DataLayer do
     # Pre-write duplicate-PK check: AGE enforces no PK uniqueness, so a bulk SET
     # could write multiple physical rows for one input PK. Detecting it BEFORE the
     # SET (keyed on SOURCE PKs) means the failure is clean under any transaction
-    # mode, and a SET that rewrites the PK can't evade it — closing the
-    # post-write-detection edges cross-vendor rounds 6-8 surfaced (transaction:
-    # false post-commit; atomic-PK-rewrite rename). One grouped-count query.
+    # mode, and a SET that rewrites the PK can't evade it. One grouped-count query.
+    #
+    # Irreducible AGE limitation (not an ash_age defect): the check and SET are
+    # separate statements, so a concurrent same-PK INSERT between them (under READ
+    # COMMITTED, Ash's default) can slip through — a TOCTOU window. AGE has no PK
+    # constraints (unlike Postgres/ETS), so ash_age cannot make check+set atomic.
+    # The post-write defense-in-depth below + the action transaction catch the
+    # common case; for airtight protection on duplicate-bearing data use
+    # SERIALIZABLE isolation or dedupe externally. Ash-managed creates enforce UUID
+    # uniqueness, so duplicates only arise from external corruption.
     with :ok <- precheck_no_duplicate_pk(query, label, pk_fields, resource) do
       run_update_set(query, label, set_str, changed_attrs, atomic_params, resource, return_records?, single_record?)
     end
@@ -1573,8 +1580,8 @@ defmodule AshAge.DataLayer do
              "bulk update would match multiple rows for one primary key (duplicate rows in graph?)"
          )}
 
-      {:error, _} = e ->
-        e
+      {:error, error} ->
+        {:error, QueryFailed.exception(query: "AGE duplicate-PK precheck", reason: redact_db_error(error))}
     end
   end
 

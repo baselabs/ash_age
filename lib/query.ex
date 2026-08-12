@@ -214,9 +214,20 @@ defmodule AshAge.Query do
       end)
 
     base = ["MATCH (n:#{label})"] ++ build_where_clause(where_parts)
-    # Group by every PK field; if any (composite) key matches >1 vertex, RETURN 1.
+
+    # Apply the SAME slice update_cypher uses (ORDER BY/SKIP/LIMIT) so the precheck
+    # examines exactly the rows the SET would update — not the full WHERE set
+    # (which would over-reject a limited update for duplicates outside the slice).
+    slice =
+      if query.limit == nil and query.offset == nil do
+        []
+      else
+        ["WITH n"] ++ build_order_by(query.sort) ++ build_skip(query.offset) ++ build_limit(query.limit)
+      end
+
+    # Group the (sliced) set by every PK field; if any key matches >1 vertex → dup.
     check = ["WITH #{pk_group}, count(n) AS cnt WHERE cnt > 1 RETURN 1 LIMIT 1"]
-    {Enum.join(base ++ check, " "), query.params}
+    {Enum.join(base ++ slice ++ check, " "), query.params}
   end
 
   @doc """
