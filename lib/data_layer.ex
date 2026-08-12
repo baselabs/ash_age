@@ -248,6 +248,12 @@ defmodule AshAge.DataLayer do
   # is what makes `Ash.update(rec, atomics: [...])` and `Ash.bulk_update` reach
   # the translator instead of erroring/falling back. Added in 2.0.0.
   def can?(_, :update_query), do: true
+  # update_many/3: distinct changes per record in one bulk call. Ash pre-groups
+  # the batch by `{changeset.atomics, changeset.filter}` and dispatches each
+  # group here (update_many.ex:130-178). We re-group defensively and synthesize
+  # a per-group query carrying the group's filter + tenant discriminator + PK
+  # scope, then delegate to the update_query machinery. Added in 2.0.0.
+  def can?(_, :update_many), do: true
   # Atomic-update support gate (changeset.ex:5122 checks this BEFORE dispatch;
   # Ash.Error.Invalid.AtomicsNotSupported fires when false). The third capability
   # Ash requires for `Ash.update(rec, atomics: ...)` to reach update_query/4.
@@ -1115,6 +1121,187 @@ defmodule AshAge.DataLayer do
        }}
     end)
   end
+
+  @impl true
+  def update_many(resource, changesets, opts) do
+    Telemetry.span(:update_many, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      tenant = opts[:tenant]
+
+      result =
+        with_rls(resource, tenant, Info.repo(resource), fn ->
+          update_many_body(resource, changesets, opts, tenant)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: not is_nil(tenant),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
+  end
+
+  # update_many receives NO query (the contract is `{resource, changesets, opts}`) —
+  # each group synthesizes its own AshAge.Query carrying the group's shared Ash
+  # filter, the `:attribute` tenant discriminator (built from opts[:tenant], which
+  # lives in bulk_update_options NOT on each changeset — Challenge 2), and a
+  # PK-restriction bounding the SET to exactly this group's records. Then it
+  # delegates to update_query_body (the same machinery bulk_update uses).
+  defp update_many_body(resource, changesets, opts, tenant) do
+    label = validated_label(resource)
+
+    # Fail closed on a blank tenant for ANY multitenant resource. :context is
+    # caught by update_many_graph below; :attribute is caught HERE — applying the
+    # parse fn to nil would scope the SET to a phantom tenant (wrong-empty, not
+    # an error), and a missing discriminator would be a silent cross-tenant write
+    # (the recurring class). Non-multitenant resources need no tenant.
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute and
+         tenant in [nil, ""] do
+      {:error,
+       UpdateFailed.exception(resource: resource, reason: "tenant required for update_many")}
+    else
+      update_many_grouped(resource, changesets, opts, tenant, label)
+    end
+  end
+
+  defp update_many_grouped(resource, changesets, opts, tenant, label) do
+    case update_many_graph(resource, tenant) do
+      {:ok, graph} ->
+        # Re-group defensively. Ash pre-groups by `{atomics, filter}`, but static
+        # attribute values live in `changeset.attributes` (NOT `atomics`) — so two
+        # inputs `{rec, %{count: 10}}` and `{rec, %{count: 20}}` share the same
+        # atomics (empty) and would collapse into one group, letting the
+        # representative's `%{count: 10}` SET apply to both. Including `attributes`
+        # in the key splits them into uniform-SET sub-groups, each correct. The
+        # atomics term is the shared EXPR (e.g. count+1) — grouped by structural
+        # identity, so identical exprs still batch.
+        groups =
+          Enum.group_by(changesets, fn cs -> {cs.atomics, cs.filter, cs.attributes} end)
+
+        run_update_many_groups(groups, resource, graph, label, tenant, opts)
+
+      {:error, :tenant_required} ->
+        # :context multitenancy with a nil/blank tenant: there is no global graph
+        # to fall back to — fail CLOSED (no silent cross-tenant write).
+        {:error,
+         UpdateFailed.exception(resource: resource, reason: "tenant required for update_many")}
+    end
+  end
+
+  defp run_update_many_groups(groups, resource, graph, label, tenant, opts) do
+    Enum.reduce_while(groups, {:ok, []}, fn {_group_key, group_changesets}, {:ok, acc_records} ->
+      case update_many_group(resource, graph, label, tenant, hd(group_changesets), group_changesets, opts) do
+        {:ok, records} -> {:cont, {:ok, acc_records ++ records}}
+        {:error, _} = e -> {:halt, e}
+      end
+    end)
+  end
+
+  defp update_many_group(resource, graph, label, tenant, representative, group_changesets, opts) do
+    query = %AshAge.Query{
+      resource: resource,
+      graph: graph,
+      label: label,
+      repo: Info.repo(resource),
+      tenant: tenant,
+      # The group's shared Ash filter (Ash ensures every changeset in a group
+      # carries the same filter).
+      expression: representative.filter
+    }
+
+    # Scope the SET to (a) the tenant discriminator for :attribute resources and
+    # (b) exactly this group's PKs — so a synthesized query can never widen past
+    # the group Ash handed us.
+    query = scope_to_tenant(query, resource, tenant)
+    query = scope_to_group_pks(query, resource, group_changesets)
+
+    # Delegate to the bulk-update machinery. representative carries the group's
+    # shared atomics + plain attrs; update_query_body translates both.
+    update_query_body(query, representative, resource, opts)
+  end
+
+  # :context → per-tenant graph (fail-closed on blank tenant). :attribute / none
+  # → the resource's base graphs (the tenant discriminator is a WHERE predicate,
+  # not a graph choice).
+  defp update_many_graph(resource, tenant) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :context do
+      case tenant do
+        blank when blank in [nil, ""] -> {:error, :tenant_required}
+        t -> {:ok, AshAge.Multitenancy.graph_name(resource, t)}
+      end
+    else
+      {:ok, Info.graph(resource)}
+    end
+  end
+
+  # Adds the `:attribute` tenant discriminator to the WHERE (n.`attr` = $tenant).
+  # For :attribute resources, Ash's handle_attribute_multitenancy normally adds
+  # this BEFORE the data layer — but update_many bypasses that step (no query
+  # goes through Ash's read path), so we build it here from opts[:tenant]. The
+  # value is run through the resource's multitenancy_parse_attribute, matching
+  # Ash's own handling (read.ex:2749-2755). No-op for :context (graph isolation)
+  # and for non-multitenant resources.
+  defp scope_to_tenant(query, resource, tenant) do
+    strategy = Ash.Resource.Info.multitenancy_strategy(resource)
+
+    if strategy == :attribute do
+      attr = Ash.Resource.Info.multitenancy_attribute(resource)
+
+      if attr do
+        {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+        parsed = apply(m, f, [tenant | a])
+        {query, param} = AshAge.Query.add_param(query, parsed)
+        key = attr |> to_string() |> AshAge.Migration.validate_identifier!()
+        %{query | filters: query.filters ++ ["n.`#{key}` = #{param}"]}
+      else
+        query
+      end
+    else
+      query
+    end
+  end
+
+  # Bounds the SET to exactly this group's PKs.
+  # Single-attr PK → `n.`pk` IN $pks` (one list param, AGE binds JSON list).
+  # Composite PK → OR-disjunction of per-record AND-conjunctions (AGE has no
+  # row-valued IN). PK values are serialized by attribute type so equality matches
+  # the stored wire form (binary-tagged, date-ISO — same as the filter path).
+  defp scope_to_group_pks(query, resource, group_changesets) do
+    pk_fields = Ash.Resource.Info.primary_key(resource)
+    types = Info.attribute_types(resource)
+
+    if length(pk_fields) == 1 do
+      [pk] = pk_fields
+      type = Map.get(types, pk)
+      values = Enum.map(group_changesets, &Cast.serialize_value(pk_value(&1, pk), type))
+      {query, param} = AshAge.Query.add_param(query, values)
+      key = pk |> to_string() |> AshAge.Migration.validate_identifier!()
+      %{query | filters: query.filters ++ ["n.`#{key}` IN #{param}"]}
+    else
+      {disjuncts, query} =
+        Enum.map_reduce(group_changesets, query, &composite_pk_conjuncts(&1, &2, pk_fields, types))
+
+      %{query | filters: query.filters ++ ["(" <> Enum.join(disjuncts, " OR ") <> ")"]}
+    end
+  end
+
+  # One record's composite-PK match as an AND-conjunction, threading param
+  # allocation. `(n.`k1` = $p1 AND n.`k2` = $p2)`. Extracted from
+  # scope_to_group_pks to keep nesting under credo's max.
+  defp composite_pk_conjuncts(changeset, query, pk_fields, types) do
+    {conjuncts, query} =
+      Enum.map_reduce(pk_fields, query, fn field, q2 ->
+        type = Map.get(types, field)
+        {q2, param} = AshAge.Query.add_param(q2, Cast.serialize_value(pk_value(changeset, field), type))
+        key = field |> to_string() |> AshAge.Migration.validate_identifier!()
+        {"n.`#{key}` = #{param}", q2}
+      end)
+
+    {"(" <> Enum.join(conjuncts, " AND ") <> ")", query}
+  end
+
+  defp pk_value(changeset, field), do: Ash.Changeset.get_data(changeset, field)
 
   defp update_query_body(query, changeset, resource, opts) do
     label = validated_label(resource)
