@@ -132,6 +132,44 @@ Integration-test resources are defined inline in their test modules (pointing `d
 ## Version History
 
 Key changes that affect agent behavior:
+- **v2.0.0 (S8): Atomic-aware updates.** `Ash.Expr`-based atomics now translate
+  to Cypher. **`AshAge.Cypher.Expr` (`lib/cypher/expr.ex`, Level 1 → errors)**
+  translates an Ash.Expr AST (arithmetic/comparison/boolean/control/string,
+  Refs → backtick-quoted+validated, literals → collision-free positional `$pN`)
+  into a Cypher expression + params; unsupported nodes fail closed as
+  `UnsupportedExpression`. **New data-layer callbacks + capabilities:**
+  `update_query/4` + `update_many/3` (`can?(:update_query)`, `:update_many`,
+  `:expr_error`, `:action_select`, `{:atomic, :update}`). Single-record
+  `Ash.update/2` carrying atomics and `Ash.bulk_update` route through
+  `update_query/4`; `Ash.update_many` (distinct changes per record) routes
+  through `update_many/3`, which synthesizes a per-group query (group filter +
+  `:attribute` tenant discriminator from `opts[:tenant]` via
+  `multitenancy_parse_attribute` + PK scope) and delegates to the update_query
+  machinery. LIMIT/SKIP honored via a `WITH n` pass-through (verified valid AGE
+  1.6.0 Cypher). **Telemetry:** ops `:update_query`/`:update_many` + value-free
+  `:atomic?` flag added to `AshAge.Telemetry`'s allowlist (RAISES on off-allowlist
+  keys, unchanged). **Breaking edges (major bump):** (1) `bulk_destroy`/`bulk_update`
+  with a query now REQUIRE the tenant on the QUERY (`Ash.Query.set_tenant/2`) —
+  Ash's atomic-bulk dispatch reads `query.tenant`, which the stream/per-record
+  path tolerated via opts but the atomic path does not (Ash bulk-op contract; same
+  for every `:update_query`/`:destroy_query`-capable data layer); (2) WHERE-clause
+  **AND** SET property refs are now backtick-quoted (`` n.`attr` ``) — fixes a
+  syntax error filtering/setting Cypher-keyword attrs (`count`, `label`); the
+  **fix to `lib/query/filter.ex` (Level 3) is pre-existing** — `prop_ref/1`
+  mirrors the SET-side translator; (3) single-record updates on a duplicate-PK-
+  in-graph row fail closed via `update_query/4` (`UpdateFailed`) instead of the
+  per-record `decode_update_result` guard. **`can?` advertisement is load-bearing
+  dispatch:** advertising `:update_query`+`:expr_error` reroutes bulk_destroy into
+  `do_atomic_destroy` (Ash's `set_strategy` keys the atomic-vs-stream choice on
+  those two atoms); any new `can?` clause must be checked for dispatch coupling
+  (grep `data_layer_can?` in `deps/ash/lib/ash/actions/`). **Known Ash
+  interaction:** `Ash.update_many/4` without `return_records?: true` raises
+  `BadBooleanError` (Ash 3.31.2 `update_many.ex:162` strict `or` on nil opts) —
+  affects all update_many-capable data layers. Key files: `lib/cypher/expr.ex`,
+  `lib/data_layer.ex` (`update_query/4`, `update_many/3`, `update_many_body`,
+  `scope_to_tenant`, `scope_to_group_pks`, `single_record_reroute?`,
+  `update_query_body`, `run_update_query`), `lib/query.ex` (`update_cypher/3`),
+  `lib/query/filter.ex` (`prop_ref/1`), `lib/telemetry.ex` (`:atomic?`).
 - Unreleased (S7): Sensitive-data classification. **`age do sensitive [:attrs] end`**
   (`AshAge.DataLayer.Info.sensitive/1`) declares attributes that must be
   app-side-encrypted (or excluded) before they reach the graph. **One

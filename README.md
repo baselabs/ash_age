@@ -29,6 +29,7 @@ database to deploy or operate.
 | Area | What you get |
 |------|--------------|
 | **CRUD & bulk** | Resources as labeled vertices; `Ash.bulk_create` via `UNWIND`; single and composite primary keys |
+| **Atomic updates** | `Ash.Expr` atomics translate to Cypher — `Ash.update`/`bulk_update` via `update_query`, `Ash.update_many` (distinct changes per record) via `update_many` |
 | **Edges** | Create/destroy graph edges from actions, edge properties, incoming / outgoing / undirected |
 | **Traversal** | Bounded variable-length traversal as an Ash manual relationship — per-source dedup, cardinality-aware |
 | **Multitenancy** | Both Ash strategies — `:attribute` (one tenant-filtered graph) and `:context` (graph-per-tenant) — plus opt-in DB-enforced Row-Level Security |
@@ -37,7 +38,7 @@ database to deploy or operate.
 | **Raw Cypher** | `AshAge.cypher/5` parameterized escape hatch for queries the DSL can't express |
 | **Telemetry** | A `:telemetry` span on every operation, with metadata guaranteed free of values and secrets |
 
-> `1.0` — the public API is stable and follows [semantic versioning](https://semver.org). Upgrading from `0.2.x`? See the [CHANGELOG](CHANGELOG.md) "Upgrading from 0.2.x" notes.
+> `2.0` — the public API is stable and follows [semantic versioning](https://semver.org). Upgrading from `1.x`? See the [CHANGELOG](CHANGELOG.md) "⚠ Changed (breaking)" notes — `bulk_destroy`/`bulk_update` with a query now need the tenant on the query.
 
 ## Installation
 
@@ -46,7 +47,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 1.0"}
+    {:ash_age, "~> 2.0"}
   ]
 end
 ```
@@ -136,6 +137,43 @@ defmodule MyApp.MyEntity do
   end
 end
 ```
+
+### Atomic Updates
+
+`Ash.Expr`-based atomic updates translate to Cypher and run as single
+statements — no read-modify-write. Arithmetic (`+ - * /`), comparisons, boolean
+logic, `if/expr`, and string functions (`to_lower`, `trim`, `starts_with`,
+`ends_with`, `contains`, `<>` concat) are supported; anything else fails closed.
+
+```elixir
+# Single record: increment a counter atomically.
+Ash.Changeset.for_update(counter, :update)
+|> Ash.Changeset.atomic_update(:count, Ash.Expr.expr(count + 1))
+|> Ash.update!()
+
+# Bulk: apply one expression to every matched record (one Cypher statement).
+Ash.bulk_update(
+  Counter |> Ash.Query.filter(active == true),
+  :update,
+  %{},
+  atomic_update: %{count: Ash.Expr.expr(count + 1)}
+)
+```
+
+For multitenant `bulk_update` / `bulk_destroy` with a query, set the tenant on
+the **query** (`Ash.Query.set_tenant/2`) — Ash's atomic-bulk dispatch reads
+`query.tenant`:
+
+```elixir
+Counter
+|> Ash.Query.for_read(:read)
+|> Ash.Query.filter(active == true)
+|> Ash.Query.set_tenant(tenant)
+|> then(&Ash.bulk_destroy(&1, :destroy, %{}, tenant: tenant))
+```
+
+`Ash.update_many` (distinct changes per record) batches by shared change shape —
+records sharing the same atomic expression and filter collapse into one Cypher.
 
 ### Edges
 

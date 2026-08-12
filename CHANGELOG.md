@@ -7,8 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-12
+
+A major release: atomic-aware updates (the headline), plus the breaking edges
+the new dispatch path introduces. Existing 1.x builds are unaffected until you
+upgrade; see **Upgrading from 1.x** below.
+
 ### Added
 
+- **Atomic-aware updates.** `Ash.Expr`-based atomic updates now translate to
+  Cypher and run as single statements instead of falling back to per-record
+  read-modify-write.
+  - `AshAge.Cypher.Expr` (`Expr.translate/2`) translates an Ash.Expr AST into a
+    Cypher expression + positional params: arithmetic (`+ - * /` with
+    precedence parenthesization), comparisons (`= <> > < >= <= IN IS [NOT]
+    NULL`), boolean (`AND/OR/NOT`), control (`Function.If → CASE WHEN`), string
+    (`toLower/trim/STARTS|ENDS WITH/CONTAINS`, `Basic.Concat → +`). Refs are
+    backtick-quoted + identifier-validated; literals use collision-free `$pN`.
+    Unsupported nodes fail closed as `UnsupportedExpression`.
+  - `update_query/4` (`can?(:update_query)`, `:expr_error`, `:action_select`,
+    `{:atomic, :update}`): single-record `Ash.update/2` carrying atomics and
+    `Ash.bulk_update` route here. LIMIT/SKIP honored via a `WITH n` pass-through
+    (verified valid AGE 1.6.0 Cypher).
+  - `update_many/3` (`can?(:update_many)`): `Ash.update_many` (distinct changes
+    per record) dispatches here. Re-groups by `{atomics, filter, attributes}`,
+    synthesizes a per-group query carrying the group's filter + the `:attribute`
+    tenant discriminator (built from `opts[:tenant]`, run through the resource's
+    `multitenancy_parse_attribute`) + a PK scope, then delegates to the
+    `update_query` machinery. Single-attr PK → `n.`pk` IN $pks`; composite PK →
+    OR-disjunction (AGE has no row-valued IN). Fails closed on a blank tenant.
+- **Telemetry**: `:update_query` and `:update_many` span ops join the
+  `[:ash_age, <op>, :start|:stop|:exception]` list, with a new value-free
+  `:atomic?` metadata flag (true when the SET carried an expr-based atomic).
 - Aggregates: `count`/`sum`/`avg`/`min`/`max`/`exists` over a resource's own
   records (no relationship path), with optional per-aggregate sub-filters. AGE
   ships these natively; `first`/`list`/`custom` and relationship-pathed aggregates
@@ -45,6 +75,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EEF-CVE-2026-66838` (SQL injection via the `:comment` option in
   `Postgrex.stream/4`).
 
+### ⚠ Changed (breaking — the major bump)
+
+These are consequences of advertising `:update_query` + `:expr_error` so atomic
+updates can dispatch. Existing 1.x code that hits one of these edges needs the
+noted adjustment; code that doesn't is unaffected.
+
+- **`Ash.bulk_destroy/3` (and `bulk_update/3`) with a query now require the
+  tenant on the QUERY** (`Ash.Query.set_tenant/2`), not just via the `tenant:`
+  option. Ash's atomic-bulk dispatch (`do_atomic_destroy` / `do_atomic_update`)
+  reads `query.tenant`; the stream/per-record path tolerated `tenant:` via opts,
+  the atomic path does not. A pre-validated query
+  (`Resource |> Ash.Query.for_read(:read) |> ...`) passed `tenant:` via opts now
+  needs `|> Ash.Query.set_tenant(tenant)`. (Per the Ash bulk-op contract; this is
+  the same constraint every `:update_query`/`:destroy_query`-capable data layer
+  has.)
+- **WHERE-clause and SET property refs are now backtick-quoted**
+  (`` n.`attr` `` instead of `n.attr`). Fixes a syntax error when filtering or
+  setting a Cypher-keyword-named attribute (`count`, `label`, …). Backtick-
+  quoting a non-keyword name is a no-op at the AGE level, so results are
+  unchanged; only the generated Cypher string shape changes.
+- **Single-record updates on a duplicate-PK-in-graph row now fail closed via
+  `update_query/4`** (`UpdateFailed` "matched N rows for one primary key")
+  instead of via the per-record `decode_update_result` guard. AGE enforces no PK
+  uniqueness; the rerouted path detects the anomaly at the same point.
+
+### Known issue (Ash upstream)
+
+- `Ash.update_many/4` without `return_records?: true` raises `BadBooleanError`
+  in Ash 3.31.2 (`update_many.ex:162` uses strict `or` over a nil
+  `opts[:return_records?]`). Affects all `update_many`-capable data layers, not
+  ash_age. Workaround: pass `return_records?: true`.
+
 ### Changed
 
 - Dependency bumps: `ash` 3.29.3 → 3.31.2, `postgrex` 0.22.2 → 0.22.4,
@@ -57,6 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WHERE-clause filter translation emitted bare `n.<attr>` for every comparison /
+  IN / IS NULL clause; for a Cypher-keyword attribute name (`count`, `label`, …)
+  the bare form collided with the `count()` aggregate and AGE rejected the query
+  with a syntax error. Property refs are now backtick-quoted via a `prop_ref/1`
+  helper, mirroring the SET-side expr translator. Pre-existing — affected the
+  read path too.
 - The getting-started notebook now re-runs cleanly against a persistent
   database. Its graph-setup ran a versioned Ecto migration (a no-op once
   recorded) while the demo cells created `Alice`/`Bob` unconditionally, so
