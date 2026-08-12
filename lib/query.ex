@@ -201,10 +201,14 @@ defmodule AshAge.Query do
     {%{query | params: Map.put(params, key, value)}, "$#{key}"}
   end
 
-  # Returns the next free `paramN` key, skipping any already taken. On the
-  # update/destroy scoping path the params map is pre-seeded with SET-attribute
-  # and `match_<pk>` keys; a resource attribute literally named `paramN` must
-  # neither clobber nor be clobbered by a filter-scoping param.
+  # Returns the next free `paramN` key, skipping any already taken. NOTE: a
+  # resource attribute literally named `param<N>` shares this namespace — on the
+  # bulk update path the SET attr (`$<attr>` = `$paramN`) and a filter/PK scoping
+  # param can collide, and the final `Map.merge` lets the scope value win into
+  # the SET. The per-record update/destroy path pre-seeds `match_<pk>` keys
+  # (which this skip respects), but the bulk path does NOT pre-seed SET-attr
+  # names (the filter is translated at query-build, before SET attrs are known).
+  # This is a documented known limitation — don't name attributes `param<N>`.
   defp next_param_key(params, n) do
     key = "param#{n}"
     if Map.has_key?(params, key), do: next_param_key(params, n + 1), else: key

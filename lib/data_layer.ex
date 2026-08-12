@@ -1234,11 +1234,12 @@ defmodule AshAge.DataLayer do
     # NOTE: a no-op group (no atomics AND no attrs) deliberately does NOT short-
     # circuit here. An early-return of the input records would bypass
     # changeset.filter (an optimistic-lock or policy filter could exclude them),
-    # reporting denied/stale rows as success (cross-vendor delta-2 finding). The
-    # honest path runs the query (a 0-row SET verifies the filter); Ash then
-    # classifies the result. update_query_body short-circuits a no-op to `:ok`,
-    # which Ash treats as "no records returned" — conservative on a true no-op
-    # (the records were not modified), never a corruption or an authz bypass.
+    # reporting denied/stale rows as success (cross-vendor delta-2 finding).
+    # Instead update_query_body short-circuits a no-op to `:ok` with NO DB touch
+    # (the filter is still translated above, fail-closed on an untranslatable
+    # operator, but never executed). Ash treats the unreturned records as stale —
+    # conservative on a true no-op (the records were not modified), never a
+    # corruption or an authz bypass. A documented known limitation.
     query = scope_to_filter(query, representative.filter)
 
 
@@ -1304,14 +1305,15 @@ defmodule AshAge.DataLayer do
   defp scope_to_tenant(query, resource, tenant) do
     strategy = Ash.Resource.Info.multitenancy_strategy(resource)
 
-    # Gate on TENANT PRESENCE, not on `global?`. Ash's `handle_attribute_multitenancy`
-    # (read.ex:2749-2756) adds the discriminator whenever `query.tenant` is set;
-    # `global? true` only permits a NIL tenant (read.ex:2861), it does NOT disable
-    # scoping when a tenant IS supplied. Gating on `not global?` (a prior revision)
-    # skipped the discriminator for every global resource even with a tenant — a
-    # cross-tenant write on a duplicate-PK row (cross-vendor delta-2 finding).
-    # Non-multitenant resources and a nil/blank tenant get no discriminator.
-    if strategy == :attribute and tenant not in [nil, ""] do
+    # Gate on TENANT PRESENCE (non-nil), not on `global?` and not on `""`. Ash's
+    # `handle_attribute_multitenancy` (read.ex:2749-2756) adds the discriminator
+    # whenever `query.tenant` is set; Ash preserves a `""` tenant bitstring
+    # (to_tenant.ex:34), so `""` is a provided tenant that MUST scope (to its
+    # value), not a blank to skip. Gating on `tenant not in [nil, ""]` (a prior
+    # revision) treated `""` as blank, so a global resource with `tenant=""` got
+    # no discriminator and the PK scope alone could match a duplicate-PK row in
+    # another tenant (cross-vendor delta-3 finding). `nil` is the only "no tenant".
+    if strategy == :attribute and tenant != nil do
       attr = Ash.Resource.Info.multitenancy_attribute(resource)
 
       if attr do
