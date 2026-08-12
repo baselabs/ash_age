@@ -156,7 +156,20 @@ defmodule AshAge.Integration.DestroyQueryTest do
 
         # Tenant A destroys all its "active" rows. A buggy unscoped WHERE would
         # delete B's "active" row too (same status, no tenant predicate).
-        query = TenantThing |> Ash.Query.for_read(:read) |> Ash.Query.filter(status == "active")
+        #
+        # The tenant rides the QUERY (Ash.Query.set_tenant/2) — Ash's documented
+        # contract for bulk ops: the atomic destroy dispatch (do_atomic_destroy →
+        # handle_multitenancy) reads `query.tenant`, which the stream/per-record
+        # path also tolerates via opts-tenant but the atomic path does not. With
+        # :update_query+:expr_error advertised (this slice), bulk_destroy routes
+        # through destroy_query/4, so the tenant MUST be on the query. This is
+        # also the first time this tripwire actually exercises destroy_query/4 —
+        # pre-slice it silently used the per-record stream fallback.
+        query =
+          TenantThing
+          |> Ash.Query.for_read(:read)
+          |> Ash.Query.filter(status == "active")
+          |> Ash.Query.set_tenant(org_a)
 
         assert %Ash.BulkResult{status: :success} =
                  Ash.bulk_destroy!(query, :destroy, %{}, tenant: org_a)

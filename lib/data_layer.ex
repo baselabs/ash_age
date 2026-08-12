@@ -132,6 +132,7 @@ defmodule AshAge.DataLayer do
 
   alias Ash.Actions.Helpers.Bulk, as: BulkHelpers
   alias Ash.Error.Changes.StaleRecord
+  alias AshAge.Cypher.Expr
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer.Info
   alias AshAge.Errors.{CreateFailed, QueryFailed, UnsupportedFilter, UpdateFailed}
@@ -195,7 +196,23 @@ defmodule AshAge.DataLayer do
   def can?(_, {:filter_expr, %Ash.Query.Operator.LessThanOrEqual{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.BooleanExpression{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Not{}}), do: true
+
+  # Ash wraps atomic exprs on `allow_nil?: false` attrs with a validation:
+  # `if is_nil(type(expr, Type, [])) do error(...) else expr end`. AGE is
+  # dynamically typed, so `type/3` unwraps to its inner expr; `error/2` emits
+  # null (its branch only fires when the expr yields nil — a documented gap:
+  # allow_nil? on atomic results isn't DB-enforced for AGE, same class as the
+  # no-PK-uniqueness reality). Without these, Ash rejects every atomic update on
+  # a non-nil attr as `{:not_atomic, "does not support the function type(...)"}`.
+  def can?(_, {:filter_expr, %Ash.Query.Function.Type{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.Error{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
+  # Pure capability flag (no callback) gating the atomic-batches destroy path's
+  # field-select branch (destroy/bulk.ex:657). Declaring true lets Ash compute a
+  # tight select list; false falls back to all attrs. Either works; true matches
+  # the path Ash now takes since :update_query+:expr_error reroute bulk_destroy
+  # to do_atomic_destroy.
+  def can?(_, :action_select), do: true
   def can?(_, :upsert), do: true
   def can?(_, :bulk_create), do: true
   def can?(_, :destroy_query), do: true
@@ -220,6 +237,25 @@ defmodule AshAge.DataLayer do
   def can?(_, :multitenancy), do: true
   def can?(_, :composite_primary_key), do: true
   def can?(_, :changeset_filter), do: true
+  # Required for Ash to dispatch the atomic path under `authorize?: true` —
+  # update.ex:71 gates `:update_query` behind this. Pure capability flag (no
+  # callback — errors attach at the Ash.Changeset level, like ETS/Mnesia). Added
+  # in the expr-cypher-translator arc (2.0.0).
+  def can?(_, :expr_error), do: true
+  # Bulk atomic update — one MATCH/WHERE/SET over the query-matched set. Ash
+  # dispatches here for atomic updates when can?(:update_query) && can?(:expr_error)
+  # (both required — update.ex:71/:235). Combined with :expr_error (above), this
+  # is what makes `Ash.update(rec, atomics: [...])` and `Ash.bulk_update` reach
+  # the translator instead of erroring/falling back. Added in 2.0.0.
+  def can?(_, :update_query), do: true
+  # Atomic-update support gate (changeset.ex:5122 checks this BEFORE dispatch;
+  # Ash.Error.Invalid.AtomicsNotSupported fires when false). The third capability
+  # Ash requires for `Ash.update(rec, atomics: ...)` to reach update_query/4.
+  def can?(_, {:atomic, :update}), do: true
+  # {:atomic, :upsert} stays false: the two-statement existence-MATCH-then-SET
+  # upsert path is non-atomic, so an `expr(count+1)` there would race. Ash
+  # rejects upsert atomics at changeset validation; do_upsert/2's guard is the
+  # defense-in-depth (D-rev8).
   def can?(_, _), do: false
 
   # === Required Callbacks ===
@@ -618,7 +654,7 @@ defmodule AshAge.DataLayer do
   # The single-update write proper (do_update's body after the graph resolution
   # and encode pre-check both pass), extracted verbatim.
   defp update_vertex(resource, changeset, repo, label, graph, changed_attrs) do
-    set_clauses = set_clauses(changed_attrs)
+    plain_set = set_clauses(changed_attrs)
 
     # Match on the resource's full primary key (composite or non-:id supported).
     # `changed_attrs` are reserved so a match param never clobbers a SET param.
@@ -627,18 +663,47 @@ defmodule AshAge.DataLayer do
 
     case changeset_where(changeset, where_clause, Map.merge(changed_attrs, match_params)) do
       {:ok, full_where, params} ->
-        cypher = """
-        MATCH (n:#{label})
-        WHERE #{full_where}
-        SET #{set_clauses}
-        RETURN n
-        """
+        # Translate `changeset.atomics` (a keyword list of {attr, expr}) via the
+        # Cypher translator, threading the in-flight param names as `taken` so
+        # positional atomic params cannot collide with plain-attr params. Atomics
+        # emit AFTER plain attributes: Cypher SET is last-wins, so for a same-attr
+        # plain+atomic conflict the atomic wins (mirrors Ash's intent). An
+        # untranslatable expr fails CLOSED as UpdateFailed — never a silent drop
+        # (the S7 silent-drop class this arc closes).
+        case atomic_set_clauses(resource, changeset, Map.keys(params)) do
+          {:ok, [], atomic_params} ->
+            emit_update_cypher(
+              resource,
+              repo,
+              graph,
+              label,
+              pk,
+              full_where,
+              plain_set,
+              Map.merge(params, atomic_params)
+            )
 
-        decode_update_result(
-          resource,
-          redacted_filter(pk),
-          build_and_query(repo, graph, cypher, params)
-        )
+          {:ok, atomic_clauses, atomic_params} ->
+            set_str = combine_set_clauses(plain_set, atomic_clauses)
+
+            emit_update_cypher(
+              resource,
+              repo,
+              graph,
+              label,
+              pk,
+              full_where,
+              set_str,
+              Map.merge(params, atomic_params)
+            )
+
+          {:error, _} ->
+            {:error,
+             UpdateFailed.exception(
+               resource: resource,
+               reason: "unsupported atomic expression on update"
+             )}
+        end
 
       {:error, _} ->
         {:error,
@@ -648,6 +713,74 @@ defmodule AshAge.DataLayer do
          )}
     end
   end
+
+  defp emit_update_cypher(resource, repo, graph, label, pk, full_where, set_str, params) do
+    cypher = """
+    MATCH (n:#{label})
+    WHERE #{full_where}
+    SET #{set_str}
+    RETURN n
+    """
+
+    decode_update_result(
+      resource,
+      redacted_filter(pk),
+      build_and_query(repo, graph, cypher, params)
+    )
+  end
+
+  # Translate `changeset.atomics` (keyword list of {attr, expr}) into SET
+  # clauses via AshAge.Cypher.Expr, threading `taken` (the param names already
+  # in flight) so positional atomic params allocate collision-free names.
+  # Returns `{:ok, clauses_list, params_map}` (clauses_list empty when no
+  # atomics) or `{:error, UnsupportedExpression}` (fail-closed).
+  defp atomic_set_clauses(_resource, %{atomics: []}, _taken), do: {:ok, [], %{}}
+
+  defp atomic_set_clauses(_resource, changeset, taken) do
+    initial = %{taken: MapSet.new(taken), count: 0, params: %{}}
+
+    result =
+      Enum.reduce_while(changeset.atomics, {:ok, [], initial}, fn {attr, value},
+                                                                  {:ok, clauses, acc} ->
+        with {:ok, expr} <- atomic_expr(value),
+             {:ok, frag, expr_params} <-
+               Expr.translate(expr, %{taken: acc.taken, count: acc.count}) do
+          attr_str = attr |> to_string() |> tap(&AshAge.Migration.validate_identifier!/1)
+          clause = "n.`#{attr_str}` = #{frag}"
+          new_taken = Enum.reduce(Map.keys(expr_params), acc.taken, &MapSet.put(&2, &1))
+
+          {:cont,
+           {:ok, clauses ++ [clause],
+            %{
+              acc
+              | taken: new_taken,
+                count: acc.count + map_size(expr_params),
+                params: Map.merge(acc.params, expr_params)
+            }}}
+        else
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+
+    case result do
+      {:ok, clauses, acc} -> {:ok, clauses, acc.params}
+      err -> err
+    end
+  end
+
+  # The atomic value is normally the expr AST directly (`atomic_update(:x, expr(...))`
+  # stores the expr in the keyword list). The processed `{:atomic, _, _, expr}`
+  # tuple form appears only on the fully-atomic bulk path (Task 4); extract its
+  # expr. Anything else is rejected fail-closed by the translator's catch-all.
+  defp atomic_expr({:atomic, _fields, _condition, expr}), do: {:ok, expr}
+  defp atomic_expr(expr), do: {:ok, expr}
+
+  # Combine plain-attr SET clauses with atomic SET clauses. Plain may be empty
+  # (atomic-only update); atomics list is non-empty at the call site.
+  defp combine_set_clauses("", atomic_clauses), do: Enum.join(atomic_clauses, ", ")
+
+  defp combine_set_clauses(plain, atomic_clauses),
+    do: plain <> ", " <> Enum.join(atomic_clauses, ", ")
 
   @impl true
   def destroy(resource, changeset) do
@@ -746,6 +879,26 @@ defmodule AshAge.DataLayer do
   end
 
   defp do_upsert(resource, changeset, identity_fields) do
+    # Upsert REJECTS atomics: the two-statement existence-MATCH-then-SET path is
+    # non-atomic (AGE enforces no PK uniqueness + the no-MERGE rule), so an
+    # `expr(count + 1)` there would read-modify-write against a value that can
+    # change between the existence count and the SET — a silent stale write.
+    # Fail closed with a value-free error rather than race or silently drop
+    # (the S7 silent-drop class). Owned by a follow-up if a host genuinely needs
+    # atomic upsert increments (would require a UNIQUE index on the identity,
+    # unprobed on this AGE build).
+    if changeset.atomics != [] do
+      {:error,
+       CreateFailed.exception(
+         resource: resource,
+         reason: "atomics are not supported on upsert (non-atomic two-statement path)"
+       )}
+    else
+      upsert_do(resource, changeset, identity_fields)
+    end
+  end
+
+  defp upsert_do(resource, changeset, identity_fields) do
     case write_graph(resource, changeset) do
       {:ok, graph} ->
         repo = Info.repo(resource)
@@ -935,6 +1088,177 @@ defmodule AshAge.DataLayer do
     end
   end
 
+  # === update_query/4 (bulk atomic update — expr-cypher-translator arc, 2.0.0) ===
+  #
+  # Applies ONE changeset (plain attributes + translated atomics) to every record
+  # the query matches, in a single MATCH/WHERE/SET/RETURN. Ash dispatches here for
+  # atomic updates when can?(:update_query) && can?(:expr_error). Scoping source is
+  # `build_where(query)` (query.expression) — the :attribute tenant predicate arrives
+  # there via Ash's handle_attribute_multitenancy, NOT changeset.filter (which Ash
+  # nils before the DL runs — adversarial Challenge 1). On a 0-row match returns
+  # `:ok` (the bulk contract, Challenge 7) — NOT StaleRecord.
+
+  @impl true
+  def update_query(query, changeset, resource, opts) do
+    Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          update_query_body(query, changeset, resource, opts)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
+  end
+
+  defp update_query_body(query, changeset, resource, opts) do
+    label = validated_label(resource)
+    return_records? = Map.get(opts, :return_records?, false)
+    # Ash reroutes a single-record `Ash.update/2` through update_query when
+    # :update_query+:expr_error are advertised (update.ex:190-231). That reroute
+    # sets `context[:data_layer][:use_atomic_update_data?]` and keeps the real
+    # record in `changeset.data` (the true bulk path sends OriginalDataNotAvailable
+    # + no such flag). The single-record contract (update.ex:210) pattern-matches
+    # `records: [record]` — exactly one — so a multi-row match must fail CLOSED
+    # here (a duplicate PK in the graph, which AGE does not enforce), not return
+    # 2+ records and crash Ash's wrapper.
+    single_record? = single_record_reroute?(changeset)
+
+    changed_attrs = changeset_to_properties(resource, changeset)
+    plain_set = set_clauses(changed_attrs)
+
+    # Translate atomics, threading the in-flight param names (plain attrs + the
+    # WHERE params from build_where) so positional atomic params can't collide.
+    taken = Map.keys(changed_attrs) ++ Map.keys(query.params)
+
+    case atomic_set_clauses(resource, changeset, taken) do
+      {:ok, [], atomic_params} ->
+        # No-op when there are no plain attrs either: no atomics AND no changed
+        # attrs → a bare `SET ` is invalid Cypher, so short-circuit with no DB
+        # touch. For a single-record reroute, return the unchanged record (Ash
+        # expects `records: [record]`); for a true bulk no-op, `:ok`.
+        if map_size(changed_attrs) == 0 do
+          noop_result(single_record?, changeset, return_records?)
+        else
+          run_update_query(
+            query,
+            label,
+            plain_set,
+            changed_attrs,
+            atomic_params,
+            resource,
+            return_records?,
+            single_record?
+          )
+        end
+
+      {:ok, atomic_clauses, atomic_params} ->
+        set_str = combine_set_clauses(plain_set, atomic_clauses)
+
+        run_update_query(
+          query,
+          label,
+          set_str,
+          changed_attrs,
+          atomic_params,
+          resource,
+          return_records?,
+          single_record?
+        )
+
+      {:error, _} ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason: "unsupported atomic expression in bulk update"
+         )}
+    end
+  end
+
+  # Ash's single-record update reroute: `use_atomic_update_data?` is set in the
+  # data-layer context AND `changeset.data` is the real record (not the
+  # OriginalDataNotAvailable sentinel the true bulk path sends). Either signal
+  # identifies the reroute; require the flag (the documented marker).
+  defp single_record_reroute?(changeset) do
+    changeset.context[:data_layer][:use_atomic_update_data?] == true
+  end
+
+  defp noop_result(true = _single_record?, changeset, _return_records?) do
+    {:ok, [changeset.data]}
+  end
+
+  defp noop_result(false = _single_record?, _changeset, _return_records?) do
+    :ok
+  end
+
+  defp run_update_query(
+         query,
+         label,
+         set_str,
+         changed_attrs,
+         atomic_params,
+         resource,
+         return_records?,
+         single_record?
+       ) do
+    {cypher, where_params} = AshAge.Query.update_cypher(query, label, set_str)
+    params = changed_attrs |> Map.merge(where_params) |> Map.merge(atomic_params)
+
+    case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
+      {:ok, %{rows: rows}} when return_records? ->
+        decoded = decode_records(resource, rows)
+
+        if single_record? and length(decoded) > 1 do
+          # Duplicate PK in the graph (AGE enforces no uniqueness). A
+          # single-record update matching 2+ rows is ambiguous; fail CLOSED
+          # with a value-free reason (the count is structural) rather than
+          # returning 2+ records and crashing Ash's per-record wrapper
+          # (update.ex:210 matches `records: [record]`). The SET has already
+          # applied to every matched row; the single-record reroute runs under
+          # Ash's action transaction (`:transact` advertised), which rolls it
+          # back. Mirrors the per-record decode_update_result/3 guard.
+          {:error,
+           UpdateFailed.exception(
+             resource: resource,
+             reason:
+               "update matched #{length(decoded)} rows for one primary key (duplicate rows in graph?)"
+           )}
+        else
+          {:ok, decoded}
+        end
+
+      {:ok, _} ->
+        # Bulk 0-row contract: `:ok` (the query simply matched nothing). This is
+        # NOT StaleRecord (that's the per-record update/destroy contract); the
+        # single-record 0-row case is turned into StaleRecord by Ash's wrapper
+        # (update.ex:217), not here.
+        :ok
+
+      {:error, error} ->
+        {:error, QueryFailed.exception(query: "AGE update_query", reason: redact_db_error(error))}
+    end
+  end
+
+  # Multi-row vertex decode (the read-path pattern from run_query_body). NOT the
+  # single-row decode_update_result/3 (whose [_, _|_] clause errors on 2+ rows as
+  # a per-record duplicate-PK guard — plan-review S3).
+  defp decode_records(resource, rows) do
+    attribute_map = Info.attribute_map(resource)
+    attribute_types = Info.attribute_types(resource)
+
+    Enum.map(rows, fn [agtype_text] ->
+      agtype_text
+      |> Agtype.decode()
+      |> Cast.vertex_to_resource_attrs(attribute_map, attribute_types)
+      |> then(&struct(resource, &1))
+    end)
+  end
+
   # === Transaction Support ===
 
   @impl true
@@ -1019,7 +1343,11 @@ defmodule AshAge.DataLayer do
     |> Map.keys()
     |> Enum.map_join(", ", fn key ->
       key = AshAge.Migration.validate_identifier!(key)
-      "n.#{key} = $#{key}"
+
+      # Backtick-quote the property access: a property whose name collides with a
+      # Cypher keyword (`count`, `label`) mis-parses when bare (AGE probe D-row;
+      # the same fix the Cypher.Expr translator applies). Harmless for non-keywords.
+      "n.`#{key}` = $#{key}"
     end)
   end
 

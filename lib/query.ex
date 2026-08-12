@@ -151,6 +151,37 @@ defmodule AshAge.Query do
   end
 
   @doc """
+  Builds the bulk-update Cypher for `update_query/4`: applies one set of changes
+  (plain attributes + translated atomics) to every record the query matches.
+
+  Mirrors `delete_cypher/2`, replacing `DETACH DELETE n` with `SET <clauses> RETURN n`.
+  Scoping source is `build_where(query)` — the `:attribute` tenant predicate arrives
+  in `query.expression` via Ash's `handle_attribute_multitenancy` (NOT `changeset.filter`,
+  which Ash nils into `query.filter` before the data layer runs — adversarial Challenge 1).
+  LIMIT/SKIP honored via the same `WITH n` pass-through as destroy_query.
+  `RETURN n` so updated records can be decoded when `return_records?` is set.
+  """
+  @spec update_cypher(t(), atom() | String.t(), String.t()) :: {String.t(), map()}
+  def update_cypher(query, label, set_clauses_str) do
+    label = AshAge.Migration.validate_identifier!(label)
+    {where_parts, query} = build_where(query)
+
+    base = ["MATCH (n:#{label})"] ++ build_where_clause(where_parts)
+
+    body =
+      if query.limit == nil and query.offset == nil do
+        ["SET #{set_clauses_str}", "RETURN n"]
+      else
+        ["WITH n"] ++
+          build_skip(query.offset) ++
+          build_limit(query.limit) ++
+          ["SET #{set_clauses_str}", "RETURN n"]
+      end
+
+    {Enum.join(base ++ body, " "), query.params}
+  end
+
+  @doc """
   Adds a parameter to the query, returning the updated query and a `$paramN` reference.
   """
   @spec add_param(t(), term()) :: {t(), String.t()}

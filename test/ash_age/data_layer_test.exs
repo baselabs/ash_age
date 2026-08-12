@@ -52,8 +52,8 @@ defmodule AshAge.DataLayerTest do
   describe "set_clauses/1" do
     test "builds n.key = $key fragments with parameterized values" do
       assert DataLayer.set_clauses(%{"name" => "x", "age" => 1}) in [
-               "n.name = $name, n.age = $age",
-               "n.age = $age, n.name = $name"
+               "n.`name` = $name, n.`age` = $age",
+               "n.`age` = $age, n.`name` = $name"
              ]
     end
 
