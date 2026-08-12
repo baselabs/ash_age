@@ -1199,6 +1199,10 @@ defmodule AshAge.DataLayer do
   defp run_update_many_groups(groups, resource, graph, label, tenant, opts) do
     Enum.reduce_while(groups, {:ok, []}, fn {_group_key, group_changesets}, {:ok, acc_records} ->
       case update_many_group(resource, graph, label, tenant, hd(group_changesets), group_changesets, opts) do
+        # A no-op group (no atomics AND no plain attrs) returns `:ok` with no
+        # records — continue without crashing the reducer (cross-vendor closeout
+        # finding: the bare-`:ok` return previously hit no case clause).
+        :ok -> {:cont, {:ok, acc_records}}
         {:ok, records} -> {:cont, {:ok, acc_records ++ records}}
         {:error, _} = e -> {:halt, e}
       end
@@ -1211,21 +1215,56 @@ defmodule AshAge.DataLayer do
       graph: graph,
       label: label,
       repo: Info.repo(resource),
-      tenant: tenant,
-      # The group's shared Ash filter (Ash ensures every changeset in a group
-      # carries the same filter).
-      expression: representative.filter
+      tenant: tenant
     }
 
-    # Scope the SET to (a) the tenant discriminator for :attribute resources and
-    # (b) exactly this group's PKs — so a synthesized query can never widen past
-    # the group Ash handed us.
-    query = scope_to_tenant(query, resource, tenant)
-    query = scope_to_group_pks(query, resource, group_changesets)
+    # Translate the group's shared changeset.filter EAGERLY and fail CLOSED on an
+    # untranslatable operator. Putting the filter into `query.expression` instead
+    # (as a prior revision did) lets `build_where` swallow translation errors
+    # (`_ -> {[], query}`, lib/query.ex), so a changeset.filter using an
+    # unsupported operator (optimistic-lock, a ref-to-ref policy filter, a
+    # fragment) would be silently dropped and the SET would fall back to PK +
+    # tenant scope — updating rows the filter was meant to exclude (cross-vendor
+    # closeout finding B2; violates the `can?(:changeset_filter)` fail-closed
+    # contract). Pre-translating here makes the error loud before any write.
+    query = scope_to_filter(query, representative.filter)
 
-    # Delegate to the bulk-update machinery. representative carries the group's
-    # shared atomics + plain attrs; update_query_body translates both.
-    update_query_body(query, representative, resource, opts)
+    case query do
+      {:error, _} = e ->
+        e
+
+      query ->
+        # Scope the SET to (a) the tenant discriminator for :attribute resources
+        # and (b) exactly this group's PKs — so a synthesized query can never
+        # widen past the group Ash handed us.
+        query = scope_to_tenant(query, resource, tenant)
+        query = scope_to_group_pks(query, resource, group_changesets)
+
+        # Delegate to the bulk-update machinery. representative carries the
+        # group's shared atomics + plain attrs; update_query_body translates both.
+        update_query_body(query, representative, resource, opts)
+    end
+  end
+
+  # Fail-closed translation of the group's changeset.filter into a pre-built
+  # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
+  # `build_where` swallows). Threaded params land in `query.params`. `nil` and
+  # `%Ash.Filter{expression: nil}` mean "no filter" — no clause added.
+  defp scope_to_filter(query, nil), do: query
+
+  defp scope_to_filter(query, %Ash.Filter{expression: nil}), do: query
+
+  defp scope_to_filter(query, %Ash.Filter{} = filter) do
+    case Filter.translate(filter, query) do
+      {:ok, query, ""} ->
+        query
+
+      {:ok, query, clause} ->
+        %{query | filters: query.filters ++ [clause]}
+
+      {:error, _} = e ->
+        e
+    end
   end
 
   # :context → per-tenant graph (fail-closed on blank tenant). :attribute / none

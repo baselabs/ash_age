@@ -8,12 +8,14 @@ defmodule AshAge.Cypher.ExprTest do
 
   alias Ash.Query.Function.{
     Contains,
+    Error,
     If,
     Now,
     StringDowncase,
     StringEndsWith,
     StringStartsWith,
-    StringTrim
+    StringTrim,
+    Type
   }
 
   alias Ash.Query.Not
@@ -219,6 +221,36 @@ defmodule AshAge.Cypher.ExprTest do
                Expr.translate(%If{arguments: [cond, 999, 0]}, acc())
 
       assert frag == "CASE WHEN n.`count` > $p0 THEN $p1 ELSE $p2 END"
+    end
+
+    test "if with an Error then-branch (an atomic validation) is REJECTED, not null-emitted" do
+      # Ash's atomic validations become `if(violation, error(...), ref(attr))`.
+      # Translating error() to null would write null on a violation + succeed
+      # (silent validation bypass + corruption — cross-vendor closeout finding
+      # B1). The translator must fail-closed so the write does not proceed.
+      cond = %LessThan{left: ref(:count), right: 0}
+      error_node = %Error{arguments: [:invalid, "count must be >= 0"]}
+
+      assert {:error, %UnsupportedExpression{}} =
+               Expr.translate(%If{arguments: [cond, error_node, ref(:count)]}, acc())
+    end
+
+    test "the allow_nil? wrapper (is_nil(type(expr)) cond) still strips to the else branch" do
+      # `if is_nil(type(expr, Type, [])) do error else expr end` — the wrapper Ash
+      # puts on every atomic update of an allow_nil?: false attr. The error branch
+      # here is structural (never reached for a non-nil result), so it is stripped
+      # and the expr translates normally. This is DISTINCT from a validation If
+      # (whose cond is a compare) — the wrapper clause must precede the general If.
+      inner = ref(:count)
+      cond = %IsNil{left: %Type{arguments: [inner, Ash.Type.Integer, []]}, right: true}
+
+      assert {:ok, "n.`count`", %{}} =
+               Expr.translate(%If{arguments: [cond, %Error{arguments: [:required]}, inner]}, acc())
+    end
+
+    test "a bare Error node is REJECTED (never null)" do
+      assert {:error, %UnsupportedExpression{}} =
+               Expr.translate(%Error{arguments: [:boom, "no"]}, acc())
     end
 
     test "string_downcase / string_trim" do

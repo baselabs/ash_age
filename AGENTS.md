@@ -155,8 +155,11 @@ Key changes that affect agent behavior:
   for every `:update_query`/`:destroy_query`-capable data layer); (2) WHERE-clause
   **AND** SET property refs are now backtick-quoted (`` n.`attr` ``) — fixes a
   syntax error filtering/setting Cypher-keyword attrs (`count`, `label`); the
-  **fix to `lib/query/filter.ex` (Level 3) is pre-existing** — `prop_ref/1`
-  mirrors the SET-side translator; (3) single-record updates on a duplicate-PK-
+  SET-side backtick-quoting shipped with the Task-3/4 work, and the WHERE-side
+  **`prop_ref/1` fix to `lib/query/filter.ex` (Level 3) landed in the same
+  release** (commit `fdc84c1`) — it had been broken on `master` (filtering on a
+  keyword attr emitted `n.count`, syntax_error), so 2.0.0 is the first release
+  where keyword attrs filter correctly; (3) single-record updates on a duplicate-PK-
   in-graph row fail closed via `update_query/4` (`UpdateFailed`) instead of the
   per-record `decode_update_result` guard. **`can?` advertisement is load-bearing
   dispatch:** advertising `:update_query`+`:expr_error` reroutes bulk_destroy into

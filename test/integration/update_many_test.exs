@@ -51,8 +51,14 @@ defmodule AshAge.Integration.UpdateManyTest do
     end
 
     attributes do
-      attribute :org_id, :string, primary_key?: true, allow_nil?: false, public?: true
+      # `org_id` is the multitenancy discriminator but NOT part of the PK. This
+      # is what makes the cross-tenant tripwire below NON-VACUOUS: the PK scope
+      # is `n.`id` IN $pks`, which matches a B-tenant vertex sharing A's `id`, so
+      # ONLY scope_to_tenant's `n.`org_id` = $tenant` can exclude it. (If org_id
+      # were a PK field, the composite-PK scope would exclude B on its own and
+      # the test would pass with scope_to_tenant deleted — a vacuous tripwire.)
       uuid_primary_key :id
+      attribute :org_id, :string, allow_nil?: false, public?: true
       attribute :count, :integer, allow_nil?: false, public?: true
     end
 
