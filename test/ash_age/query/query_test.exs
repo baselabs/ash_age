@@ -21,7 +21,15 @@ defmodule AshAge.QueryTest do
 
     test "renders ORDER BY with direction" do
       {cypher, _} = Query.to_cypher(query(sort: [{:name, :asc}, {:age, :desc}]))
-      assert cypher =~ "ORDER BY n.name ASC, n.age DESC"
+      assert cypher =~ "ORDER BY n.`name` ASC, n.`age` DESC"
+    end
+
+    test "ORDER BY treats any :desc* direction as DESC and backtick-quotes fields" do
+      # :desc_nils_first/_last are descending variants (AGE has no NULLS syntax) —
+      # map to DESC, not ASC (else a sorted+limited mutation selects the reversed
+      # slice). A keyword field name (`count`) is backtick-quoted.
+      {cypher, _} = Query.to_cypher(query(sort: [{:count, :desc_nils_first}]))
+      assert cypher =~ "ORDER BY n.`count` DESC"
     end
 
     test "renders SKIP and LIMIT for integer offset/limit" do
@@ -94,7 +102,7 @@ defmodule AshAge.QueryTest do
       q = query(sort: [{:count, :desc}], limit: 2)
       {cypher, _} = Query.update_cypher(q, :Person, "n.`name` = $name")
 
-      assert cypher =~ "WITH n ORDER BY n.count DESC LIMIT 2"
+      assert cypher =~ "WITH n ORDER BY n.`count` DESC LIMIT 2"
       assert cypher =~ "SET n.`name` = $name"
     end
 
@@ -108,7 +116,7 @@ defmodule AshAge.QueryTest do
     test "a sorted+limited+offset query emits ORDER BY between SKIP and LIMIT" do
       q = query(sort: [{:count, :asc}], offset: 3, limit: 2)
       {cypher, _} = Query.update_cypher(q, :Person, "n.`name` = $name")
-      assert cypher =~ "WITH n ORDER BY n.count ASC SKIP 3 LIMIT 2"
+      assert cypher =~ "WITH n ORDER BY n.`count` ASC SKIP 3 LIMIT 2"
     end
 
     test "an unbounded query (no limit/offset) is a plain SET ... RETURN" do

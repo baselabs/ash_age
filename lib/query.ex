@@ -238,10 +238,17 @@ defmodule AshAge.Query do
   defp build_order_by(sort_clauses) do
     order =
       Enum.map_join(sort_clauses, ", ", fn {field, direction} ->
-        # Field names are interpolated into the cypher body — validate as identifiers.
+        # Field names are interpolated into the cypher body — validate AND
+        # backtick-quote (a Cypher-keyword field like `count` collides with the
+        # count() aggregate, same as property refs elsewhere). Any `:desc*`
+        # direction is DESC (`:desc_nils_first`/`:desc_nils_last` are descending
+        # variants — AGE has no NULLS FIRST/LAST syntax, so map to DESC, NOT ASC).
         field = AshAge.Migration.validate_identifier!(field)
-        dir = if direction == :desc, do: "DESC", else: "ASC"
-        "n.#{field} #{dir}"
+        dir = if is_atom(direction) and String.starts_with?(to_string(direction), "desc"),
+               do: "DESC",
+               else: "ASC"
+
+        "n.`#{field}` #{dir}"
       end)
 
     ["ORDER BY " <> order]
