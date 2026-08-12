@@ -3,6 +3,7 @@ defmodule AshAge.Cypher.ExprTest do
 
   alias AshAge.Cypher.Expr
   alias AshAge.Errors.UnsupportedExpression
+  alias AshAge.Type.Cast
 
   alias Ash.Query.BooleanExpression
 
@@ -148,6 +149,30 @@ defmodule AshAge.Cypher.ExprTest do
     test "eq — ref right side (attr-to-attr is valid Cypher, unlike the filter path)" do
       assert {:ok, "n.`a` = n.`b`", %{}} =
                Expr.translate(%Eq{left: ref(:a), right: ref(:b)}, acc())
+    end
+
+    test "eq serializes a binary-storage literal with the ref's type (tagged, not raw)" do
+      # An atomic-expr equality against a binary-storage attr: the literal MUST be
+      # `$age64$`-tagged to match the stored wire form, or the comparison silently
+      # never matches (cross-vendor finding). The Ref carries the attr type.
+      raw = <<0, 255, 1>>
+
+      assert {:ok, "n.`secret` = $p0", %{"p0" => tagged}} =
+               Expr.translate(%Eq{left: typed_ref(:secret, Ash.Type.Binary), right: raw}, acc())
+
+      assert tagged == Cast.encode_binary(raw)
+      refute tagged == raw
+    end
+
+    test "in serializes list elements with the ref's type" do
+      assert {:ok, "n.`secret` IN $p0", %{"p0" => [a, b]}} =
+               Expr.translate(
+                 %In{left: typed_ref(:secret, Ash.Type.Binary), right: [<<1, 2>>, <<3, 4>>]},
+                 acc()
+               )
+
+      assert a == Cast.encode_binary(<<1, 2>>)
+      assert b == Cast.encode_binary(<<3, 4>>)
     end
 
     test "not_eq / gt / lt / gte / lte" do

@@ -132,11 +132,18 @@ defmodule AshAge.Cypher.Expr do
 
   # --- Comparison operators ----------------------------------------------
 
+  # Equality / inequality serialize a LITERAL operand with the Ref operand's attr
+  # type, so a binary-storage literal is `$age64$`-tagged (matches the stored wire
+  # form), a date is ISO8601, etc. — the same encoder the read filter path uses.
+  # Without this, `expr(secret == ^binary)` against a binary-storage attr would
+  # store the raw bytes and silently never match (cross-vendor finding). If both
+  # sides are refs (attr-to-attr) or neither is a typed ref, fall back to raw
+  # binop (the existing behavior).
   defp do_translate(%Eq{left: left, right: right}, acc),
-    do: binop(left, "=", right, acc)
+    do: eq_compare(left, "=", right, acc)
 
   defp do_translate(%NotEq{left: left, right: right}, acc),
-    do: binop(left, "<>", right, acc)
+    do: eq_compare(left, "<>", right, acc)
 
   # Range ops reject binary-storage attrs: the $age64$ base64 wire form is not
   # byte-order-preserving, so a range comparison silently returns wrong results
@@ -157,8 +164,12 @@ defmodule AshAge.Cypher.Expr do
     do: do_translate(%In{left: left, right: MapSet.to_list(set)}, acc)
 
   defp do_translate(%In{left: left, right: values}, acc) when is_list(values) do
+    # Serialize each list element with the Ref operand's attr type (binary-tagged,
+    # ISO date, …) so IN against a binary-storage attr matches the stored form.
+    type = ref_type(left)
+
     with {:ok, lfrag, acc} <- operand(left, acc),
-         {:ok, acc, name} <- alloc_list_param(acc, values) do
+         {:ok, acc, name} <- alloc_list_param(acc, values, type) do
       {:ok, "#{lfrag} IN $#{name}", acc}
     end
   end
@@ -273,6 +284,53 @@ defmodule AshAge.Cypher.Expr do
     end
   end
 
+  # Equality/inequality with type-aware literal serialization. Identifies the
+  # typed-Ref side and serializes the literal side through Cast.serialize_value
+  # with that attr's {type, constraints}; falls back to raw binop when neither
+  # side is a typed ref (attr-to-attr, or expr-vs-expr).
+  defp eq_compare(left, op, right, acc) do
+    case {ref_type(left), ref_type(right)} do
+      {type, nil} when type != nil ->
+        with {:ok, lfrag, acc} <- operand(left, acc),
+             {:ok, rfrag, acc} <- typed_literal_operand(right, type, acc) do
+          {:ok, "#{lfrag} #{op} #{rfrag}", acc}
+        end
+
+      {nil, type} when type != nil ->
+        with {:ok, rfrag, acc} <- operand(right, acc),
+             {:ok, lfrag, acc} <- typed_literal_operand(left, type, acc) do
+          {:ok, "#{lfrag} #{op} #{rfrag}", acc}
+        end
+
+      _ ->
+        binop(left, op, right, acc)
+    end
+  end
+
+  # The {type, constraints} of a Ref's attribute, or nil for non-refs / untyped.
+  defp ref_type(%Ref{relationship_path: [], attribute: %{type: t}} = ref) do
+    {t, attr_constraints(ref.attribute)}
+  end
+
+  defp ref_type(_), do: nil
+
+  # Translate a literal operand, serializing it with the given {type, constraints}
+  # so binary/date/etc. literals match the stored wire form. Non-literal nodes
+  # (refs, exprs) translate via the normal operand path (the type only governs
+  # bare values — a nested expr carries its own typing).
+  defp typed_literal_operand(node, type, acc) do
+    case node do
+      %Ref{} ->
+        operand(node, acc)
+
+      value when is_binary(value) or is_integer(value) or is_float(value) or is_boolean(value) or is_nil(value) ->
+        alloc_param(acc, Cast.serialize_value(value, type))
+
+      _ ->
+        operand(node, acc)
+    end
+  end
+
   defp operand(node, acc) do
     case do_translate(node, acc) do
       {:ok, frag, acc} ->
@@ -317,10 +375,11 @@ defmodule AshAge.Cypher.Expr do
   defp attr_name(_), do: nil
 
   # Allocate a positional param holding a LIST (for IN). Each element is
-  # serialized through the same encoder the read path uses; an empty list is a
-  # valid "match nothing" (no guard needed).
-  defp alloc_list_param(acc, values) do
-    serialized = Enum.map(values, &Cast.serialize_value(&1, nil))
+  # serialized with the Ref operand's attr type (binary-tagged, ISO date, …) so
+  # IN against a binary-storage attr matches the stored wire form; an empty list
+  # is a valid "match nothing" (no guard needed).
+  defp alloc_list_param(acc, values, type) do
+    serialized = Enum.map(values, &Cast.serialize_value(&1, type))
     base = "p#{acc.count}"
     name = free_name(acc.taken, base)
 
