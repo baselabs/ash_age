@@ -9,7 +9,7 @@ defmodule AshAge.Telemetry do
 
   @allowed_meta_keys ~w(resource multitenancy tenant? stale? properties?
                         direction row_count batch_size group_count
-                        destination_count depth result rls?
+                        destination_count depth result rls? atomic?
                         aggregate_count)a
 
   @doc "The permitted `:start`/`:stop` metadata keys (the R7 allowlist guard)."

@@ -1117,7 +1117,8 @@ defmodule AshAge.DataLayer do
        %{
          tenant?: not is_nil(query.tenant),
          result: Telemetry.result_tag(result),
-         rls?: rls?(resource)
+         rls?: rls?(resource),
+         atomic?: changeset.atomics != []
        }}
     end)
   end
@@ -1133,11 +1134,17 @@ defmodule AshAge.DataLayer do
         end)
         |> unwrap_rls(resource)
 
+      # `atomic?` is true when ANY changeset in the batch carried an expr-based
+      # atomic (vs plain attribute sets). Value-free: a boolean over the change
+      # shape, not a row value.
+      batch_atomic? = Enum.any?(changesets, fn cs -> cs.atomics != [] end)
+
       {result,
        %{
          tenant?: not is_nil(tenant),
          result: Telemetry.result_tag(result),
-         rls?: rls?(resource)
+         rls?: rls?(resource),
+         atomic?: batch_atomic?
        }}
     end)
   end
