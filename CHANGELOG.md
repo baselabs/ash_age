@@ -7,17 +7,217 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-12
+
+A major release: atomic-aware updates (the headline), plus the breaking edges
+the new dispatch path introduces. Existing 1.x builds are unaffected until you
+upgrade; see **Upgrading from 1.x** below.
+
 ### Added
 
-- Documented **keyset pagination** as supported. Keyset already worked at
-  runtime via Ash's sort+filter rewrite (`AshAge.DataLayer` does not declare
+- **Atomic-aware updates.** `Ash.Expr`-based atomic updates now translate to
+  Cypher and run as single statements instead of falling back to per-record
+  read-modify-write.
+  - `AshAge.Cypher.Expr` (`Expr.translate/2`) translates an Ash.Expr AST into a
+    Cypher expression + positional params: arithmetic (`+ - * /` with
+    precedence parenthesization), comparisons (`= <> > < >= <= IN IS [NOT]
+    NULL`), boolean (`AND/OR/NOT`), control (`Function.If → CASE WHEN`), string
+    (`toLower/trim/STARTS|ENDS WITH/CONTAINS`, `Basic.Concat → +`). Refs are
+    backtick-quoted + identifier-validated; literals use collision-free `$pN`.
+    Unsupported nodes fail closed as `UnsupportedExpression`.
+  - `update_query/4` (`can?(:update_query)`, `:expr_error`, `:action_select`,
+    `{:atomic, :update}`): single-record `Ash.update/2` carrying atomics and
+    `Ash.bulk_update` route here. LIMIT/SKIP honored via a `WITH n` pass-through
+    (verified valid AGE 1.6.0 Cypher).
+  - `update_many/3` (`can?(:update_many)`): `Ash.update_many` (distinct changes
+    per record) dispatches here. Re-groups by `{atomics, filter, attributes}`,
+    synthesizes a per-group query carrying the group's filter + the `:attribute`
+    tenant discriminator (built from `opts[:tenant]`, run through the resource's
+    `multitenancy_parse_attribute`) + a PK scope, then delegates to the
+    `update_query` machinery. Single-attr PK → `n.`pk` IN $pks`; composite PK →
+    OR-disjunction (AGE has no row-valued IN). Fails closed on a blank tenant.
+- **Telemetry**: `:update_query` and `:update_many` span ops join the
+  `[:ash_age, <op>, :start|:stop|:exception]` list, with a new value-free
+  `:atomic?` metadata flag (true when the SET carried an expr-based atomic).
+- Aggregates: `count`/`sum`/`avg`/`min`/`max`/`exists` over a resource's own
+  records (no relationship path), with optional per-aggregate sub-filters. AGE
+  ships these natively; `first`/`list`/`custom` and relationship-pathed aggregates
+  remain unsupported. Aggregates honor RLS (`with_rls`) and `:attribute`
+  multitenancy, ignore query `limit`/`offset`/`sort` (full filtered set), and the
+  result map is atom-keyed by aggregate name. `min`/`max`/`sum`/`avg` over a
+  binary-storage field are rejected (the `$age64$` base64 wire form isn't
+  byte-order-preserving).
+
+- Upsert (`can?(:upsert)`) via a non-MERGE two-statement path: an existence MATCH
+  on the identity, then a CREATE branch (absent) or a SET branch (present). AGE
+  enforces no PK uniqueness and MERGE is banned, so this provides create-or-update
+  by a declared identity without MERGE. The cross-tenant match comes from Ash's
+  `identity_fields` (which prepends the multitenancy attribute for per-tenant
+  identities and excludes it for `all_tenants?` global identities). Not atomic
+  across concurrent upserts of the same identity (inherent AGE constraint);
+  documented.
+
+- Bulk destroy by query (`can?(:destroy_query)`): `Ash.bulk_destroy/3` against a
+  query runs as a single `MATCH ... WHERE <translated filter> DETACH DELETE n`
+  instead of N per-record destroys, honoring the query's `limit`/`offset`. The
+  WHERE matches the read path — including the tenant predicate for `:attribute`
+  multitenancy.
+
+- **Keyset pagination** is now documented as supported (it already worked at
+  runtime via Ash's sort+filter rewrite — `AshAge.DataLayer` does not declare
   `can?(:keyset)`, so Ash rewrites `page: [after: <keyset>]` into a compound
-  parameterized filter expression built from the comparison and boolean
-  operators AshAge already supports), but the capability was previously
-  undocumented. Prefer keyset over offset for large result sets: each page
-  costs a constant-time `WHERE` filter rather than the O(page_offset)
-  walk-and-discard that deep `SKIP N` pages force on the AGE planner. Backed
-  by `test/integration/keyset_pagination_test.exs`.
+  parameterized filter expression). Prefer keyset over offset for large result
+  sets. Backed by `test/integration/keyset_pagination_test.exs`.
+
+### Security
+
+- Bump `ash` to 3.31.2 — clears `EEF-CVE-2026-69659` (memory exhaustion via
+  unbounded deserialization of keyset pagination cursors in `Ash.Page.Keyset`)
+  and `EEF-CVE-2026-70395` (predicate injection in `manage_relationship`
+  belongs_to lookup disclosing secret lookup keys), both fixed upstream in
+  ash 3.31.1.
+- Bump `postgrex` to 0.22.4 — clears `EEF-CVE-2026-58225` (SQL injection via
+  unescaped dollar-quote in `Postgrex.Notifications` reconnect replay) and
+  `EEF-CVE-2026-66838` (SQL injection via the `:comment` option in
+  `Postgrex.stream/4`).
+
+### ⚠ Changed (breaking — the major bump)
+
+These are consequences of advertising `:update_query` + `:expr_error` so atomic
+updates can dispatch. Existing 1.x code that hits one of these edges needs the
+noted adjustment; code that doesn't is unaffected.
+
+- **`Ash.bulk_destroy/3` (and `bulk_update/3`) with a query now require the
+  tenant on the QUERY** (`Ash.Query.set_tenant/2`), not just via the `tenant:`
+  option. Ash's atomic-bulk dispatch (`do_atomic_destroy` / `do_atomic_update`)
+  reads `query.tenant`; the stream/per-record path tolerated `tenant:` via opts,
+  the atomic path does not. A pre-validated query
+  (`Resource |> Ash.Query.for_read(:read) |> ...`) passed `tenant:` via opts now
+  needs `|> Ash.Query.set_tenant(tenant)`. (Per the Ash bulk-op contract; this is
+  the same constraint every `:update_query`/`:destroy_query`-capable data layer
+  has.)
+- **WHERE-clause and SET property refs are now backtick-quoted**
+  (`` n.`attr` `` instead of `n.attr`). Fixes a syntax error when filtering or
+  setting a Cypher-keyword-named attribute (`count`, `label`, …). Backtick-
+  quoting a non-keyword name is a no-op at the AGE level, so results are
+  unchanged; only the generated Cypher string shape changes.
+- **Single-record updates on a duplicate-PK-in-graph row now fail closed via
+  `update_query/4`** (`UpdateFailed` "matched N rows for one primary key")
+  instead of via the per-record `decode_update_result` guard. AGE enforces no PK
+  uniqueness; the rerouted path detects the anomaly at the same point.
+
+### Known issue (Ash upstream)
+
+- `Ash.update_many/4` without `return_records?: true` raises `BadBooleanError`
+  in Ash 3.31.2 (`update_many.ex:162` uses strict `or` over a nil
+  `opts[:return_records?]`). Affects all `update_many`-capable data layers, not
+  ash_age. Workaround: pass `return_records?: true`.
+
+### Known limitations (atomic-expr edge cases, follow-up)
+
+Identified by the cross-vendor closeout; each needs attribute-type threading
+through the translator or AGE-verified semantics, deferred to a follow-up:
+
+- **`type(expr, :type)` casts are dropped** in the translator (AGE is dynamically
+  typed — there is no general cast function in Cypher, so the cast is treated as
+  a no-op). A user-authored cast that changes comparison semantics (e.g.
+  `type(1, :string)` vs a stored string) diverges silently. The Ash-generated
+  `allow_nil?` wrapper cast is unaffected. Inherent AGE limitation (no cast fn).
+- **Atomic-update atomic validations** (e.g. `validate compare(...)`) now fail
+  closed instead of corrupting (see Fixed), which means a changeset carrying such
+  a validation is not translated to an atomic write. Run those updates per-record
+  (the validation fires in Elixir there) — AGE's SET expression cannot raise, so
+  atomic-side validation enforcement is inherently impossible until AGE adds one.
+
+### Changed
+
+- Dependency bumps: `ash` 3.29.3 → 3.31.2, `postgrex` 0.22.2 → 0.22.4,
+  `ecto` 3.14.0 → 3.14.1, `credo` 1.7.16 → 1.7.19 (dev), `ex_doc` 0.40.1 →
+  0.40.3 (dev), plus transitive resolutions (`ymlr`, `reactor`, `splode`,
+  `db_connection`, `makeup_erlang`, others). No `mix.exs` version bounds were
+  widened. Supersedes dependabot PRs #26–#30, whose own proposed targets
+  (`ash` 3.31.0, `postgrex` 0.22.3) were themselves affected by the advisories
+  above and could not clear the `mix hex.audit` CI gate.
+
+### Fixed
+
+- **Atomic-validation bypass (closeout, blocking).** The expr translator turned
+  `Ash.Query.Function.Error{}` into literal `null`; an atomic validation
+  (`validate compare(...)`, etc. — which Ash expands to
+  `if violation, do: error(...), else: ref(attr)`) would write `null` and succeed
+  on a violation. `Error` now fails closed (`UnsupportedExpression`); the
+  `allow_nil?` wrapper still strips correctly. AGE cannot raise in a SET
+  expression, so atomic validations must run per-record (documented limitation).
+- **`update_many` silently dropped untranslatable changeset filters (closeout,
+  blocking).** The synthesized query put `changeset.filter` into `query.expression`,
+  whose translation `build_where` swallows on error — a filter with an unsupported
+  operator (optimistic-lock, ref-to-ref policy filter, fragment) was dropped and
+  the SET fell back to PK+tenant scope, updating rows the filter excluded. The
+  filter is now translated eagerly and fail-closed before any write.
+- **Policy-authorized atomic updates hard-errored.** Advertising `:expr_error`
+  flipped the single-record/bulk reroute to `authorize_changeset_with: :error`,
+  which attaches Ash.Policy's `if policy_filter do true else error(...) end` to
+  the query; the filter translator had no `If` clause and rejected it. The wrapper
+  is now stripped to the policy condition (in a WHERE, "authorized if filter
+  holds" IS the filter). End-to-end proven against a real `Ash.Policy.Authorizer`
+  filter-producing policy (the policy filter gates the update — only authorized
+  rows are touched); `:simple_sat` is now a dev/test dep so the suite can exercise
+  Ash.Policy (host apps bring their own SAT solver).
+- **`$paramN` / SET-attribute name collision (silent wrong-write).** A filter/PK/
+  tenant `$paramN` ref could share its name with a SET attribute literally named
+  `param<N>`, binding one value to both the WHERE and the SET. Every attribute
+  name is now reserved (`reserve_attr_params`) before scoping-param allocation —
+  in `filter/3` (covers `update_query`/reads) and `update_many_group` (covers the
+  synthesized query) — so `$paramN` allocations skip attr names; the seeds are
+  dropped from WHERE params so the real SET values win. Tamper-proven (disabling
+  the reservation turns the tripwire red).
+- **No-op `update_many` reported existing records as stale.** A no-op group (no
+  atomics AND no attrs) returned `:ok` with no records, so Ash classified every
+  input as stale. It now runs a scoped READ (filter + tenant + PK gate it) and
+  returns the matched records unchanged — excluded/missing inputs go stale
+  correctly, matching records do not. (An earlier short-circuit returned the
+  inputs directly and bypassed `changeset.filter`; reverted.)
+- **Atomic-expr equality/IN against a binary-storage attribute** never matched:
+  the literal was stored raw instead of `$age64$`-tagged. Eq/NotEq/In now
+  serialize the literal operand with the Ref's attr type (binary → tagged, same
+  encoder the read path uses).
+- **Duplicate-PK-in-graph anomaly** (AGE enforces no PK uniqueness) is now
+  handled consistently: single-record updates fail closed (Ash's per-record
+  wrapper requires exactly one record); the bulk write + no-op read paths dedup
+  by primary key (one record per input PK — returning all would multi-fire
+  Ash's after-action/notification hooks). Same-tenant only; the tenant
+  discriminator prevents any cross-tenant effect.
+- **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
+  applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
+  before SKIP/LIMIT when a sort is present. Sort fields are backtick-quoted
+  the field name is backtick-quoted, and any `:desc*` direction (`:desc_nils_first`/`_last`) maps to
+  DESC — AGE has no NULLS FIRST/LAST syntax, so the prior `:desc`-only check
+  selected the reversed slice, and a bare keyword field collided with the
+  `count()` aggregate.
+- `update_many` blank-tenant guard over-rejected `global? true` `:attribute`
+  resources; it now consults `multitenancy_global?/1` (a nil tenant is allowed for
+  global resources). `scope_to_tenant` now gates the discriminator on TENANT
+  PRESENCE (matching Ash's `handle_attribute_multitenancy`), not on `global?` —
+  a global resource WITH a tenant still gets the discriminator (an earlier
+  revision skipped it for all global resources, a cross-tenant write on a
+  duplicate-PK row).
+- The catch-all `node_label` leaked the bare unsupported value into
+  `UnsupportedExpression.node` (whose message inspects it); it now carries a
+  structural `:value` atom, never the value.
+- WHERE-clause filter translation emitted bare `n.<attr>` for every comparison /
+  IN / IS NULL clause; for a Cypher-keyword attribute name (`count`, `label`, …)
+  the bare form collided with the `count()` aggregate and AGE rejected the query
+  with a syntax error. Property refs are now backtick-quoted via a `prop_ref/1`
+  helper, mirroring the SET-side expr translator. Pre-existing — affected the
+  read path too.
+- The getting-started notebook now re-runs cleanly against a persistent
+  database. Its graph-setup ran a versioned Ecto migration (a no-op once
+  recorded) while the demo cells created `Alice`/`Bob` unconditionally, so
+  seed data accumulated across runs and the single-element match
+  (`{:ok, [only_alice]}`) failed on the second run. Each setup now tears the
+  graph down before creating it (`Ecto.Migrator.down/4`, `:already_down` on a
+  pristine DB), so the notebook is idempotent. CI is unaffected (fresh
+  container per job).
 
 ## [1.0.1] - 2026-07-03
 
@@ -477,7 +677,8 @@ resources.
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/baselabs/ash_age/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/baselabs/ash_age/compare/v0.2.6...v1.0.0
 [0.2.6]: https://github.com/baselabs/ash_age/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/baselabs/ash_age/compare/v0.2.4...v0.2.5

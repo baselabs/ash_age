@@ -124,7 +124,7 @@ defmodule AshAge.Integration.BackwardCompatTest do
         %Query{resource: Plain, graph: :g, label: :Plain, repo: TestRepo, params: %{}}
       )
 
-    assert clause == "n.name = $param1"
+    assert clause == "n.`name` = $param1"
     assert query.params == %{"param1" => "x"}
   end
 

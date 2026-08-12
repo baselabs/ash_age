@@ -66,6 +66,13 @@ defmodule AshAge.TelemetryTest do
     assert %{rls?: true} = AshAge.Telemetry.validate!(%{rls?: true})
   end
 
+  test "atomic? is a permitted value-free metadata key" do
+    # Distinguishes expr-based atomic updates from plain attribute sets on the
+    # :update_query / :update_many spans — a boolean over change shape, not a value.
+    assert :atomic? in AshAge.Telemetry.allowed_meta_keys()
+    assert %{atomic?: true} = AshAge.Telemetry.validate!(%{atomic?: true})
+  end
+
   test "a :traverse-shaped span with depth metadata does not raise" do
     result =
       AshAge.Telemetry.span(

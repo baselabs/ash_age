@@ -7,6 +7,7 @@ defmodule AshAge.Query.FilterTest do
   alias AshAge.Type.Cast
 
   alias Ash.Query.BooleanExpression
+  alias Ash.Query.Function.{Error, If}
   alias Ash.Query.Not
 
   alias Ash.Query.Operator.{
@@ -32,34 +33,44 @@ defmodule AshAge.Query.FilterTest do
     test "eq parameterizes the value (value never appears in the clause)" do
       {:ok, query, clause} = Filter.translate(%Eq{left: ref(:name), right: "Robert'); DROP"}, q())
 
-      assert clause == "n.name = $param1"
+      assert clause == "n.`name` = $param1"
       assert query.params == %{"param1" => "Robert'); DROP"}
       refute clause =~ "Robert"
     end
 
+    test "eq backtick-quotes a Cypher-keyword attribute name (count)" do
+      # `count` collides with the count() aggregate keyword — bare `n.count`
+      # mis-parses in AGE (syntax error at the following operator). Property refs
+      # MUST be backtick-quoted, mirroring the SET side (Task 2 expr translator).
+      {:ok, query, clause} = Filter.translate(%Eq{left: ref(:count), right: 1}, q())
+
+      assert clause == "n.`count` = $param1"
+      assert query.params == %{"param1" => 1}
+    end
+
     test "not_eq" do
       {:ok, query, clause} = Filter.translate(%NotEq{left: ref(:age), right: 30}, q())
-      assert clause == "n.age <> $param1"
+      assert clause == "n.`age` <> $param1"
       assert query.params == %{"param1" => 30}
     end
 
     test "greater_than / less_than" do
       {:ok, _, gt} = Filter.translate(%GreaterThan{left: ref(:age), right: 18}, q())
       {:ok, _, lt} = Filter.translate(%LessThan{left: ref(:age), right: 65}, q())
-      assert gt == "n.age > $param1"
-      assert lt == "n.age < $param1"
+      assert gt == "n.`age` > $param1"
+      assert lt == "n.`age` < $param1"
     end
 
     test "gte / lte" do
       {:ok, _, gte} = Filter.translate(%GreaterThanOrEqual{left: ref(:age), right: 18}, q())
       {:ok, _, lte} = Filter.translate(%LessThanOrEqual{left: ref(:age), right: 65}, q())
-      assert gte == "n.age >= $param1"
-      assert lte == "n.age <= $param1"
+      assert gte == "n.`age` >= $param1"
+      assert lte == "n.`age` <= $param1"
     end
 
     test "in parameterizes the whole list" do
       {:ok, query, clause} = Filter.translate(%In{left: ref(:status), right: ["a", "b"]}, q())
-      assert clause == "n.status IN $param1"
+      assert clause == "n.`status` IN $param1"
       assert query.params == %{"param1" => ["a", "b"]}
     end
 
@@ -67,7 +78,7 @@ defmodule AshAge.Query.FilterTest do
       {:ok, query, clause} =
         Filter.translate(%In{left: ref(:status), right: MapSet.new(["a", "b"])}, q())
 
-      assert clause == "n.status IN $param1"
+      assert clause == "n.`status` IN $param1"
       # the param carries the list value (order-independent — MapSet has no order)
       assert query.params |> Map.values() |> List.first() |> Enum.sort() == ["a", "b"]
     end
@@ -76,13 +87,13 @@ defmodule AshAge.Query.FilterTest do
   describe "is_nil" do
     test "true -> IS NULL, no param" do
       {:ok, query, clause} = Filter.translate(%IsNil{left: ref(:deleted_at), right: true}, q())
-      assert clause == "n.deleted_at IS NULL"
+      assert clause == "n.`deleted_at` IS NULL"
       assert query.params == %{}
     end
 
     test "false -> IS NOT NULL" do
       {:ok, _, clause} = Filter.translate(%IsNil{left: ref(:deleted_at), right: false}, q())
-      assert clause == "n.deleted_at IS NOT NULL"
+      assert clause == "n.`deleted_at` IS NOT NULL"
     end
   end
 
@@ -99,13 +110,26 @@ defmodule AshAge.Query.FilterTest do
       }
 
       {:ok, query, clause} = Filter.translate(expr, q())
-      assert clause == "(n.a = $param1 AND (n.b = $param2 OR n.c = $param3))"
+      assert clause == "(n.`a` = $param1 AND (n.`b` = $param2 OR n.`c` = $param3))"
       assert query.params == %{"param1" => 1, "param2" => 2, "param3" => 3}
     end
 
     test "not wraps its clause" do
       {:ok, _, clause} = Filter.translate(%Not{expression: %Eq{left: ref(:a), right: 1}}, q())
-      assert clause == "NOT (n.a = $param1)"
+      assert clause == "NOT (n.`a` = $param1)"
+    end
+
+    test "the policy wrapper if(filter, true, error) strips to the filter" do
+      # Ash attaches `if policy_filter do true else error(...) end` to an atomic
+      # update's query under a filter-producing policy (can.ex). In a WHERE that
+      # IS the policy_filter (excluded rows are denied). Strip the wrapper.
+      wrapper = %If{arguments: [%Eq{left: ref(:org_id), right: "org-a"}, true, %Error{arguments: [:forbidden]}]}
+      {:ok, _, clause} = Filter.translate(wrapper, q())
+      assert clause == "n.`org_id` = $param1"
+    end
+
+    test "a bare Error node in a filter is rejected (unsupported)" do
+      assert {:error, %UnsupportedFilter{}} = Filter.translate(%Error{arguments: [:x]}, q())
     end
   end
 
@@ -135,7 +159,7 @@ defmodule AshAge.Query.FilterTest do
       {:ok, query, clause} =
         Filter.translate(%Eq{left: typed_ref(:payload, Ash.Type.Binary), right: raw}, q())
 
-      assert clause == "n.payload = $param1"
+      assert clause == "n.`payload` = $param1"
       assert query.params == %{"param1" => Cast.encode_binary(raw)}
     end
 
@@ -145,7 +169,7 @@ defmodule AshAge.Query.FilterTest do
       {:ok, query, clause} =
         Filter.translate(%In{left: typed_ref(:payload, Ash.Type.Binary), right: raws}, q())
 
-      assert clause == "n.payload IN $param1"
+      assert clause == "n.`payload` IN $param1"
       assert query.params == %{"param1" => Enum.map(raws, &Cast.encode_binary/1)}
     end
 
@@ -155,7 +179,7 @@ defmodule AshAge.Query.FilterTest do
       {:ok, query, clause} =
         Filter.translate(%NotEq{left: typed_ref(:payload, Ash.Type.Binary), right: raw}, q())
 
-      assert clause == "n.payload <> $param1"
+      assert clause == "n.`payload` <> $param1"
       assert query.params == %{"param1" => Cast.encode_binary(raw)}
     end
 
@@ -220,7 +244,7 @@ defmodule AshAge.Query.FilterTest do
       {:ok, _query, clause} =
         Filter.translate(%GreaterThan{left: typed_ref(:age, Ash.Type.Integer), right: 30}, q())
 
-      assert clause == "n.age > $param1"
+      assert clause == "n.`age` > $param1"
     end
   end
 end

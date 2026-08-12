@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "1.0.1"
+  @version "2.0.0"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
@@ -63,7 +63,11 @@ defmodule AshAge.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false}
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      # Pure-Elixir SAT solver so Ash.Policy filter-producing policies can be
+      # verified + exercised in the test suite (the policy-authorized atomic
+      # update path). Host apps that use policies bring their own solver.
+      {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false}
     ]
   end
 
