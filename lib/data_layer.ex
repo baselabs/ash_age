@@ -1545,44 +1545,72 @@ defmodule AshAge.DataLayer do
          return_records?,
          single_record?
        ) do
+    pk_fields = Ash.Resource.Info.primary_key(resource)
+
+    # Pre-write duplicate-PK check: AGE enforces no PK uniqueness, so a bulk SET
+    # could write multiple physical rows for one input PK. Detecting it BEFORE the
+    # SET (keyed on SOURCE PKs) means the failure is clean under any transaction
+    # mode, and a SET that rewrites the PK can't evade it — closing the
+    # post-write-detection edges cross-vendor rounds 6-8 surfaced (transaction:
+    # false post-commit; atomic-PK-rewrite rename). One grouped-count query.
+    with :ok <- precheck_no_duplicate_pk(query, label, pk_fields, resource) do
+      run_update_set(query, label, set_str, changed_attrs, atomic_params, resource, return_records?, single_record?)
+    end
+  end
+
+  defp precheck_no_duplicate_pk(query, label, pk_fields, resource) do
+    {check_cypher, check_params} = AshAge.Query.duplicate_pk_cypher(query, label, pk_fields)
+
+    case build_and_query(query.repo, query.graph, check_cypher, check_params) do
+      {:ok, %{rows: []}} ->
+        :ok
+
+      {:ok, _} ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason:
+             "bulk update would match multiple rows for one primary key (duplicate rows in graph?)"
+         )}
+
+      {:error, _} = e ->
+        e
+    end
+  end
+
+  defp run_update_set(
+         query,
+         label,
+         set_str,
+         changed_attrs,
+         atomic_params,
+         resource,
+         return_records?,
+         single_record?
+       ) do
     {cypher, where_params} = AshAge.Query.update_cypher(query, label, set_str)
 
     # Drop the changed-attribute reservation seeds (reserve_attr_params) so the
     # real SET values in `changed_attrs` win the merge. Filter/PK/tenant params
-    # were allocated as `$paramN` SKIPPING attr names, so they are not attr names
-    # and survive this drop — only the `nil` seeds for changed attrs are removed.
+    # were allocated as `$paramN` SKIPPING attr names, so they survive — only the
+    # `nil` seeds for changed attrs are removed.
     where_params = Map.drop(where_params, Map.keys(changed_attrs))
     params = changed_attrs |> Map.merge(where_params) |> Map.merge(atomic_params)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
       {:ok, %{rows: rows}} ->
-        # update_cypher ALWAYS emits `RETURN n`, so the matched rows are present
-        # whether or not Ash asked for records. Decode + duplicate-PK check run
-        # on EVERY path (the default bulk_update has return_records?: false —
-        # gating the check on return_records? let the duplicate-PK multi-row
-        # write go undetected on the common path, cross-vendor delta-7 finding).
         decoded = decode_records(resource, rows)
 
         if single_record? and length(decoded) > 1 do
-          # Single-record reroute: Ash's per-record wrapper (update.ex:210)
-          # pattern-matches `records: [record]` — exactly one. 2+ is a
-          # duplicate-PK anomaly (AGE enforces no uniqueness); fail CLOSED rather
-          # than crash the wrapper. The action transaction rolls the SET back.
+          # Defense-in-depth + Ash contract: the pre-write check should have
+          # caught a duplicate, but a concurrent insert between check and SET
+          # could slip through; Ash's per-record wrapper requires exactly one
+          # record regardless (update.ex:210).
           duplicate_pk_error(resource, length(decoded))
         else
-          # Bulk path: fail CLOSED on a duplicate-PK anomaly (one input PK
-          # matching 2+ physical rows). BEST-EFFORT, post-write: under Ash's
-          # DEFAULT transaction the SET rolls back on the error; under an explicit
-          # `transaction: false` opt-out (caller chose no atomicity) the multi-row
-          # write persists but the error still surfaces — loud either way, never
-          # silent. The guard groups by the POST-update PK, so it does NOT catch a
-          # writable-PK atomic SET that renames duplicate source rows to distinct
-          # new keys (don't atomically rename PKs on duplicate-bearing data — AGE
-          # enforces no uniqueness; Ash-managed creates enforce UUID uniqueness,
-          # so duplicates only arise from external corruption). A pre-write
-          # cardinality check would close those edges but costs a query per bulk
-          # update for an external-corruption-only anomaly — judged
-          # disproportionate; documented here instead.
+          # Bulk path. The pre-write check already rejected duplicate-PK writes;
+          # the post-write fail_closed_on_duplicate_pk here is defense-in-depth
+          # for the same check→SET race (returns the records, or :ok).
           bulk_update_result(resource, decoded, return_records?)
         end
 

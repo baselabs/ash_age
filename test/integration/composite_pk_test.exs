@@ -239,7 +239,7 @@ defmodule AshAge.Integration.CompositePkTest do
                  record |> Ash.Changeset.for_update(:update, %{name: "c"}) |> Ash.update()
 
         message = Exception.message(error)
-        assert message =~ "matched"
+        assert message =~ "multiple rows for one primary key"
         refute message =~ "collide-k7"
       end,
       vlabels: ["Coded"]

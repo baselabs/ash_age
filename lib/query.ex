@@ -193,6 +193,33 @@ defmodule AshAge.Query do
   end
 
   @doc """
+  Pre-write duplicate-PK check: groups the WHERE-matched set by primary key and
+  returns one row iff any PK matches 2+ vertices. AGE enforces no PK uniqueness,
+  so a bulk SET could write multiple physical rows for one input PK — this is run
+  BEFORE the SET so the anomaly fails closed without writing (works under any
+  transaction mode, and keys on the SOURCE PK so a SET that rewrites the PK can't
+  evade it). Verified AGE 1.6.0 form (aliased grouping keys + WITH...WHERE).
+  Returns `{cypher, params}`; a non-empty result means a duplicate exists.
+  """
+  @spec duplicate_pk_cypher(t(), atom() | String.t(), [atom()]) :: {String.t(), map()}
+  def duplicate_pk_cypher(query, label, pk_fields) do
+    label = AshAge.Migration.validate_identifier!(label)
+    {where_parts, query} = build_where(query)
+
+    pk_group =
+      pk_fields
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {f, i} ->
+        "n.`#{AshAge.Migration.validate_identifier!(f)}` AS pk#{i}"
+      end)
+
+    base = ["MATCH (n:#{label})"] ++ build_where_clause(where_parts)
+    # Group by every PK field; if any (composite) key matches >1 vertex, RETURN 1.
+    check = ["WITH #{pk_group}, count(n) AS cnt WHERE cnt > 1 RETURN 1 LIMIT 1"]
+    {Enum.join(base ++ check, " "), query.params}
+  end
+
+  @doc """
   Adds a parameter to the query, returning the updated query and a `$paramN` reference.
   """
   @spec add_param(t(), term()) :: {t(), String.t()}
