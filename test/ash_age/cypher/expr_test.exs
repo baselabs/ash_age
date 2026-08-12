@@ -4,7 +4,32 @@ defmodule AshAge.Cypher.ExprTest do
   alias AshAge.Cypher.Expr
   alias AshAge.Errors.UnsupportedExpression
 
-  alias Ash.Query.Operator.Basic.{Div, Minus, Plus, Times}
+  alias Ash.Query.BooleanExpression
+
+  alias Ash.Query.Function.{
+    Contains,
+    If,
+    Now,
+    StringDowncase,
+    StringEndsWith,
+    StringStartsWith,
+    StringTrim
+  }
+
+  alias Ash.Query.Not
+  alias Ash.Query.Operator.Basic.{Concat, Div, Minus, Plus, Times}
+
+  alias Ash.Query.Operator.{
+    Eq,
+    GreaterThan,
+    GreaterThanOrEqual,
+    In,
+    IsNil,
+    LessThan,
+    LessThanOrEqual,
+    NotEq
+  }
+
   alias Ash.Query.Ref
 
   # A bare resource-attribute ref: relationship_path empty, attribute carries its name.
@@ -109,6 +134,127 @@ defmodule AshAge.Cypher.ExprTest do
       acc = %{taken: taken, count: 0}
 
       assert {:ok, "$p0_", %{"p0_" => 5}} = Expr.translate(5, acc)
+    end
+  end
+
+  describe "comparison operators" do
+    test "eq — literal right side" do
+      assert {:ok, "n.`val` = $p0", %{"p0" => 5}} =
+               Expr.translate(%Eq{left: ref(:val), right: 5}, acc())
+    end
+
+    test "eq — ref right side (attr-to-attr is valid Cypher, unlike the filter path)" do
+      assert {:ok, "n.`a` = n.`b`", %{}} =
+               Expr.translate(%Eq{left: ref(:a), right: ref(:b)}, acc())
+    end
+
+    test "not_eq / gt / lt / gte / lte" do
+      assert {:ok, "n.`v` <> $p0", _} = Expr.translate(%NotEq{left: ref(:v), right: 1}, acc())
+
+      assert {:ok, "n.`v` > $p0", _} =
+               Expr.translate(%GreaterThan{left: ref(:v), right: 1}, acc())
+
+      assert {:ok, "n.`v` < $p0", _} = Expr.translate(%LessThan{left: ref(:v), right: 1}, acc())
+
+      assert {:ok, "n.`v` >= $p0", _} =
+               Expr.translate(%GreaterThanOrEqual{left: ref(:v), right: 1}, acc())
+
+      assert {:ok, "n.`v` <= $p0", _} =
+               Expr.translate(%LessThanOrEqual{left: ref(:v), right: 1}, acc())
+    end
+
+    test "range ops on a binary-storage attr are rejected (base64 is not byte-orderable)" do
+      # S7 invariant: $age64$-tagged base64 does not preserve byte order, so a range
+      # comparison on the stored form silently returns wrong results.
+      assert {:error, %UnsupportedExpression{}} =
+               Expr.translate(%GreaterThan{left: typed_ref(:data, :binary), right: 5}, acc())
+    end
+
+    test "in — list right side parameterized" do
+      assert {:ok, frag, %{"p0" => [1, 2, 3]}} =
+               Expr.translate(%In{left: ref(:v), right: [1, 2, 3]}, acc())
+
+      assert frag == "n.`v` IN $p0"
+    end
+
+    test "in — MapSet right side normalized to a list" do
+      {:ok, _, %{"p0" => vals}} =
+        Expr.translate(%In{left: ref(:v), right: MapSet.new([1, 2])}, acc())
+
+      assert Enum.sort(vals) == [1, 2]
+    end
+
+    test "is_nil — IS NULL / IS NOT NULL" do
+      assert {:ok, "n.`v` IS NULL", %{}} =
+               Expr.translate(%IsNil{left: ref(:v), right: true}, acc())
+
+      assert {:ok, "n.`v` IS NOT NULL", %{}} =
+               Expr.translate(%IsNil{left: ref(:v), right: false}, acc())
+    end
+  end
+
+  describe "boolean combinators" do
+    test "and / or parenthesize both branches" do
+      l = %Eq{left: ref(:a), right: 1}
+      r = %Eq{left: ref(:b), right: 2}
+
+      assert {:ok, "(n.`a` = $p0) AND (n.`b` = $p1)", _} =
+               Expr.translate(%BooleanExpression{op: :and, left: l, right: r}, acc())
+
+      assert {:ok, "(n.`a` = $p0) OR (n.`b` = $p1)", _} =
+               Expr.translate(%BooleanExpression{op: :or, left: l, right: r}, acc())
+    end
+
+    test "not" do
+      inner = %Eq{left: ref(:a), right: 1}
+      assert {:ok, "NOT (n.`a` = $p0)", _} = Expr.translate(%Not{expression: inner}, acc())
+    end
+  end
+
+  describe "control + string functions" do
+    test "if — CASE WHEN .. THEN .. ELSE .. END" do
+      cond = %GreaterThan{left: ref(:count), right: 10}
+
+      assert {:ok, frag, %{"p0" => 10, "p1" => 999, "p2" => 0}} =
+               Expr.translate(%If{arguments: [cond, 999, 0]}, acc())
+
+      assert frag == "CASE WHEN n.`count` > $p0 THEN $p1 ELSE $p2 END"
+    end
+
+    test "string_downcase / string_trim" do
+      assert {:ok, "toLower(n.`name`)", %{}} =
+               Expr.translate(%StringDowncase{arguments: [ref(:name)]}, acc())
+
+      assert {:ok, "trim(n.`name`)", %{}} =
+               Expr.translate(%StringTrim{arguments: [ref(:name)]}, acc())
+    end
+
+    test "string_starts_with / string_ends_with / contains — predicates" do
+      assert {:ok, "n.`name` STARTS WITH $p0", %{"p0" => "pre"}} =
+               Expr.translate(%StringStartsWith{arguments: [ref(:name), "pre"]}, acc())
+
+      assert {:ok, "n.`name` ENDS WITH $p0", %{"p0" => "suf"}} =
+               Expr.translate(%StringEndsWith{arguments: [ref(:name), "suf"]}, acc())
+
+      assert {:ok, "n.`name` CONTAINS $p0", %{"p0" => "mid"}} =
+               Expr.translate(%Contains{arguments: [ref(:name), "mid"]}, acc())
+    end
+  end
+
+  describe "string concat" do
+    test "Basic.Concat maps to AGE's + operator (AGE uses <> for not-equal)" do
+      # Probe C8: n.nm + '-X' → "Widget-X". Ash's :<> must emit +, not <>.
+      assert {:ok, "n.`name` + $p0", %{"p0" => "-X"}} =
+               Expr.translate(%Concat{left: ref(:name), right: "-X"}, acc())
+    end
+  end
+
+  describe "rejected functions (fail-closed, plan Decision D-rev4)" do
+    # Each of these is rejected with UnsupportedExpression — never a silent drop.
+    # They are owned by named follow-ups (time-expr, rel-scoped-expr) or are
+    # mechanically forbidden (Fragment — rule 1).
+    test "now() rejected (purity + clock-skew; owned by time-expr)" do
+      assert {:error, %UnsupportedExpression{}} = Expr.translate(%Now{arguments: []}, acc())
     end
   end
 

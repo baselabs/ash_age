@@ -20,9 +20,34 @@ defmodule AshAge.Cypher.Expr do
   produce a duplicate JSON key, silently dropping one value — plan-review N1).
   """
 
+  alias Ash.Query.BooleanExpression
+
+  alias Ash.Query.Function.{
+    Contains,
+    If,
+    StringDowncase,
+    StringEndsWith,
+    StringStartsWith,
+    StringTrim
+  }
+
+  alias Ash.Query.Not
   alias Ash.Query.Operator.Basic
+
+  alias Ash.Query.Operator.{
+    Eq,
+    GreaterThan,
+    GreaterThanOrEqual,
+    In,
+    IsNil,
+    LessThan,
+    LessThanOrEqual,
+    NotEq
+  }
+
   alias Ash.Query.Ref
   alias AshAge.Errors.UnsupportedExpression
+  alias AshAge.Type.Cast
 
   @type acc :: %{taken: MapSet.t(String.t()), count: non_neg_integer()}
   @type result :: {:ok, String.t(), map()} | {:error, term()}
@@ -97,6 +122,90 @@ defmodule AshAge.Cypher.Expr do
   defp do_translate(%Basic.Div{left: left, right: right}, acc),
     do: binop(left, "/", right, acc)
 
+  # String concat. Ash uses :<> for concat; AGE uses <> for NOT-EQUAL, so this
+  # MUST emit + (probe C8: n.nm + '-X' → "Widget-X"). A naive symbol-mapping
+  # would silently produce a not-equal predicate.
+  defp do_translate(%Basic.Concat{left: left, right: right}, acc),
+    do: binop(left, "+", right, acc)
+
+  # --- Comparison operators ----------------------------------------------
+
+  defp do_translate(%Eq{left: left, right: right}, acc),
+    do: binop(left, "=", right, acc)
+
+  defp do_translate(%NotEq{left: left, right: right}, acc),
+    do: binop(left, "<>", right, acc)
+
+  # Range ops reject binary-storage attrs: the $age64$ base64 wire form is not
+  # byte-order-preserving, so a range comparison silently returns wrong results
+  # (S7 invariant, mirrored from Filter.translate's rangeable/2).
+  defp do_translate(%GreaterThan{left: %Ref{attribute: attr} = left, right: right}, acc),
+    do: range_compare(left, ">", right, attr, acc)
+
+  defp do_translate(%LessThan{left: %Ref{attribute: attr} = left, right: right}, acc),
+    do: range_compare(left, "<", right, attr, acc)
+
+  defp do_translate(%GreaterThanOrEqual{left: %Ref{attribute: attr} = left, right: right}, acc),
+    do: range_compare(left, ">=", right, attr, acc)
+
+  defp do_translate(%LessThanOrEqual{left: %Ref{attribute: attr} = left, right: right}, acc),
+    do: range_compare(left, "<=", right, attr, acc)
+
+  defp do_translate(%In{left: left, right: %MapSet{} = set}, acc),
+    do: do_translate(%In{left: left, right: MapSet.to_list(set)}, acc)
+
+  defp do_translate(%In{left: left, right: values}, acc) when is_list(values) do
+    with {:ok, lfrag, acc} <- operand(left, acc),
+         {:ok, acc, name} <- alloc_list_param(acc, values) do
+      {:ok, "#{lfrag} IN $#{name}", acc}
+    end
+  end
+
+  defp do_translate(%IsNil{left: left, right: true}, acc) do
+    with {:ok, lfrag, acc} <- operand(left, acc), do: {:ok, "#{lfrag} IS NULL", acc}
+  end
+
+  defp do_translate(%IsNil{left: left, right: false}, acc) do
+    with {:ok, lfrag, acc} <- operand(left, acc), do: {:ok, "#{lfrag} IS NOT NULL", acc}
+  end
+
+  # --- Boolean combinators ----------------------------------------------
+
+  defp do_translate(%BooleanExpression{op: :and, left: left, right: right}, acc),
+    do: bool_op("AND", left, right, acc)
+
+  defp do_translate(%BooleanExpression{op: :or, left: left, right: right}, acc),
+    do: bool_op("OR", left, right, acc)
+
+  defp do_translate(%Not{expression: inner}, acc) do
+    with {:ok, frag, acc} <- operand(inner, acc), do: {:ok, "NOT (#{frag})", acc}
+  end
+
+  # --- Control + string functions ---------------------------------------
+
+  defp do_translate(%If{arguments: [cond, then_ast, else_ast]}, acc) do
+    with {:ok, cfrag, acc} <- operand(cond, acc),
+         {:ok, tfrag, acc} <- operand(then_ast, acc),
+         {:ok, efrag, acc} <- operand(else_ast, acc) do
+      {:ok, "CASE WHEN #{cfrag} THEN #{tfrag} ELSE #{efrag} END", acc}
+    end
+  end
+
+  defp do_translate(%StringDowncase{arguments: [arg]}, acc),
+    do: unary_fn("toLower", arg, acc)
+
+  defp do_translate(%StringTrim{arguments: [arg]}, acc),
+    do: unary_fn("trim", arg, acc)
+
+  defp do_translate(%StringStartsWith{arguments: [left, right]}, acc),
+    do: predicate_fn(left, "STARTS WITH", right, acc)
+
+  defp do_translate(%StringEndsWith{arguments: [left, right]}, acc),
+    do: predicate_fn(left, "ENDS WITH", right, acc)
+
+  defp do_translate(%Contains{arguments: [left, right]}, acc),
+    do: predicate_fn(left, "CONTAINS", right, acc)
+
   # --- Catch-all: fail-closed (never a silent drop) ----------------------
 
   defp do_translate(node, _acc) do
@@ -130,6 +239,69 @@ defmodule AshAge.Cypher.Expr do
   defp arithmetic?(%Basic.Times{}), do: true
   defp arithmetic?(%Basic.Div{}), do: true
   defp arithmetic?(_), do: false
+
+  # Range comparison: gate the binary-storage check before emitting. A
+  # binary-storage attr's $age64$ base64 wire form is not byte-orderable, so a
+  # range op on it silently returns wrong results.
+  defp range_compare(left, op, right, attr, acc) do
+    with :ok <- rangeable(attr) do
+      binop(left, op, right, acc)
+    end
+  end
+
+  defp rangeable(attr) do
+    if Cast.binary_storage?(attr_type(attr), attr_constraints(attr)) do
+      {:error,
+       unsupported({:range_op, attr_name(attr)}, "range op on a binary-storage attribute")}
+    else
+      :ok
+    end
+  end
+
+  defp attr_type(%{type: type}), do: type
+  defp attr_type(_), do: nil
+
+  defp attr_constraints(%{constraints: c}) when is_list(c), do: c
+  defp attr_constraints(_), do: []
+
+  defp attr_name(%{name: name}), do: name
+  defp attr_name(_), do: nil
+
+  # Allocate a positional param holding a LIST (for IN). Each element is
+  # serialized through the same encoder the read path uses; an empty list is a
+  # valid "match nothing" (no guard needed).
+  defp alloc_list_param(acc, values) do
+    serialized = Enum.map(values, &Cast.serialize_value(&1, nil))
+    base = "p#{acc.count}"
+    name = free_name(acc.taken, base)
+
+    acc = %{
+      acc
+      | taken: MapSet.put(acc.taken, name),
+        count: acc.count + 1,
+        params: Map.put(acc.params, name, serialized)
+    }
+
+    {:ok, acc, name}
+  end
+
+  defp bool_op(keyword, left, right, acc) do
+    with {:ok, lfrag, acc} <- operand(left, acc),
+         {:ok, rfrag, acc} <- operand(right, acc) do
+      {:ok, "(#{lfrag}) #{keyword} (#{rfrag})", acc}
+    end
+  end
+
+  defp unary_fn(name, arg, acc) do
+    with {:ok, frag, acc} <- operand(arg, acc), do: {:ok, "#{name}(#{frag})", acc}
+  end
+
+  defp predicate_fn(left, keyword, right, acc) do
+    with {:ok, lfrag, acc} <- operand(left, acc),
+         {:ok, rfrag, acc} <- operand(right, acc) do
+      {:ok, "#{lfrag} #{keyword} #{rfrag}", acc}
+    end
+  end
 
   # Allocate a positional param name that does not collide with anything
   # already in `taken`. Append underscores until free (mirrors the
