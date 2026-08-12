@@ -107,6 +107,29 @@ noted adjustment; code that doesn't is unaffected.
   `opts[:return_records?]`). Affects all `update_many`-capable data layers, not
   ash_age. Workaround: pass `return_records?: true`.
 
+### Known limitations (atomic-expr edge cases, follow-up)
+
+Identified by the cross-vendor closeout; each needs attribute-type threading
+through the translator or AGE-verified semantics, deferred to a follow-up:
+
+- **Atomic-expr equality/IN against a binary-storage attribute** does not type-
+  encode the literal (`$age64$` tag missing), so `expr(ref) == binary_attr` never
+  matches the stored wire form. Range ops on binary attrs are already rejected;
+  equality/IN in an atomic expr are the gap. Workaround: use the plain-attribute
+  update path for binary attrs, or filter outside the atomic.
+- **`type(expr, :type)` casts are dropped** in the translator (AGE is dynamically
+  typed, so the cast is treated as a no-op). A user-authored cast that changes
+  comparison semantics (e.g. `type(1, :string)` vs a stored string) diverges
+  silently. The Ash-generated `allow_nil?` wrapper cast is unaffected.
+- **`Ash.update_many` with a duplicate-PK-in-graph row** (AGE enforces no PK
+  uniqueness; creatable externally) updates every physical row sharing that PK
+  within the same tenant. Same-tenant only (no cross-tenant leak — the tenant
+  discriminator holds); a per-PK-count guard on the bulk path is the follow-up.
+- **Atomic-update atomic validations** (e.g. `validate compare(...)`) now fail
+  closed instead of corrupting (see Fixed), which means a changeset carrying such
+  a validation is not translated to an atomic write. Run those updates per-record
+  (the validation fires in Elixir there) until AGE-side enforcement lands.
+
 ### Changed
 
 - Dependency bumps: `ash` 3.29.3 → 3.31.2, `postgrex` 0.22.2 → 0.22.4,
@@ -119,6 +142,34 @@ noted adjustment; code that doesn't is unaffected.
 
 ### Fixed
 
+- **Atomic-validation bypass (closeout, blocking).** The expr translator turned
+  `Ash.Query.Function.Error{}` into literal `null`; an atomic validation
+  (`validate compare(...)`, etc. — which Ash expands to
+  `if violation, do: error(...), else: ref(attr)`) would write `null` and succeed
+  on a violation. `Error` now fails closed (`UnsupportedExpression`); the
+  `allow_nil?` wrapper still strips correctly. AGE cannot raise in a SET
+  expression, so atomic validations must run per-record (documented limitation).
+- **`update_many` silently dropped untranslatable changeset filters (closeout,
+  blocking).** The synthesized query put `changeset.filter` into `query.expression`,
+  whose translation `build_where` swallows on error — a filter with an unsupported
+  operator (optimistic-lock, ref-to-ref policy filter, fragment) was dropped and
+  the SET fell back to PK+tenant scope, updating rows the filter excluded. The
+  filter is now translated eagerly and fail-closed before any write.
+- **Policy-authorized atomic updates hard-errored.** Advertising `:expr_error`
+  flipped the single-record reroute to `authorize_changeset_with: :error`, which
+  attaches `if policy_filter do true else error(...) end` to the query; the filter
+  translator had no `If` clause and rejected it. The wrapper is now stripped to
+  the policy condition (in a WHERE, "authorized if filter holds" IS the filter).
+- **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
+  applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
+  before SKIP/LIMIT when a sort is present.
+- `update_many` no-op (no atomics AND no attrs) crashed the group reducer with
+  `CaseClauseError` — the reducer now handles the bare `:ok` return.
+- `update_many` blank-tenant guard over-rejected `global? true` `:attribute`
+  resources; it now consults `multitenancy_global?/1`.
+- The catch-all `node_label` leaked the bare unsupported value into
+  `UnsupportedExpression.node` (whose message inspects it); it now carries a
+  structural `:value` atom, never the value.
 - WHERE-clause filter translation emitted bare `n.<attr>` for every comparison /
   IN / IS NULL clause; for a Cypher-keyword attribute name (`count`, `label`, …)
   the bare form collided with the `count()` aggregate and AGE rejected the query
