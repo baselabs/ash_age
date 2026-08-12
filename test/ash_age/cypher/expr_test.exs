@@ -164,6 +164,11 @@ defmodule AshAge.Cypher.ExprTest do
       refute tagged == raw
     end
 
+    test "not_eq serializes a date literal with the ref's type (ISO8601)" do
+      assert {:ok, "n.`dob` <> $p0", %{"p0" => "2000-01-01"}} =
+               Expr.translate(%NotEq{left: typed_ref(:dob, Ash.Type.Date), right: ~D[2000-01-01]}, acc())
+    end
+
     test "in serializes list elements with the ref's type" do
       assert {:ok, "n.`secret` IN $p0", %{"p0" => [a, b]}} =
                Expr.translate(

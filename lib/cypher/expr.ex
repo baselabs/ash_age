@@ -319,17 +319,33 @@ defmodule AshAge.Cypher.Expr do
   # (refs, exprs) translate via the normal operand path (the type only governs
   # bare values — a nested expr carries its own typing).
   defp typed_literal_operand(node, type, acc) do
-    case node do
-      %Ref{} ->
+    cond do
+      match?(%Ref{}, node) ->
         operand(node, acc)
 
-      value when is_binary(value) or is_integer(value) or is_float(value) or is_boolean(value) or is_nil(value) ->
-        alloc_param(acc, Cast.serialize_value(value, type))
+      literal_value?(node) ->
+        # Primitives + the calendar structs Ash uses for
+        # :date/:datetime/:naive_datetime/:time — all handled by
+        # Cast.serialize_value (binary → $age64$, dates → ISO8601). Without this
+        # a date literal in an atomic-expr equality fell to the catch-all reject
+        # even though Cast supports it (cross-vendor delta-6 finding).
+        alloc_param(acc, Cast.serialize_value(node, type))
 
-      _ ->
+      true ->
         operand(node, acc)
     end
   end
+
+  # Bare primitives plus the calendar structs Cast.serialize_value can encode.
+  defp literal_value?(v)
+       when is_binary(v) or is_integer(v) or is_float(v) or is_boolean(v) or is_nil(v),
+       do: true
+
+  defp literal_value?(%Date{}), do: true
+  defp literal_value?(%DateTime{}), do: true
+  defp literal_value?(%NaiveDateTime{}), do: true
+  defp literal_value?(%Time{}), do: true
+  defp literal_value?(_), do: false
 
   defp operand(node, acc) do
     case do_translate(node, acc) do

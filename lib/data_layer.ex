@@ -1285,33 +1285,45 @@ defmodule AshAge.DataLayer do
   end
 
   # The no-op read: `MATCH (n:L) WHERE <filter + tenant + PK> RETURN n`, decode,
-  # return — deduped by primary key so a same-tenant duplicate-PK anomaly (AGE
-  # enforces no uniqueness) turns one input into one record, not several (which
-  # would multi-fire after-action hooks). No SET, no write — only verifies which
-  # inputs match (filter + existence) so Ash can classify them (matching →
-  # success-unchanged, excluded/missing → stale).
+  # fail-closed on a duplicate-PK anomaly (AGE enforces no uniqueness — one input
+  # PK matching 2+ rows is an integrity violation). No SET, no write — only
+  # verifies which inputs match (filter + existence) so Ash can classify them
+  # (matching → success-unchanged, excluded/missing → stale).
   defp read_update_many_matches(query, resource) do
     {cypher, params} = AshAge.Query.to_cypher(query)
 
     case build_and_query(query.repo, query.graph, cypher, params, [{:n, :agtype}]) do
       {:ok, %{rows: rows}} ->
-        records = decode_records(resource, rows)
-        {:ok, dedup_by_pk(resource, records)}
+        fail_closed_on_duplicate_pk(resource, decode_records(resource, rows))
 
       {:error, error} ->
         {:error, QueryFailed.exception(query: "AGE update_many no-op read", reason: redact_db_error(error))}
     end
   end
 
-  # One record per primary-key value (last wins). AGE has no PK uniqueness, so a
-  # duplicate-PK-in-graph match returns 2+ rows for one input PK; returning all
-  # of them would multi-fire Ash's after-action/notification hooks for one input.
-  defp dedup_by_pk(resource, records) do
+  # Fail CLOSED on a duplicate-PK-in-graph anomaly: AGE enforces no PK
+  # uniqueness, so a bulk update/read by PK can match 2+ physical rows for one
+  # input PK. Deduping the RETURNED records would hide that the SET already wrote
+  # every match (silent multi-row corruption for one logical update) — so detect
+  # the cardinality violation and fail closed (the surrounding transaction rolls
+  # the write back). Consistent with the single-record reroute's guard. Returns
+  # `{:ok, records}` when every PK is distinct, `{:error, UpdateFailed}` otherwise.
+  defp fail_closed_on_duplicate_pk(resource, records) do
     pk_fields = Ash.Resource.Info.primary_key(resource)
+    counts = Enum.frequencies_by(records, &Map.take(&1, pk_fields))
 
-    records
-    |> Enum.reverse()
-    |> Enum.uniq_by(fn record -> Map.take(record, pk_fields) end)
+    case Enum.find(counts, fn {_pk, n} -> n > 1 end) do
+      nil ->
+        {:ok, records}
+
+      {_pk, n} ->
+        {:error,
+         UpdateFailed.exception(
+           resource: resource,
+           reason:
+             "update_many matched #{n} rows for one primary key (duplicate rows in graph?)"
+         )}
+    end
   end
 
   # Fail-closed translation of the group's changeset.filter into a pre-built
@@ -1544,15 +1556,15 @@ defmodule AshAge.DataLayer do
                "update matched #{length(decoded)} rows for one primary key (duplicate rows in graph?)"
            )}
         else
-          # Bulk path (or single-record with exactly one match). Dedup by primary
-          # key: AGE enforces no uniqueness, so a duplicate-PK-in-graph anomaly
-          # returns 2+ rows for one input PK — returning all would multi-fire
-          # Ash's after-action/notification hooks for one input. One record per
-          # input PK is the consistent bulk behavior (the single-record reroute
-          # fail-closes above because Ash's per-record wrapper requires exactly 1;
-          # bulk handles many). No-op for the normal distinct-PK case.
-          # (cross-vendor delta-5 finding: the no-op read deduped but this path did not.)
-          {:ok, dedup_by_pk(resource, decoded)}
+          # Bulk path (or single-record with exactly one match). Fail CLOSED on a
+          # duplicate-PK-in-graph anomaly: AGE enforces no uniqueness, so a bulk
+          # update by PK-IN can match 2+ physical rows for one input PK — and the
+          # SET has already written every match. Deduping the returned records
+          # would hide that multi-row write (silent corruption for one logical
+          # update); fail-closed surfaces it (the surrounding transaction rolls
+          # the write back). Consistent with the single-record guard above.
+          # (cross-vendor delta-6 finding: dedup masked the multi-row write.)
+          fail_closed_on_duplicate_pk(resource, decoded)
         end
 
       {:ok, _} ->
