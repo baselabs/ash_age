@@ -43,7 +43,7 @@ line up.
 ## Install
 
 ```elixir
-Mix.install([{:ash_age, "~> 1.0"}])
+Mix.install([{:ash_age, "~> 2.0"}])
 ```
 
 ## Register Postgrex types for AGE's `agtype`

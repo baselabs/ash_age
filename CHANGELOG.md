@@ -184,7 +184,7 @@ through the translator or AGE-verified semantics, deferred to a follow-up:
 - **Sorted+limited bulk updates picked arbitrary rows.** `update_cypher`/`delete_cypher`
   applied SKIP/LIMIT without the query's sort clauses. `ORDER BY` is now emitted
   before SKIP/LIMIT when a sort is present. Sort fields are backtick-quoted
-  (`n.`<field>`) and any `:desc*` direction (`:desc_nils_first`/`_last`) maps to
+  the field name is backtick-quoted, and any `:desc*` direction (`:desc_nils_first`/`_last`) maps to
   DESC — AGE has no NULLS FIRST/LAST syntax, so the prior `:desc`-only check
   selected the reversed slice, and a bare keyword field collided with the
   `count()` aggregate.
@@ -671,7 +671,8 @@ resources.
 - Parameterized Cypher queries for safe value interpolation
 - Query filtering with Ash filter translation
 
-[Unreleased]: https://github.com/baselabs/ash_age/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/baselabs/ash_age/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/baselabs/ash_age/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/baselabs/ash_age/compare/v0.2.6...v1.0.0
 [0.2.6]: https://github.com/baselabs/ash_age/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/baselabs/ash_age/compare/v0.2.4...v0.2.5
