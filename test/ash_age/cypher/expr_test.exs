@@ -166,7 +166,10 @@ defmodule AshAge.Cypher.ExprTest do
 
     test "not_eq serializes a date literal with the ref's type (ISO8601)" do
       assert {:ok, "n.`dob` <> $p0", %{"p0" => "2000-01-01"}} =
-               Expr.translate(%NotEq{left: typed_ref(:dob, Ash.Type.Date), right: ~D[2000-01-01]}, acc())
+               Expr.translate(
+                 %NotEq{left: typed_ref(:dob, Ash.Type.Date), right: ~D[2000-01-01]},
+                 acc()
+               )
     end
 
     test "in serializes list elements with the ref's type" do
@@ -275,7 +278,10 @@ defmodule AshAge.Cypher.ExprTest do
       cond = %IsNil{left: %Type{arguments: [inner, Ash.Type.Integer, []]}, right: true}
 
       assert {:ok, "n.`count`", %{}} =
-               Expr.translate(%If{arguments: [cond, %Error{arguments: [:required]}, inner]}, acc())
+               Expr.translate(
+                 %If{arguments: [cond, %Error{arguments: [:required]}, inner]},
+                 acc()
+               )
     end
 
     test "a bare Error node is REJECTED (never null)" do

@@ -222,7 +222,8 @@ defmodule AshAge.Query do
       if query.limit == nil and query.offset == nil do
         []
       else
-        ["WITH n"] ++ build_order_by(query.sort) ++ build_skip(query.offset) ++ build_limit(query.limit)
+        ["WITH n"] ++
+          build_order_by(query.sort) ++ build_skip(query.offset) ++ build_limit(query.limit)
       end
 
     # Group the (sliced) set by every PK field; if any key matches >1 vertex → dup.
@@ -287,9 +288,11 @@ defmodule AshAge.Query do
         # direction is DESC (`:desc_nils_first`/`:desc_nils_last` are descending
         # variants — AGE has no NULLS FIRST/LAST syntax, so map to DESC, NOT ASC).
         field = AshAge.Migration.validate_identifier!(field)
-        dir = if is_atom(direction) and String.starts_with?(to_string(direction), "desc"),
-               do: "DESC",
-               else: "ASC"
+
+        dir =
+          if is_atom(direction) and String.starts_with?(to_string(direction), "desc"),
+            do: "DESC",
+            else: "ASC"
 
         "n.`#{field}` #{dir}"
       end)

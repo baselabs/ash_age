@@ -244,7 +244,9 @@ defmodule AshAge.Integration.AtomicUpdateTest do
                  Ash.bulk_update(query, :update, %{}, atomic_update: %{count: plus(1)})
 
         go = Counter |> Ash.Query.for_read(:read) |> Ash.Query.filter(name == "go") |> Ash.read!()
-        stay = Counter |> Ash.Query.for_read(:read) |> Ash.Query.filter(name == "stay") |> Ash.read!()
+
+        stay =
+          Counter |> Ash.Query.for_read(:read) |> Ash.Query.filter(name == "stay") |> Ash.read!()
 
         assert length(go) == 3
         assert Enum.all?(go, &(&1.count == 11))
@@ -266,14 +268,18 @@ defmodule AshAge.Integration.AtomicUpdateTest do
         assert %Ash.BulkResult{status: :success, error_count: 0} =
                  Ash.bulk_update(query, :update, %{}, atomic_update: %{count: plus(1)})
 
-        ones = KeywordAttr |> Ash.Query.for_read(:read) |> Ash.Query.filter(count == 2) |> Ash.read!()
+        ones =
+          KeywordAttr |> Ash.Query.for_read(:read) |> Ash.Query.filter(count == 2) |> Ash.read!()
+
         assert length(ones) == 2
       end)
     end
 
     test "bulk update under tenant A increments only A's rows; B untouched (F5-equivalent)" do
       with_graph(:itest_atomic_bulk_tenant, fn ->
-        for _ <- 1..3, do: {:ok, _} = Ash.create(TenantCounter, %{count: 1, name: "go"}, tenant: "org-a")
+        for _ <- 1..3,
+            do: {:ok, _} = Ash.create(TenantCounter, %{count: 1, name: "go"}, tenant: "org-a")
+
         {:ok, _} = Ash.create(TenantCounter, %{count: 1, name: "go"}, tenant: "org-b")
         {:ok, b_other} = Ash.create(TenantCounter, %{count: 1, name: "go"}, tenant: "org-b")
 

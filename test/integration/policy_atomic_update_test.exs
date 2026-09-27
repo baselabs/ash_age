@@ -16,7 +16,8 @@ defmodule AshAge.Integration.PolicyAtomicUpdateTest do
   alias Ash.Query.Operator.Basic.Plus
   alias Ash.Query.Ref
 
-  defp count_plus(n), do: %Plus{left: %Ref{attribute: %{name: :count}, relationship_path: []}, right: n}
+  defp count_plus(n),
+    do: %Plus{left: %Ref{attribute: %{name: :count}, relationship_path: []}, right: n}
 
   defmodule PolicyWidget do
     use Ash.Resource,

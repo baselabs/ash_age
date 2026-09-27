@@ -1213,7 +1213,15 @@ defmodule AshAge.DataLayer do
 
   defp run_update_many_groups(groups, resource, graph, label, tenant, opts) do
     Enum.reduce_while(groups, {:ok, []}, fn {_group_key, group_changesets}, {:ok, acc_records} ->
-      case update_many_group(resource, graph, label, tenant, hd(group_changesets), group_changesets, opts) do
+      case update_many_group(
+             resource,
+             graph,
+             label,
+             tenant,
+             hd(group_changesets),
+             group_changesets,
+             opts
+           ) do
         # `:ok` arises from run_update_query whenever `return_records?` is false
         # (Ash does not request records for this batch) — continue with no records.
         :ok -> {:cont, {:ok, acc_records}}
@@ -1309,7 +1317,11 @@ defmodule AshAge.DataLayer do
         fail_closed_on_duplicate_pk(resource, decode_records(resource, rows))
 
       {:error, error} ->
-        {:error, QueryFailed.exception(query: "AGE update_many no-op read", reason: redact_db_error(error))}
+        {:error,
+         QueryFailed.exception(
+           query: "AGE update_many no-op read",
+           reason: redact_db_error(error)
+         )}
     end
   end
 
@@ -1332,8 +1344,7 @@ defmodule AshAge.DataLayer do
         {:error,
          UpdateFailed.exception(
            resource: resource,
-           reason:
-             "update_many matched #{n} rows for one primary key (duplicate rows in graph?)"
+           reason: "update_many matched #{n} rows for one primary key (duplicate rows in graph?)"
          )}
     end
   end
@@ -1444,7 +1455,11 @@ defmodule AshAge.DataLayer do
       %{query | filters: query.filters ++ ["n.`#{key}` IN #{param}"]}
     else
       {disjuncts, query} =
-        Enum.map_reduce(group_changesets, query, &composite_pk_conjuncts(&1, &2, pk_fields, types))
+        Enum.map_reduce(
+          group_changesets,
+          query,
+          &composite_pk_conjuncts(&1, &2, pk_fields, types)
+        )
 
       %{query | filters: query.filters ++ ["(" <> Enum.join(disjuncts, " OR ") <> ")"]}
     end
@@ -1457,7 +1472,10 @@ defmodule AshAge.DataLayer do
     {conjuncts, query} =
       Enum.map_reduce(pk_fields, query, fn field, q2 ->
         type = Map.get(types, field)
-        {q2, param} = AshAge.Query.add_param(q2, Cast.serialize_value(pk_value(changeset, field), type))
+
+        {q2, param} =
+          AshAge.Query.add_param(q2, Cast.serialize_value(pk_value(changeset, field), type))
+
         key = field |> to_string() |> AshAge.Migration.validate_identifier!()
         {"n.`#{key}` = #{param}", q2}
       end)
@@ -1574,7 +1592,16 @@ defmodule AshAge.DataLayer do
     # isolation or external dedup. Ash-managed creates enforce UUID uniqueness, so
     # duplicates only arise from external corruption.
     with :ok <- precheck_no_duplicate_pk(query, label, pk_fields, resource) do
-      run_update_set(query, label, set_str, changed_attrs, atomic_params, resource, return_records?, single_record?)
+      run_update_set(
+        query,
+        label,
+        set_str,
+        changed_attrs,
+        atomic_params,
+        resource,
+        return_records?,
+        single_record?
+      )
     end
   end
 
@@ -1594,7 +1621,8 @@ defmodule AshAge.DataLayer do
          )}
 
       {:error, error} ->
-        {:error, QueryFailed.exception(query: "AGE duplicate-PK precheck", reason: redact_db_error(error))}
+        {:error,
+         QueryFailed.exception(query: "AGE duplicate-PK precheck", reason: redact_db_error(error))}
     end
   end
 

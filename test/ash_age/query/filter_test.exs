@@ -123,7 +123,14 @@ defmodule AshAge.Query.FilterTest do
       # Ash attaches `if policy_filter do true else error(...) end` to an atomic
       # update's query under a filter-producing policy (can.ex). In a WHERE that
       # IS the policy_filter (excluded rows are denied). Strip the wrapper.
-      wrapper = %If{arguments: [%Eq{left: ref(:org_id), right: "org-a"}, true, %Error{arguments: [:forbidden]}]}
+      wrapper = %If{
+        arguments: [
+          %Eq{left: ref(:org_id), right: "org-a"},
+          true,
+          %Error{arguments: [:forbidden]}
+        ]
+      }
+
       {:ok, _, clause} = Filter.translate(wrapper, q())
       assert clause == "n.`org_id` = $param1"
     end

@@ -72,84 +72,96 @@ defmodule AshAge.Integration.KeysetPaginationTest do
   defp keyset_of(record), do: record.__metadata__[:keyset]
 
   test "keyset pagination walks the full set in sort order via page: [after: ...]" do
-    with_graph("itest_keyset", fn ->
-      insert_all()
-      page_size = 2
+    with_graph(
+      "itest_keyset",
+      fn ->
+        insert_all()
+        page_size = 2
 
-      first =
-        Ranked
-        |> Ash.Query.sort(rank: :asc)
-        |> Ash.read!(page: [limit: page_size])
+        first =
+          Ranked
+          |> Ash.Query.sort(rank: :asc)
+          |> Ash.read!(page: [limit: page_size])
 
-      assert %Ash.Page.Keyset{} = first
-      assert ranks(first) == Enum.take(@ranks_sorted_asc, page_size)
-      assert first.more? == true
-      # The rewrite branch attaches keysets in metadata even without can?(:keyset).
-      assert Enum.all?(first.results, &(keyset_of(&1) != nil))
+        assert %Ash.Page.Keyset{} = first
+        assert ranks(first) == Enum.take(@ranks_sorted_asc, page_size)
+        assert first.more? == true
+        # The rewrite branch attaches keysets in metadata even without can?(:keyset).
+        assert Enum.all?(first.results, &(keyset_of(&1) != nil))
 
-      second =
-        Ranked
-        |> Ash.Query.sort(rank: :asc)
-        |> Ash.read!(page: [limit: page_size, after: keyset_of(List.last(first.results))])
+        second =
+          Ranked
+          |> Ash.Query.sort(rank: :asc)
+          |> Ash.read!(page: [limit: page_size, after: keyset_of(List.last(first.results))])
 
-      assert ranks(second) == Enum.drop(@ranks_sorted_asc, page_size) |> Enum.take(page_size)
-      assert second.more? == true
+        assert ranks(second) == Enum.drop(@ranks_sorted_asc, page_size) |> Enum.take(page_size)
+        assert second.more? == true
 
-      third =
-        Ranked
-        |> Ash.Query.sort(rank: :asc)
-        |> Ash.read!(page: [limit: page_size, after: keyset_of(List.last(second.results))])
+        third =
+          Ranked
+          |> Ash.Query.sort(rank: :asc)
+          |> Ash.read!(page: [limit: page_size, after: keyset_of(List.last(second.results))])
 
-      # Final page is the remainder and signals no more rows.
-      assert ranks(third) == [@ranks_sorted_asc |> List.last()]
-      assert third.more? == false
+        # Final page is the remainder and signals no more rows.
+        assert ranks(third) == [@ranks_sorted_asc |> List.last()]
+        assert third.more? == false
 
-      # Reassembling pages yields the complete set, in order, with no loss/dup.
-      all = first.results ++ second.results ++ third.results
-      assert ranks(%{results: all}) == @ranks_sorted_asc
-      assert length(Enum.uniq(all)) == length(@ranks_in_insertion_order)
-    end, vlabels: ["Ranked"])
+        # Reassembling pages yields the complete set, in order, with no loss/dup.
+        all = first.results ++ second.results ++ third.results
+        assert ranks(%{results: all}) == @ranks_sorted_asc
+        assert length(Enum.uniq(all)) == length(@ranks_in_insertion_order)
+      end,
+      vlabels: ["Ranked"]
+    )
   end
 
   test "page: [before: ...] walks backward in reverse sort order" do
-    with_graph("itest_keyset", fn ->
-      insert_all()
+    with_graph(
+      "itest_keyset",
+      fn ->
+        insert_all()
 
-      # Walk forward to the last record, then use its keyset with :before to
-      # pull the prior page. :before inverts the sort and the operator, so the
-      # returned page is reversed back to ascending presentation order.
-      [_r1, _r2, _r3, _r4, last] =
-        Ranked
-        |> Ash.Query.sort(rank: :asc)
-        |> Ash.read!(page: [limit: 5])
-        |> Map.get(:results)
+        # Walk forward to the last record, then use its keyset with :before to
+        # pull the prior page. :before inverts the sort and the operator, so the
+        # returned page is reversed back to ascending presentation order.
+        [_r1, _r2, _r3, _r4, last] =
+          Ranked
+          |> Ash.Query.sort(rank: :asc)
+          |> Ash.read!(page: [limit: 5])
+          |> Map.get(:results)
 
-      page =
-        Ranked
-        |> Ash.Query.sort(rank: :asc)
-        |> Ash.read!(page: [limit: 2, before: keyset_of(last)])
+        page =
+          Ranked
+          |> Ash.Query.sort(rank: :asc)
+          |> Ash.read!(page: [limit: 2, before: keyset_of(last)])
 
-      assert ranks(page) == [3, 4]
-    end, vlabels: ["Ranked"])
+        assert ranks(page) == [3, 4]
+      end,
+      vlabels: ["Ranked"]
+    )
   end
 
   test "explicit desc sort drives the keyset ordering and operator inversion" do
-    with_graph("itest_keyset", fn ->
-      insert_all()
+    with_graph(
+      "itest_keyset",
+      fn ->
+        insert_all()
 
-      page =
-        Ranked
-        |> Ash.Query.sort(rank: :desc)
-        |> Ash.read!(page: [limit: 2])
+        page =
+          Ranked
+          |> Ash.Query.sort(rank: :desc)
+          |> Ash.read!(page: [limit: 2])
 
-      assert ranks(page) == Enum.take(@ranks_sorted_desc, 2)
+        assert ranks(page) == Enum.take(@ranks_sorted_desc, 2)
 
-      next =
-        Ranked
-        |> Ash.Query.sort(rank: :desc)
-        |> Ash.read!(page: [limit: 2, after: keyset_of(List.last(page.results))])
+        next =
+          Ranked
+          |> Ash.Query.sort(rank: :desc)
+          |> Ash.read!(page: [limit: 2, after: keyset_of(List.last(page.results))])
 
-      assert ranks(next) == Enum.drop(@ranks_sorted_desc, 2) |> Enum.take(2)
-    end, vlabels: ["Ranked"])
+        assert ranks(next) == Enum.drop(@ranks_sorted_desc, 2) |> Enum.take(2)
+      end,
+      vlabels: ["Ranked"]
+    )
   end
 end
