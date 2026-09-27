@@ -103,6 +103,8 @@ live AGE database. `test_helper.exs` starts the test Repo (and sets `Sandbox` `:
 mode) only when that variable is set; otherwise the pure-unit suite runs with no database.
 CI provides AGE and sets `AGE_DATABASE_URL`. Locally, run against an AGE container mapped
 to a free host port, e.g. `AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test`.
+When a shared AGE server already runs, `AGE_DATABASE_URL` sits in the gitignored `.env`;
+load it with `set -a; . ./.env; set +a` before `mix test`.
 
 **Async tests:** All AGE integration tests MUST use `async: false` — AGE doesn't support concurrent transactions.
 
