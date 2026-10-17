@@ -73,6 +73,12 @@ defmodule AshAge.Changes.CreateEdge do
     end)
   end
 
+  # No destination IDs (an optional edge whose argument was not supplied):
+  # nothing to write — skip graph resolution AND tenant parsing entirely, so a
+  # destination-resource parse fn never runs for an edge that isn't happening.
+  # Same shape create_all/8 returns for an empty list ({:ok, record}).
+  defp write_edges(_changeset, record, _resource, _edge, [], _props), do: {:ok, record}
+
   defp write_edges(changeset, record, resource, edge, dest_ids, props) do
     case DataLayer.write_graph(resource, changeset) do
       {:ok, graph} ->

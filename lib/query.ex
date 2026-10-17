@@ -161,9 +161,11 @@ defmodule AshAge.Query do
   (plain attributes + translated atomics) to every record the query matches.
 
   Mirrors `delete_cypher/2`, replacing `DETACH DELETE n` with `SET <clauses> RETURN n`.
-  Scoping source is `build_where(query)` — the `:attribute` tenant predicate arrives
-  in `query.expression` via Ash's `handle_attribute_multitenancy` (NOT `changeset.filter`,
-  which Ash nils into `query.filter` before the data layer runs — adversarial Challenge 1).
+  Scoping source is `build_where(query)`. Ash's `:attribute` tenant predicate and
+  bulk filters arrive through the data layer's `filter/3` callback (fail-closed
+  into `query.filters`), NOT `query.expression` — that field carries only
+  hand-built filters and is eagerly validated (`validate_expression`) before
+  any query runs.
   LIMIT/SKIP honored via the same `WITH n` pass-through as destroy_query.
   `RETURN n` so updated records can be decoded when `return_records?` is set.
   """

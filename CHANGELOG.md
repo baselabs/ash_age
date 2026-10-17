@@ -27,7 +27,11 @@ order) now have mutation-proven tests.
   `Cast.storage_class/2`), `%Ash.CiString{}` values, and column-to-column
   forms all fail closed with `UnsupportedFilter`: Cypher has no
   case-insensitive form, and silently downcasting would return wrong rows.
-  The atomic-update translator rejects the same shapes (shared guard).
+  The atomic-update translator rejects the same shapes on its direct
+  attribute-ref path (ci attributes incl. NewType wrappers, `CiString` values,
+  and column-to-column forms); a `:ci_string` attribute wrapped inside ANOTHER
+  expression in an atomic is not type-tracked there — avoid ci attributes in
+  atomics.
 - **`AshAge.Migration.identifier?/1` is public**: the single identifier-shape
   predicate the transformers/verifiers share with the runtime
   `validate_identifier!/1`.

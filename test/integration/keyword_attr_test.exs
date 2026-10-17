@@ -192,6 +192,24 @@ defmodule AshAge.Integration.KeywordAttrTest do
     end)
   end
 
+  test "upsert matches through a keyword-named PK (the UPDATE branch of do_upsert)" do
+    with_graph("itest_kw", fn ->
+      seed()
+
+      # UPDATE branch: the PK (count: 1) already exists — upsert's existence
+      # MATCH must quote `count` for the keyword PK.
+      assert {:ok, updated} =
+               Item
+               |> Ash.Changeset.for_create(:create, %{count: 1, label: "uno", sum: 11})
+               |> Ash.create(upsert?: true)
+
+      assert updated.label == "uno"
+      assert updated.sum == 11
+      # One row for that PK, not two.
+      assert [%{sum: 11}] = Item |> Ash.Query.filter(count == 1) |> Ash.read!()
+    end)
+  end
+
   defp kin_counts(pk) do
     Item
     |> Ash.Query.filter(count == ^pk)

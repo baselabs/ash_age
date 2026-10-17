@@ -1468,7 +1468,8 @@ defmodule AshAge.DataLayer do
   # value-free, like every span.
   defp rejected_span(op, resource, error) do
     Telemetry.span(op, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      {error, %{result: Telemetry.result_tag(error), rls?: rls?(resource)}}
+      # rls? is FALSE: rejection happens BEFORE with_rls — no GUC transaction ran.
+      {error, %{result: Telemetry.result_tag(error), rls?: false}}
     end)
   end
 

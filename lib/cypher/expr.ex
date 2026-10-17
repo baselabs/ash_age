@@ -243,6 +243,15 @@ defmodule AshAge.Cypher.Expr do
   }
 
   defp do_translate(
+         %mod{arguments: [%Ref{relationship_path: [], attribute: _attr}, %Ref{}]},
+         _acc
+       )
+       when mod in [StringStartsWith, StringEndsWith, Contains] do
+    # Column-to-column string predicates share the filter path's rejection.
+    {:error, unsupported(mod, "column-to-column string predicates are not supported")}
+  end
+
+  defp do_translate(
          %mod{arguments: [%Ref{relationship_path: [], attribute: attr}, value]},
          acc
        )

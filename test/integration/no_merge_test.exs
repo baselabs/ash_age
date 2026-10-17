@@ -29,13 +29,17 @@ defmodule AshAge.Integration.NoMergeTest do
       attribute(:name, :string, public?: true)
     end
 
+    identities do
+      identity(:unique_name, [:name])
+    end
+
     actions do
       default_accept([:name])
       defaults([:read, :create, :update, :destroy])
     end
   end
 
-  test "no executed statement for create/read/update/bulk/upsert/edge/destroy contains MERGE" do
+  test "no executed statement for create/read/update/bulk/upsert/destroy contains MERGE" do
     queries =
       capture_sql(fn ->
         with_graph(
@@ -55,11 +59,15 @@ defmodule AshAge.Integration.NoMergeTest do
                      )
 
             # The upsert path — where MERGE is the natural temptation — runs the
-            # two-statement existence MATCH instead (upsert by :name).
-            assert {:ok, _upserted} =
+            # two-statement existence MATCH instead. Keyed on the :unique_name
+            # identity so the EXISTING record ("b", from the update above) is
+            # matched: the UPDATE branch of the upsert runs, not just CREATE.
+            assert {:ok, upserted} =
                      Widget
                      |> Ash.Changeset.for_create(:create, %{name: "b"})
-                     |> Ash.create(upsert?: true, upsert_fields: [:name])
+                     |> Ash.create(upsert?: true, upsert_identity: :unique_name)
+
+            assert upserted.id == w.id
 
             assert :ok = Ash.destroy(w)
           end,

@@ -125,6 +125,19 @@ defmodule AshAge.ErrorsTest do
       assert msg =~ "{:error, database error (redacted)}"
     end
 
+    test "driver return tuples of ANY arity redact element-wise" do
+      error =
+        QueryFailed.exception(
+          query: "AGE read query",
+          reason: {:error, :insert, %Postgrex.Error{postgres: %{message: "SECRET-tuple"}}, %{}}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-tuple"
+      assert msg =~ "{:error, :insert, database error (redacted)"
+    end
+
     test "%Jason.EncodeError{} redacts (its message can carry the offending bytes)" do
       error =
         QueryFailed.exception(

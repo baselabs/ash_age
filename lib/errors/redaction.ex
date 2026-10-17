@@ -12,9 +12,12 @@ defmodule AshAge.Errors.Redaction do
   def safe_inspect(%{postgres: _}), do: "database error (redacted)"
   def safe_inspect(%Jason.EncodeError{}), do: "value not JSON-encodable (redacted)"
 
-  # Wrapped shapes (a repo transaction's {:error, reason}, nested lists).
-  def safe_inspect({:error, inner}), do: "{:error, #{safe_inspect(inner)}}"
-  def safe_inspect({a, inner}) when is_atom(a), do: "{#{inspect(a)}, #{safe_inspect(inner)}}"
+  # Wrapped shapes (a repo transaction's {:error, reason}, driver return tuples
+  # of any arity, nested lists) — recurse element-wise.
+  def safe_inspect(tuple) when is_tuple(tuple) do
+    "{" <> Enum.map_join(Tuple.to_list(tuple), ", ", &safe_inspect/1) <> "}"
+  end
+
   def safe_inspect(list) when is_list(list), do: inspect(Enum.map(list, &label/1))
 
   # Any other struct (DBConnection errors, driver exceptions): its message/

@@ -176,7 +176,10 @@ defmodule AshAge do
   - **Errors propagate raw** (this uses `SQL.query!`); it does not redact DB errors,
     unlike the data layer's internal path and unlike `cypher/5` itself (which wraps
     DB and encode failures in a redacted `QueryFailed`). The caller owns error
-    handling for this wrapper's own `set_config` queries.
+    handling for this wrapper's own `set_config` queries. Note the return
+    ambiguity: a fun that ROLLED BACK makes this wrapper return `{:error, reason}`,
+    indistinguishable from a fun that merely RETURNED `{:error, reason}` — match
+    accordingly.
   """
   @spec with_tenant_rls(module(), String.t(), term(), (-> result)) ::
           result | {:error, term()}

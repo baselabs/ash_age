@@ -42,18 +42,7 @@ defmodule AshAge.Changes.DestroyEdge do
       edge = EdgeCypher.fetch_edge!(resource, Keyword.fetch!(opts, :edge))
       dest_ids = List.wrap(Ash.Changeset.get_argument(changeset, Keyword.fetch!(opts, :to)))
 
-      result =
-        case DataLayer.write_graph(resource, changeset) do
-          {:ok, graph} ->
-            tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
-            src_key = EdgeCypher.source_key(resource, record)
-            dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
-            destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
-
-          {:error, :tenant_required} ->
-            {:error,
-             InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
-        end
+      result = destroy_with_targets(changeset, record, resource, edge, dest_ids)
 
       {result,
        %{
@@ -131,5 +120,24 @@ defmodule AshAge.Changes.DestroyEdge do
       "MATCH #{pattern} WHERE #{src_where} AND b.`#{dest_pk}` = $dst#{tenant_where} DELETE r RETURN r"
 
     {cypher, src_params |> Map.put("dst", dest_id) |> Map.merge(tenant_params)}
+  end
+
+  # No targets (an optional edge whose argument was not supplied): skip graph
+  # resolution AND tenant parsing entirely, so a destination-resource parse fn
+  # never runs for an edge that isn't happening.
+  defp destroy_with_targets(_changeset, _record, _resource, _edge, []), do: :ok
+
+  defp destroy_with_targets(changeset, record, resource, edge, dest_ids) do
+    case DataLayer.write_graph(resource, changeset) do
+      {:ok, graph} ->
+        tenant = EdgeCypher.tenant_spec(resource, edge, changeset)
+        src_key = EdgeCypher.source_key(resource, record)
+        dest_ids = EdgeCypher.serialize_destination_ids(edge.destination, dest_ids)
+        destroy_all(record, dest_ids, resource, edge, graph, src_key, tenant)
+
+      {:error, :tenant_required} ->
+        {:error,
+         InvalidRelationship.exception(relationship: edge.name, message: "tenant required")}
+    end
   end
 end
