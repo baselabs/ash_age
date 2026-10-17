@@ -77,23 +77,23 @@ defmodule AshAge.DataLayerTest do
   describe "pk_match_clause/2" do
     test "single :id key is byte-identical to the legacy hardcoded clause (backward compat)" do
       assert DataLayer.pk_match_clause([{:id, "u1"}], %{}) ==
-               {"n.id = $match_id", %{"match_id" => "u1"}}
+               {"n.`id` = $match_id", %{"match_id" => "u1"}}
     end
 
     test "single non-:id key derives the predicate from the actual key name" do
       assert DataLayer.pk_match_clause([{:code, "abc"}], %{}) ==
-               {"n.code = $match_code", %{"match_code" => "abc"}}
+               {"n.`code` = $match_code", %{"match_code" => "abc"}}
     end
 
     test "composite key ANDs both predicates with distinct params, declaration order preserved" do
       assert DataLayer.pk_match_clause([{:tenant_id, "t1"}, {:id, "u1"}], %{}) ==
-               {"n.tenant_id = $match_tenant_id AND n.id = $match_id",
+               {"n.`tenant_id` = $match_tenant_id AND n.`id` = $match_id",
                 %{"match_tenant_id" => "t1", "match_id" => "u1"}}
     end
 
     test "renames the match param when it would collide with a reserved (changed-attr) key" do
       assert DataLayer.pk_match_clause([{:id, "u1"}], %{"match_id" => "changed"}) ==
-               {"n.id = $match_id_", %{"match_id_" => "u1"}}
+               {"n.`id` = $match_id_", %{"match_id_" => "u1"}}
     end
 
     test "rejects a primary-key field that is not a valid AGE identifier (injection guard)" do

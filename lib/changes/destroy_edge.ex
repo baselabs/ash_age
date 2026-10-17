@@ -128,7 +128,7 @@ defmodule AshAge.Changes.DestroyEdge do
       end
 
     cypher =
-      "MATCH #{pattern} WHERE #{src_where} AND b.#{dest_pk} = $dst#{tenant_where} DELETE r RETURN r"
+      "MATCH #{pattern} WHERE #{src_where} AND b.`#{dest_pk}` = $dst#{tenant_where} DELETE r RETURN r"
 
     {cypher, src_params |> Map.put("dst", dest_id) |> Map.merge(tenant_params)}
   end

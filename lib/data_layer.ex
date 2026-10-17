@@ -1843,7 +1843,7 @@ defmodule AshAge.DataLayer do
         key = field |> to_string() |> AshAge.Migration.validate_identifier!()
         param = unique_key(taken, "match_#{key}")
 
-        {["n.#{key} = $#{param}" | clauses], Map.put(params, param, value),
+        {["n.`#{key}` = $#{param}" | clauses], Map.put(params, param, value),
          Map.put(taken, param, value)}
       end)
 
@@ -2088,7 +2088,7 @@ defmodule AshAge.DataLayer do
     set_clause =
       Enum.map_join(keys, ", ", fn key ->
         key = AshAge.Migration.validate_identifier!(key)
-        "n.#{key} = row.#{key}"
+        "n.`#{key}` = row.`#{key}`"
       end)
 
     cypher =

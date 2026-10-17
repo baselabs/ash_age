@@ -27,11 +27,18 @@ defmodule AshAge.Query.AggregateTest do
     end
 
     test "valid field names render the parameterized RETURN expr (no value interpolation)" do
+      # Property refs are backtick-quoted: a field named with a Cypher keyword
+      # (`count`, `sum`) mis-parses in AGE as a bare ref — same class as the
+      # filter/SET sides fixed in 2.0.0 (prop_ref / set_clauses / Expr).
       assert Aggregate.expr({:count, nil, []}) == "count(n)"
-      assert Aggregate.expr({:sum, :amount, []}) == "sum(n.amount)"
-      assert Aggregate.expr({:max, "score", []}) == "max(n.score)"
-      assert Aggregate.expr({:count, :email, [uniq?: true]}) == "count(DISTINCT n.email)"
+      assert Aggregate.expr({:sum, :amount, []}) == "sum(n.`amount`)"
+      assert Aggregate.expr({:max, "score", []}) == "max(n.`score`)"
+      assert Aggregate.expr({:count, :email, [uniq?: true]}) == "count(DISTINCT n.`email`)"
       assert Aggregate.expr({:exists, nil, []}) == "count(n)"
+
+      # Cypher-keyword field names themselves
+      assert Aggregate.expr({:count, :count, []}) == "count(n.`count`)"
+      assert Aggregate.expr({:sum, :sum, []}) == "sum(n.`sum`)"
     end
   end
 

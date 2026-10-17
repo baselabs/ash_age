@@ -89,7 +89,7 @@ defmodule AshAge.Changes.EdgeCypher do
       Enum.reduce(src_key, {[], %{}}, fn {field, value}, {clauses, params} ->
         field = Migration.validate_identifier!(field)
         key = "src_#{field}"
-        {["a.#{field} = $#{key}" | clauses], Map.put(params, key, value)}
+        {["a.`#{field}` = $#{key}" | clauses], Map.put(params, key, value)}
       end)
 
     {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
@@ -116,8 +116,12 @@ defmodule AshAge.Changes.EdgeCypher do
     src_attr = src_attr |> to_string() |> Migration.validate_identifier!()
     dest = if dest_attr, do: dest_attr |> to_string() |> Migration.validate_identifier!()
 
+    # Endpoint refs are backtick-quoted: a tenant discriminator named with a
+    # Cypher keyword (`count`, `label`) must not emit a bare ref (AGE syntax
+    # error), same discipline as Filter.prop_ref.
     clause =
-      " AND a.#{src_attr} = $tenant" <> if(dest, do: " AND b.#{dest} = $tenant", else: "")
+      " AND a.`#{src_attr}` = $tenant" <>
+        if(dest, do: " AND b.`#{dest}` = $tenant", else: "")
 
     {clause, %{"tenant" => value}}
   end

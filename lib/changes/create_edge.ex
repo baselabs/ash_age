@@ -151,7 +151,7 @@ defmodule AshAge.Changes.CreateEdge do
     # (EdgeCypher.serialize_destination_ids/2, hoisted out of the per-dest loop).
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
-    dest_where = "b.#{dest_pk} = $dst"
+    dest_where = "b.`#{dest_pk}` = $dst"
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
     {prop_set, prop_params} = property_set(props)
 
@@ -237,7 +237,7 @@ defmodule AshAge.Changes.CreateEdge do
       Enum.reduce(props, {[], %{}}, fn {key, value}, {clauses, params} ->
         key = key |> to_string() |> Migration.validate_identifier!()
         pkey = "prop_#{key}"
-        {["e.#{key} = $#{pkey}" | clauses], Map.put(params, pkey, value)}
+        {["e.`#{key}` = $#{pkey}" | clauses], Map.put(params, pkey, value)}
       end)
 
     {" SET " <> (clauses |> Enum.reverse() |> Enum.join(", ")), params}

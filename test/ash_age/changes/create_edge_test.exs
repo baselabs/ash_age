@@ -74,9 +74,9 @@ defmodule AshAge.Changes.CreateEdgeTest do
       CreateEdge.build_create(Src, @edge, %{"id" => "src-1"}, "dst-1", %{weight: 5}, nil)
 
     assert cypher =~ "MATCH (a:Src), (b:Src)"
-    assert cypher =~ "a.id = $src_id AND b.id = $dst"
+    assert cypher =~ "a.`id` = $src_id AND b.`id` = $dst"
     assert cypher =~ "CREATE (a)-[e:RELATES]->(b)"
-    assert cypher =~ "SET e.weight = $prop_weight"
+    assert cypher =~ "SET e.`weight` = $prop_weight"
     assert cypher =~ "RETURN e"
     refute cypher =~ "tenant"
     assert params == %{"src_id" => "src-1", "dst" => "dst-1", "prop_weight" => 5}
@@ -99,7 +99,7 @@ defmodule AshAge.Changes.CreateEdgeTest do
     {cypher, params} =
       CreateEdge.build_create(Src, @edge, %{"id" => "s"}, "d", %{}, {:org_id, :org_id, "t1"})
 
-    assert cypher =~ "a.org_id = $tenant AND b.org_id = $tenant"
+    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $tenant"
     assert params["tenant"] == "t1"
   end
 

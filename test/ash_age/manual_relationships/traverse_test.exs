@@ -33,8 +33,8 @@ defmodule AshAge.ManualRelationships.TraverseTest do
 
     assert cypher =~ "UNWIND $ids AS sid"
     assert cypher =~ "MATCH (a:Node)-[:LINK*1..3]->(b:Node)"
-    assert cypher =~ "WHERE a.id = sid.id"
-    assert cypher =~ "RETURN a.id AS s1, b"
+    assert cypher =~ "WHERE a.`id` = sid.`id`"
+    assert cypher =~ "RETURN a.`id` AS s1, b"
     # No SQL DISTINCT — per-path rows are returned so row_count is pre-dedup (§5.4).
     refute cypher =~ "DISTINCT"
     # never-interpolate: the id VALUE lives only in params, referenced as $ids.
@@ -64,8 +64,8 @@ defmodule AshAge.ManualRelationships.TraverseTest do
         base_spec(%{src_pkey: [:org_id, :node_id], ids: [%{"org_id" => "o", "node_id" => "n"}]})
       )
 
-    assert cypher =~ "WHERE a.org_id = sid.org_id AND a.node_id = sid.node_id"
-    assert cypher =~ "RETURN a.org_id AS s1, a.node_id AS s2, b"
+    assert cypher =~ "WHERE a.`org_id` = sid.`org_id` AND a.`node_id` = sid.`node_id`"
+    assert cypher =~ "RETURN a.`org_id` AS s1, a.`node_id` AS s2, b"
     assert params == %{"ids" => [%{"org_id" => "o", "node_id" => "n"}]}
   end
 
@@ -94,11 +94,11 @@ defmodule AshAge.ManualRelationships.TraverseTest do
     assert cypher =~ "MATCH (a:Node)-[:LINK]->(b:Node)"
     # L2: one unlabeled intermediate, all three nodes scoped.
     assert cypher =~ "MATCH (a:Node)-[:LINK]->(m1)-[:LINK]->(b:Node)"
-    assert cypher =~ "a.tenant_id = $tenant"
-    assert cypher =~ "m1.tenant_id = $tenant"
-    assert cypher =~ "b.tenant_id = $tenant"
-    assert cypher =~ "WHERE a.id = sid.id AND"
-    assert cypher =~ "RETURN a.id AS s1, b"
+    assert cypher =~ "a.`tenant_id` = $tenant"
+    assert cypher =~ "m1.`tenant_id` = $tenant"
+    assert cypher =~ "b.`tenant_id` = $tenant"
+    assert cypher =~ "WHERE a.`id` = sid.`id` AND"
+    assert cypher =~ "RETURN a.`id` AS s1, b"
     assert params == %{"ids" => [%{"id" => "a"}], "tenant" => "t-1"}
   end
 
