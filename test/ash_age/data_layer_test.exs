@@ -285,4 +285,27 @@ defmodule AshAge.DataLayerTest do
       assert Info.sensitive(NoRlsResource) == []
     end
   end
+
+  describe "run_query/2 fails closed on an untranslatable expression (no silent drop)" do
+    test "an expression Ash's build gate never sees is rejected, not silently dropped" do
+      # build_where's catch-all used to DROP an untranslatable query.expression,
+      # broadening the read (audit finding: the update path eagerly fails closed
+      # via scope_to_filter; the read path must too). Ash.Filter.Ago is not an
+      # operator this layer can ever translate.
+      query = %Query{
+        resource: NoRlsResource,
+        graph: :data_layer_no_rls,
+        label: :NoRls,
+        repo: AshAge.TestRepo,
+        params: %{},
+        expression: %Ash.Filter{
+          resource: NoRlsResource,
+          expression: %Ash.Query.Function.Ago{arguments: [1, :year]}
+        }
+      }
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.run_query(query, NoRlsResource)
+    end
+  end
 end

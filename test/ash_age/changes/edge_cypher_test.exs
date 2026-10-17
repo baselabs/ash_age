@@ -40,4 +40,63 @@ defmodule AshAge.Changes.EdgeCypherTest do
       assert params == %{"tenant" => "t1"}
     end
   end
+
+  describe "tenant_spec/3 applies the source resource's parse_attribute (vertex-path parity)" do
+    defmodule ParseTenant do
+      def parse("org-" <> org), do: org
+    end
+
+    defmodule TenantSrc do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:edge_cypher_tenant_src)
+        repo(AshAge.TestRepo)
+        label(:Src)
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+        attribute(:org, :string, public?: true)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org)
+        parse_attribute({ParseTenant, :parse, []})
+      end
+
+      actions do
+        defaults([:create])
+      end
+    end
+
+    @tenant_edge %AshAge.Edge{
+      name: :rel,
+      label: :REL,
+      direction: :outgoing,
+      destination: TenantSrc,
+      properties: []
+    }
+
+    test "the scoped $tenant value is the PARSED tenant, not the raw to_tenant" do
+      changeset =
+        TenantSrc
+        |> Ash.Changeset.for_create(:create, %{})
+        |> Ash.Changeset.set_tenant("org-acme")
+
+      {_src_attr, _dest_attr, value} = EdgeCypher.tenant_spec(TenantSrc, @tenant_edge, changeset)
+
+      assert value == "acme"
+    end
+
+    test "a non-:attribute resource takes no tenant spec" do
+      changeset = Ash.Changeset.new(AshAge.DataLayerTest.NoRlsResource)
+
+      refute EdgeCypher.tenant_spec(AshAge.DataLayerTest.NoRlsResource, @tenant_edge, changeset)
+    end
+  end
 end

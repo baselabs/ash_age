@@ -182,13 +182,20 @@ defmodule AshAge do
   def with_tenant_rls(repo, guc, tenant, fun) when is_function(fun, 0) do
     _ = AshAge.Migration.validate_guc!(guc)
 
-    {:ok, result} =
-      repo.transaction(fn ->
-        SQL.query!(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)])
-        fun.()
-      end)
+    case repo.transaction(fn ->
+           SQL.query!(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)])
+           fun.()
+         end) do
+      {:ok, result} ->
+        result
 
-    result
+      # A fun that calls `repo.rollback/1`: surface its reason (the documented
+      # "errors propagate raw" contract) instead of crashing with a MatchError
+      # that discards it. Raises inside the fun re-raise through the repo
+      # transaction untouched.
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc false

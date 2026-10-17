@@ -69,4 +69,42 @@ defmodule AshAge.ErrorsTest do
       assert reason == "database error"
     end
   end
+
+  describe "error message structural redaction (a raw driver error never inspects through message/1)" do
+    test "QueryFailed.message/1 redacts a %Postgrex.Error{} reason" do
+      error =
+        AshAge.Errors.QueryFailed.exception(
+          query: "AGE read query",
+          reason: %Postgrex.Error{postgres: %{code: "42601", message: "SECRET-sql-detail"}}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-sql-detail"
+      assert msg =~ "database error"
+    end
+
+    test "QueryFailed.message/1 still shows an already-redacted binary reason" do
+      error =
+        AshAge.Errors.QueryFailed.exception(
+          query: "AGE read query",
+          reason: "database error (23505)"
+        )
+
+      assert Exception.message(error) =~ "23505"
+    end
+
+    test "UpdateFailed.message/1 redacts a %Postgrex.Error{} reason" do
+      error =
+        AshAge.Errors.UpdateFailed.exception(
+          resource: SomeResource,
+          reason: %Postgrex.Error{postgres: %{code: "23505", detail: "SECRET-key=(1)"}}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-key"
+      assert msg =~ "database error"
+    end
+  end
 end

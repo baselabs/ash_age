@@ -101,10 +101,20 @@ defmodule AshAge.Changes.EdgeCypher do
   def tenant_spec(resource, edge, changeset) do
     if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute do
       {Ash.Resource.Info.multitenancy_attribute(resource),
-       Ash.Resource.Info.multitenancy_attribute(edge.destination), changeset.to_tenant}
+       Ash.Resource.Info.multitenancy_attribute(edge.destination),
+       parse_tenant(resource, changeset.to_tenant)}
     else
       nil
     end
+  end
+
+  # Vertex-path parity (scope_to_tenant applies the same MFA): the scoping
+  # VALUE is the resource's parsed tenant, not the raw `to_tenant`. For a
+  # custom parse fn whose result differs, matching fails closed-empty (0 rows),
+  # never a leak — same envelope as the vertex path.
+  defp parse_tenant(resource, tenant) do
+    {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+    apply(m, f, [tenant | a])
   end
 
   @doc false

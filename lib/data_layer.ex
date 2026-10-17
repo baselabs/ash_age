@@ -313,14 +313,24 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
-    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result =
-        with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
-        |> unwrap_rls(resource)
+    case validate_expression(query) do
+      {:error, _} = e ->
+        e
 
-      {result,
-       %{row_count: row_count(result), result: Telemetry.result_tag(result), rls?: rls?(resource)}}
-    end)
+      :ok ->
+        Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+          result =
+            with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
+            |> unwrap_rls(resource)
+
+          {result,
+           %{
+             row_count: row_count(result),
+             result: Telemetry.result_tag(result),
+             rls?: rls?(resource)
+           }}
+        end)
+    end
   end
 
   defp run_query_body(%AshAge.Query{} = query, resource) do
@@ -382,20 +392,26 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_aggregate_query(query, aggregates, resource) do
-    Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result =
-        with_rls(resource, query.tenant, query.repo, fn ->
-          run_aggregate_query_body(query, aggregates, resource)
-        end)
-        |> unwrap_rls(resource)
+    case validate_expression(query) do
+      {:error, _} = e ->
+        e
 
-      {result,
-       %{
-         aggregate_count: length(aggregates),
-         result: Telemetry.result_tag(result),
-         rls?: rls?(resource)
-       }}
-    end)
+      :ok ->
+        Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+          result =
+            with_rls(resource, query.tenant, query.repo, fn ->
+              run_aggregate_query_body(query, aggregates, resource)
+            end)
+            |> unwrap_rls(resource)
+
+          {result,
+           %{
+             aggregate_count: length(aggregates),
+             result: Telemetry.result_tag(result),
+             rls?: rls?(resource)
+           }}
+        end)
+    end
   end
 
   defp run_aggregate_query_body(query, aggregates, resource) do
@@ -604,7 +620,15 @@ defmodule AshAge.DataLayer do
   defp bulk_create_body(resource, entries, opts) do
     case bulk_graph(resource, entries) do
       {:ok, graph} ->
-        do_bulk_create(resource, graph, entries, opts)
+        if same_write_graph?(resource, graph, entries) do
+          do_bulk_create(resource, graph, entries, opts)
+        else
+          {:error,
+           CreateFailed.exception(
+             resource: resource,
+             reason: "mixed-tenant batch (all changesets must resolve one :context graph)"
+           )}
+        end
 
       {:error, :tenant_required} ->
         {:error,
@@ -1060,20 +1084,26 @@ defmodule AshAge.DataLayer do
     # per-record `destroy/2` (already safe) instead of calling destroy_query.
     _ = changeset
 
-    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result =
-        with_rls(resource, query.tenant, query.repo, fn ->
-          destroy_query_body(query, resource, opts)
-        end)
-        |> unwrap_rls(resource)
+    case validate_expression(query) do
+      {:error, _} = e ->
+        e
 
-      {result,
-       %{
-         tenant?: not is_nil(query.tenant),
-         result: Telemetry.result_tag(result),
-         rls?: rls?(resource)
-       }}
-    end)
+      :ok ->
+        Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+          result =
+            with_rls(resource, query.tenant, query.repo, fn ->
+              destroy_query_body(query, resource, opts)
+            end)
+            |> unwrap_rls(resource)
+
+          {result,
+           %{
+             tenant?: not is_nil(query.tenant),
+             result: Telemetry.result_tag(result),
+             rls?: rls?(resource)
+           }}
+        end)
+    end
   end
 
   defp destroy_query_body(query, resource, opts) do
@@ -1118,21 +1148,31 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def update_query(query, changeset, resource, opts) do
-    Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-      result =
-        with_rls(resource, query.tenant, query.repo, fn ->
-          update_query_body(query, changeset, resource, opts)
-        end)
-        |> unwrap_rls(resource)
+    case validate_expression(query) do
+      {:error, _} = e ->
+        e
 
-      {result,
-       %{
-         tenant?: not is_nil(query.tenant),
-         result: Telemetry.result_tag(result),
-         rls?: rls?(resource),
-         atomic?: changeset.atomics != []
-       }}
-    end)
+      :ok ->
+        Telemetry.span(
+          :update_query,
+          %{resource: resource, multitenancy: strategy(resource)},
+          fn ->
+            result =
+              with_rls(resource, query.tenant, query.repo, fn ->
+                update_query_body(query, changeset, resource, opts)
+              end)
+              |> unwrap_rls(resource)
+
+            {result,
+             %{
+               tenant?: not is_nil(query.tenant),
+               result: Telemetry.result_tag(result),
+               rls?: rls?(resource),
+               atomic?: changeset.atomics != []
+             }}
+          end
+        )
+    end
   end
 
   @impl true
@@ -1371,6 +1411,21 @@ defmodule AshAge.DataLayer do
   # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
   # `build_where` swallows). Threaded params land in `query.params`. `nil` and
   # `%Ash.Filter{expression: nil}` mean "no filter" — no clause added.
+  # Fail-closed pre-check for every query carrying an `expression` (the channel
+  # Ash uses for :attribute tenant predicates and bulk filters):
+  # `Query.build_where`'s catch-all DROPS an untranslatable expression — an
+  # unreachable case through Ash's `can?({:filter_expr, _})` build gate, but a
+  # hand-built or future-gated expression must never silently broaden a read,
+  # delete, or update. Mirrors the update path's eager `scope_to_filter`.
+  defp validate_expression(%AshAge.Query{expression: nil}), do: :ok
+
+  defp validate_expression(%AshAge.Query{} = query) do
+    case AshAge.Query.Filter.translate(query.expression, query) do
+      {:ok, _, _} -> :ok
+      {:error, _} = e -> e
+    end
+  end
+
   defp scope_to_filter(query, nil), do: query
 
   defp scope_to_filter(query, %Ash.Filter{expression: nil}), do: query
@@ -2048,7 +2103,21 @@ defmodule AshAge.DataLayer do
   # changesets in a batch share the same tenant/graph, and this reuses the exact
   # fail-closed nil-:context-tenant path single-create uses.
   defp bulk_graph(resource, []), do: {:ok, Info.graph(resource)}
+
   defp bulk_graph(resource, [{changeset, _props} | _]), do: write_graph(resource, changeset)
+
+  # Defensive same-graph assertion for :context batches: Ash batches by tenant,
+  # so a batch normally shares one `to_tenant`. A hand-assembled (or future
+  # framework-path) MIXED batch would otherwise write every row to the FIRST
+  # changeset's tenant graph — fail closed instead. :attribute / untenantied
+  # resources share the configured graph; the check is a no-op for them.
+  defp same_write_graph?(resource, graph, entries) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :context do
+      entries |> Enum.all?(fn {cs, _} -> write_graph(resource, cs) == {:ok, graph} end)
+    else
+      true
+    end
+  end
 
   defp do_bulk_create(_resource, _graph, [], _opts), do: :ok
 
