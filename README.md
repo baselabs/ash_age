@@ -64,8 +64,23 @@ expected to work but are not covered by CI.
 
 The Quick Start below gets a resource reading and writing to a graph. For the
 complete reference, see the [DSL reference](documentation/dsls/DSL-AshAge.DataLayer.md),
-[usage-rules.md](usage-rules.md) (the full behavioral contract), and the
+[usage-rules.md](usage-rules.md) (the full behavioral contract), the
+[testing guide](documentation/testing.md), and the
 [troubleshooting guide](documentation/troubleshooting.md).
+
+### A database to develop against
+
+The repo ships a compose file with Apache AGE on `localhost:5462`:
+
+```console
+$ docker compose up -d
+$ AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test
+```
+
+`mix test.unit` runs the no-database lane, `mix test.integration` the live-AGE
+lane (see [`.env.example`](.env.example)). CI pins the same image by digest, so
+local and CI run the same AGE build. A [dev container](.devcontainer/) with the
+database pre-wired is included for Codespaces / VS Code.
 
 ### Quick Start
 

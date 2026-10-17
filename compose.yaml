@@ -1,0 +1,27 @@
+# Apache AGE for local development and testing.
+#
+#   docker compose up -d
+#   AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test
+#
+# Port 5462 (not 5432) because a local Postgres usually already owns 5432.
+# Data persists in a named volume across restarts. CI does not use this file —
+# it pins the same image by digest as a service container.
+services:
+  age:
+    image: apache/age:release_PG16_1.6.0
+    ports:
+      - "5462:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ash_age_test
+    volumes:
+      - age_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  age_data:

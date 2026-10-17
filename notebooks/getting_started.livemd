@@ -7,8 +7,14 @@
 vertices, relationships become real graph edges, and traversals run inside the
 PostgreSQL you already operate.
 
-This notebook needs a running **PostgreSQL + Apache AGE** instance. The quickest
-way is Docker:
+This notebook needs a running **PostgreSQL + Apache AGE** instance. If you have
+the ash_age repo cloned, its compose file is the one-liner:
+
+```
+docker compose up -d     # apache/age on localhost:5462, data in a named volume
+```
+
+Otherwise, plain Docker works just as well:
 
 ```
 docker run -d --name ash_age \

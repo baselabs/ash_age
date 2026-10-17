@@ -1,0 +1,27 @@
+// One-click dev environment (VS Code Dev Containers / GitHub Codespaces).
+// Extends the repo's compose.yaml with a dev-container service; the AGE
+// database runs as a sibling service, reached by its compose DNS name.
+{
+  "name": "ash_age",
+  "dockerComposeFile": ["../compose.yaml", "compose.extend.yaml"],
+  "service": "dev",
+  "runServices": ["dev", "age"],
+  "workspaceFolder": "/workspaces/ash_age",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/elixir:1": {
+      "version": "1.18"
+    }
+  },
+  // Inside the compose network the database is `age` on its NATIVE port 5432
+  // (the 5462 mapping is for the HOST side only).
+  "remoteEnv": {
+    "AGE_DATABASE_URL": "postgres://postgres:postgres@age:5432/ash_age_test"
+  },
+  "postCreateCommand": "mix deps.get && mix compile",
+  "customizations": {
+    "vscode": {
+      "extensions": ["elixir-lsp.elixir-ls"]
+    }
+  }
+}
