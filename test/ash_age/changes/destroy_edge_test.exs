@@ -27,16 +27,16 @@ defmodule AshAge.Changes.DestroyEdgeTest do
     {cypher, params} = DestroyEdge.build_destroy(Src, @edge, %{"id" => "s"}, "d", nil)
 
     assert cypher =~ "MATCH (a:Src)-[r:RELATES]->(b:Src)"
-    assert cypher =~ "a.id = $src_id AND b.id = $dst"
+    assert cypher =~ "a.`id` = $src_id AND b.`id` = $dst"
     assert cypher =~ "DELETE r RETURN r"
     assert params == %{"src_id" => "s", "dst" => "d"}
   end
 
   test ":attribute tenancy scopes both endpoints" do
     {cypher, params} =
-      DestroyEdge.build_destroy(Src, @edge, %{"id" => "s"}, "d", {:org_id, :org_id, "t"})
+      DestroyEdge.build_destroy(Src, @edge, %{"id" => "s"}, "d", {:org_id, :org_id, "t", "t"})
 
-    assert cypher =~ "a.org_id = $tenant AND b.org_id = $tenant"
+    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $dst_tenant"
     assert params["tenant"] == "t"
   end
 end

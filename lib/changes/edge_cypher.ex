@@ -89,22 +89,43 @@ defmodule AshAge.Changes.EdgeCypher do
       Enum.reduce(src_key, {[], %{}}, fn {field, value}, {clauses, params} ->
         field = Migration.validate_identifier!(field)
         key = "src_#{field}"
-        {["a.#{field} = $#{key}" | clauses], Map.put(params, key, value)}
+        {["a.`#{field}` = $#{key}" | clauses], Map.put(params, key, value)}
       end)
 
     {clauses |> Enum.reverse() |> Enum.join(" AND "), params}
   end
 
   @doc false
-  # For an `:attribute`-multitenant source, the `{src_attr, dest_attr, value}`
-  # spec that scopes BOTH endpoints by the tenant discriminator; `nil` otherwise.
+  # For an `:attribute`-multitenant source, the
+  # `{src_attr, dest_attr, src_value, dest_value}` spec scoping BOTH endpoints
+  # by the tenant discriminator; `nil` otherwise. Each endpoint's VALUE is
+  # parsed by ITS OWN resource's `parse_attribute` (the source's parse fn for
+  # `a`, the destination's for `b`) — a single shared value would bind a
+  # source-parsed string against the destination's discriminator and, under
+  # differing parse fns, match a DIFFERENT tenant's destination rows.
   def tenant_spec(resource, edge, changeset) do
     if Ash.Resource.Info.multitenancy_strategy(resource) == :attribute do
-      {Ash.Resource.Info.multitenancy_attribute(resource),
-       Ash.Resource.Info.multitenancy_attribute(edge.destination), changeset.to_tenant}
+      dest = edge.destination
+      dest_attr = Ash.Resource.Info.multitenancy_attribute(dest)
+
+      {Ash.Resource.Info.multitenancy_attribute(resource), dest_attr,
+       parse_tenant(resource, changeset.to_tenant),
+       if(dest_attr, do: parse_tenant(dest, changeset.to_tenant))}
     else
       nil
     end
+  end
+
+  # Vertex-path parity (scope_to_tenant applies the same MFA): the scoping
+  # VALUE is the resource's parsed tenant, not the raw `to_tenant`. A nil
+  # tenant (a `global? true` / tenantless action) is NOT parsed — Ash itself
+  # skips parsing then, and a custom parse fn would crash on nil. A nil value
+  # matches nothing (fail-closed-empty), same envelope as the vertex path.
+  defp parse_tenant(_resource, nil), do: nil
+
+  defp parse_tenant(resource, tenant) do
+    {m, f, a} = Ash.Resource.Info.multitenancy_parse_attribute(resource)
+    apply(m, f, [tenant | a])
   end
 
   @doc false
@@ -112,13 +133,17 @@ defmodule AshAge.Changes.EdgeCypher do
   # dest_attr) takes no destination clause. Returns `{clause, params}`.
   def tenant_where(nil), do: {"", %{}}
 
-  def tenant_where({src_attr, dest_attr, value}) do
+  def tenant_where({src_attr, dest_attr, src_value, dest_value}) do
     src_attr = src_attr |> to_string() |> Migration.validate_identifier!()
     dest = if dest_attr, do: dest_attr |> to_string() |> Migration.validate_identifier!()
 
+    # Endpoint refs are backtick-quoted: a tenant discriminator named with a
+    # Cypher keyword (`count`, `label`) must not emit a bare ref (AGE syntax
+    # error), same discipline as Filter.prop_ref.
     clause =
-      " AND a.#{src_attr} = $tenant" <> if(dest, do: " AND b.#{dest} = $tenant", else: "")
+      " AND a.`#{src_attr}` = $tenant" <>
+        if(dest, do: " AND b.`#{dest}` = $dst_tenant", else: "")
 
-    {clause, %{"tenant" => value}}
+    {clause, %{"tenant" => src_value, "dst_tenant" => dest_value}}
   end
 end

@@ -73,6 +73,12 @@ defmodule AshAge.Changes.CreateEdge do
     end)
   end
 
+  # No destination IDs (an optional edge whose argument was not supplied):
+  # nothing to write — skip graph resolution AND tenant parsing entirely, so a
+  # destination-resource parse fn never runs for an edge that isn't happening.
+  # Same shape create_all/8 returns for an empty list ({:ok, record}).
+  defp write_edges(_changeset, record, _resource, _edge, [], _props), do: {:ok, record}
+
   defp write_edges(changeset, record, resource, edge, dest_ids, props) do
     case DataLayer.write_graph(resource, changeset) do
       {:ok, graph} ->
@@ -151,7 +157,7 @@ defmodule AshAge.Changes.CreateEdge do
     # (EdgeCypher.serialize_destination_ids/2, hoisted out of the per-dest loop).
 
     {src_where, src_params} = EdgeCypher.source_where(src_key)
-    dest_where = "b.#{dest_pk} = $dst"
+    dest_where = "b.`#{dest_pk}` = $dst"
     {tenant_where, tenant_params} = EdgeCypher.tenant_where(tenant)
     {prop_set, prop_params} = property_set(props)
 
@@ -237,7 +243,7 @@ defmodule AshAge.Changes.CreateEdge do
       Enum.reduce(props, {[], %{}}, fn {key, value}, {clauses, params} ->
         key = key |> to_string() |> Migration.validate_identifier!()
         pkey = "prop_#{key}"
-        {["e.#{key} = $#{pkey}" | clauses], Map.put(params, pkey, value)}
+        {["e.`#{key}` = $#{pkey}" | clauses], Map.put(params, pkey, value)}
       end)
 
     {" SET " <> (clauses |> Enum.reverse() |> Enum.join(", ")), params}

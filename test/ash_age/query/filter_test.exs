@@ -254,4 +254,72 @@ defmodule AshAge.Query.FilterTest do
       assert clause == "n.`age` > $param1"
     end
   end
+
+  describe "string-function predicates (contains / string_starts_with / string_ends_with)" do
+    alias Ash.Query.Function.{Contains, StringEndsWith, StringStartsWith}
+
+    test "contains translates to a parameterized Cypher CONTAINS" do
+      {:ok, query, clause} =
+        Filter.translate(
+          %Contains{arguments: [ref(:name), "Robert'); DROP"]},
+          q()
+        )
+
+      assert clause == "n.`name` CONTAINS $param1"
+      assert query.params == %{"param1" => "Robert'); DROP"}
+    end
+
+    test "string_starts_with / string_ends_with translate to STARTS WITH / ENDS WITH" do
+      {:ok, _, sw} =
+        Filter.translate(%StringStartsWith{arguments: [ref(:name), "Rob"]}, q())
+
+      {:ok, _, ew} = Filter.translate(%StringEndsWith{arguments: [ref(:name), "ert"]}, q())
+
+      assert sw == "n.`name` STARTS WITH $param1"
+      assert ew == "n.`name` ENDS WITH $param1"
+    end
+
+    test "backtick-quotes a Cypher-keyword attribute name" do
+      {:ok, _query, clause} =
+        Filter.translate(%Contains{arguments: [ref(:count), "x"]}, q())
+
+      assert clause == "n.`count` CONTAINS $param1"
+    end
+
+    test "a :ci_string attribute fails closed (Cypher CONTAINS is case-sensitive)" do
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [typed_ref(:name, Ash.Type.CiString), "x"]},
+                 q()
+               )
+    end
+
+    test "a NewType wrapping :ci_string fails closed too (storage_class resolution)" do
+      defmodule WrappedCi do
+        use Ash.Type.NewType, subtype_of: :ci_string
+      end
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [typed_ref(:name, WrappedCi), "x"]},
+                 q()
+               )
+    end
+
+    test "a column-to-column string predicate fails closed (not a JSON-encode error)" do
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [ref(:name), ref(:other)]},
+                 q()
+               )
+    end
+
+    test "a %Ash.CiString{} VALUE fails closed (case-insensitive semantics untranslatable)" do
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [ref(:name), %Ash.CiString{string: "x"}]},
+                 q()
+               )
+    end
+  end
 end

@@ -77,23 +77,23 @@ defmodule AshAge.DataLayerTest do
   describe "pk_match_clause/2" do
     test "single :id key is byte-identical to the legacy hardcoded clause (backward compat)" do
       assert DataLayer.pk_match_clause([{:id, "u1"}], %{}) ==
-               {"n.id = $match_id", %{"match_id" => "u1"}}
+               {"n.`id` = $match_id", %{"match_id" => "u1"}}
     end
 
     test "single non-:id key derives the predicate from the actual key name" do
       assert DataLayer.pk_match_clause([{:code, "abc"}], %{}) ==
-               {"n.code = $match_code", %{"match_code" => "abc"}}
+               {"n.`code` = $match_code", %{"match_code" => "abc"}}
     end
 
     test "composite key ANDs both predicates with distinct params, declaration order preserved" do
       assert DataLayer.pk_match_clause([{:tenant_id, "t1"}, {:id, "u1"}], %{}) ==
-               {"n.tenant_id = $match_tenant_id AND n.id = $match_id",
+               {"n.`tenant_id` = $match_tenant_id AND n.`id` = $match_id",
                 %{"match_tenant_id" => "t1", "match_id" => "u1"}}
     end
 
     test "renames the match param when it would collide with a reserved (changed-attr) key" do
       assert DataLayer.pk_match_clause([{:id, "u1"}], %{"match_id" => "changed"}) ==
-               {"n.id = $match_id_", %{"match_id_" => "u1"}}
+               {"n.`id` = $match_id_", %{"match_id_" => "u1"}}
     end
 
     test "rejects a primary-key field that is not a valid AGE identifier (injection guard)" do
@@ -283,6 +283,58 @@ defmodule AshAge.DataLayerTest do
       assert Info.sensitive(Classified) == [:ssn]
       # any pre-existing test resource without the option
       assert Info.sensitive(NoRlsResource) == []
+    end
+  end
+
+  describe "run_query/2 fails closed on an untranslatable expression (no silent drop)" do
+    test "an expression Ash's build gate never sees is rejected, not silently dropped" do
+      # build_where's catch-all used to DROP an untranslatable query.expression,
+      # broadening the read (audit finding: the update path eagerly fails closed
+      # via scope_to_filter; the read path must too). Ash.Filter.Ago is not an
+      # operator this layer can ever translate.
+      query = %Query{
+        resource: NoRlsResource,
+        graph: :data_layer_no_rls,
+        label: :NoRls,
+        repo: AshAge.TestRepo,
+        params: %{},
+        expression: %Ash.Filter{
+          resource: NoRlsResource,
+          expression: %Ash.Query.Function.Ago{arguments: [1, :year]}
+        }
+      }
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.run_query(query, NoRlsResource)
+    end
+
+    test "run_aggregate_query / destroy_query / update_query reject it too (each wiring)" do
+      base = %Query{
+        resource: NoRlsResource,
+        graph: :data_layer_no_rls,
+        label: :NoRls,
+        repo: AshAge.TestRepo,
+        params: %{},
+        filters: []
+      }
+
+      expr = %Ash.Filter{
+        resource: NoRlsResource,
+        expression: %Ash.Query.Function.Ago{arguments: [1, :year]}
+      }
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.run_aggregate_query(
+                 %{base | expression: expr},
+                 [%Ash.Query.Aggregate{name: :c, kind: :count}],
+                 NoRlsResource
+               )
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.destroy_query(%{base | expression: expr}, %{}, NoRlsResource, %{})
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.update_query(%{base | expression: expr}, %{}, NoRlsResource, %{})
     end
   end
 end

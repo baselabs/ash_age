@@ -176,19 +176,31 @@ defmodule AshAge do
   - **Errors propagate raw** (this uses `SQL.query!`); it does not redact DB errors,
     unlike the data layer's internal path and unlike `cypher/5` itself (which wraps
     DB and encode failures in a redacted `QueryFailed`). The caller owns error
-    handling for this wrapper's own `set_config` queries.
+    handling for this wrapper's own `set_config` queries. Note the return
+    ambiguity: a fun that ROLLED BACK makes this wrapper return `{:error, reason}`,
+    indistinguishable from a fun that merely RETURNED `{:error, reason}` — match
+    accordingly.
   """
-  @spec with_tenant_rls(module(), String.t(), term(), (-> result)) :: result when result: var
+  @spec with_tenant_rls(module(), String.t(), term(), (-> result)) ::
+          result | {:error, term()}
+        when result: var
   def with_tenant_rls(repo, guc, tenant, fun) when is_function(fun, 0) do
     _ = AshAge.Migration.validate_guc!(guc)
 
-    {:ok, result} =
-      repo.transaction(fn ->
-        SQL.query!(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)])
-        fun.()
-      end)
+    case repo.transaction(fn ->
+           SQL.query!(repo, "SELECT set_config($1, $2, true)", [guc, to_string(tenant)])
+           fun.()
+         end) do
+      {:ok, result} ->
+        result
 
-    result
+      # A fun that calls `repo.rollback/1`: surface its reason (the documented
+      # "errors propagate raw" contract) instead of crashing with a MatchError
+      # that discards it. Raises inside the fun re-raise through the repo
+      # transaction untouched.
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc false

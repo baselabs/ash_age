@@ -31,14 +31,31 @@ defmodule AshAge.DataLayer do
 
   ## Capabilities
 
-  Supports `:read`, `:create`, `:update`, `:destroy`, `:bulk_create`, `:filter`
-  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions),
-  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute` and
-  `:context`), `:composite_primary_key`, and `:changeset_filter`. Not supported:
-  `:upsert`, aggregates, and lateral joins. One subtlety: binary-storage
-  attributes are **unsortable** (`can?({:sort, :binary})` is `false`) because
-  the stored `$age64$`-tagged base64 form is not byte-order-preserving —
-  sorting on one raises `Ash.Error.Query.UnsortableField` at query build.
+  Supports `:read`, `:create`, `:update`, `:destroy`, `:destroy_query`,
+  `:bulk_create`, single-record `:upsert` (a two-statement MATCH-then-CREATE/SET
+  path — AGE `MERGE` is banned for its performance bugs; BULK upserts fail
+  closed: AGE has no unique constraint to upsert a batch against), `:filter`
+  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions, and the
+  case-sensitive string predicates contains/string_starts_with/
+  string_ends_with over plain `:string` attributes), aggregates
+  (count/sum/avg/min/max/exists over the resource's own records, with
+  sub-filters), atomic updates (`Ash.Expr` translates to Cypher through
+  `update_query/4`; distinct-changes batches through `update_many/3`),
+  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute`
+  and `:context`), `:composite_primary_key`, and `:changeset_filter`.
+
+  Not supported (all fail closed with Ash build-time errors): lateral joins,
+  relationship joins/paths in filters and aggregates (the bounded
+  `AshAge.ManualRelationships.Traverse` manual relationship is the supported
+  alternative), first/list/custom aggregate kinds, and aggregate sorting.
+
+  Two subtleties: binary-storage attributes are **unsortable**
+  (`can?({:sort, :binary})` is `false`) because the stored `$age64$`-tagged
+  base64 form is not byte-order-preserving — sorting on one raises
+  `Ash.Error.Query.UnsortableField` at query build; and range/sort/filter
+  operations that cannot be pushed down faithfully are rejected rather than
+  approximated (e.g. case-insensitive string predicates — openCypher has no
+  case-insensitive form).
 
   ## Pagination
 
@@ -189,15 +206,9 @@ defmodule AshAge.DataLayer do
   # Ash.Error.Query.UnsortableField at query build.
   def can?(_, {:sort, :binary}), do: false
   def can?(_, {:sort, _}), do: true
-  def can?(_, {:filter_operator, :eq}), do: true
-  def can?(_, {:filter_operator, :not_eq}), do: true
-  def can?(_, {:filter_operator, :gt}), do: true
-  def can?(_, {:filter_operator, :lt}), do: true
-  def can?(_, {:filter_operator, :gte}), do: true
-  def can?(_, {:filter_operator, :lte}), do: true
-  def can?(_, {:filter_operator, :in}), do: true
-  def can?(_, {:filter_operator, :is_nil}), do: true
-  def can?(_, {:filter_operator, _}), do: false
+  # Operator support is advertised via {:filter_expr, struct} below — Ash core
+  # never queries {:filter_operator, _} (verified against ash 3.33 and 3.36),
+  # so the historical filter_operator clauses were vestigial and are removed.
   def can?(_, {:filter_expr, %Ash.Query.Operator.Eq{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Operator.NotEq{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Operator.In{}}), do: true
@@ -218,6 +229,12 @@ defmodule AshAge.DataLayer do
   # a non-nil attr as `{:not_atomic, "does not support the function type(...)"}`.
   def can?(_, {:filter_expr, %Ash.Query.Function.Type{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.Error{}}), do: true
+  # String predicates (case-sensitive forms; :ci_string attributes and CiString
+  # values fail closed in Filter.translate — Cypher CONTAINS cannot express
+  # case-insensitive matching).
+  def can?(_, {:filter_expr, %Ash.Query.Function.Contains{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringStartsWith{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringEndsWith{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
   # Pure capability flag (no callback) gating the atomic-batches destroy path's
   # field-select branch (destroy/bulk.ex:657). Declaring true lets Ash compute a
@@ -313,13 +330,24 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
+    case validate_expression(query) do
+      {:error, _} = e -> rejected_span(:read, resource, e)
+      :ok -> do_run_query(query, resource)
+    end
+  end
+
+  defp do_run_query(query, resource) do
     Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result =
         with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
         |> unwrap_rls(resource)
 
       {result,
-       %{row_count: row_count(result), result: Telemetry.result_tag(result), rls?: rls?(resource)}}
+       %{
+         row_count: row_count(result),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
     end)
   end
 
@@ -382,6 +410,13 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def run_aggregate_query(query, aggregates, resource) do
+    case validate_expression(query) do
+      {:error, _} = e -> rejected_span(:aggregate, resource, e)
+      :ok -> do_run_aggregate_query(query, aggregates, resource)
+    end
+  end
+
+  defp do_run_aggregate_query(query, aggregates, resource) do
     Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result =
         with_rls(resource, query.tenant, query.repo, fn ->
@@ -601,10 +636,38 @@ defmodule AshAge.DataLayer do
   # graph exactly as single-create does (via write_graph/2 through bulk_graph/2),
   # so the fail-closed nil-:context-tenant behavior is identical; Ash batches by
   # tenant, so every changeset in a batch shares one graph, resolved off the first.
+  #
+  # A bulk UPSERT (`upsert?: true` in opts — Ash passes it through from
+  # `Ash.bulk_create/4`) fails CLOSED: AGE has no unique constraint to upsert
+  # against, the single-record `upsert/4` path is a two-statement
+  # existence-MATCH, and silently treating an upsert batch as plain creates
+  # would duplicate rows with no error. Callers upsert per-record.
   defp bulk_create_body(resource, entries, opts) do
+    if Map.get(opts, :upsert?, false) do
+      {:error,
+       CreateFailed.exception(
+         resource: resource,
+         reason:
+           "bulk upsert is not supported (AGE has no unique constraint to upsert " <>
+             "against); use per-record Ash.create/2 with upsert?: true"
+       )}
+    else
+      bulk_create_grouped(resource, entries, opts)
+    end
+  end
+
+  defp bulk_create_grouped(resource, entries, opts) do
     case bulk_graph(resource, entries) do
       {:ok, graph} ->
-        do_bulk_create(resource, graph, entries, opts)
+        if same_write_graph?(resource, graph, entries) do
+          do_bulk_create(resource, graph, entries, opts)
+        else
+          {:error,
+           CreateFailed.exception(
+             resource: resource,
+             reason: "mixed-tenant batch (all changesets must resolve one :context graph)"
+           )}
+        end
 
       {:error, :tenant_required} ->
         {:error,
@@ -1060,6 +1123,13 @@ defmodule AshAge.DataLayer do
     # per-record `destroy/2` (already safe) instead of calling destroy_query.
     _ = changeset
 
+    case validate_expression(query) do
+      {:error, _} = e -> rejected_span(:destroy, resource, e)
+      :ok -> do_destroy_query(query, resource, opts)
+    end
+  end
+
+  defp do_destroy_query(query, resource, opts) do
     Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result =
         with_rls(resource, query.tenant, query.repo, fn ->
@@ -1118,6 +1188,13 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def update_query(query, changeset, resource, opts) do
+    case validate_expression(query) do
+      {:error, _} = e -> rejected_span(:update_query, resource, e)
+      :ok -> do_update_query(query, changeset, resource, opts)
+    end
+  end
+
+  defp do_update_query(query, changeset, resource, opts) do
     Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
       result =
         with_rls(resource, query.tenant, query.repo, fn ->
@@ -1371,6 +1448,31 @@ defmodule AshAge.DataLayer do
   # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
   # `build_where` swallows). Threaded params land in `query.params`. `nil` and
   # `%Ash.Filter{expression: nil}` mean "no filter" — no clause added.
+  # Fail-closed pre-check for every query carrying an `expression` (a channel
+  # no current Ash path populates — Ash's :attribute tenant predicate and bulk
+  # filters arrive through `filter/3`, already fail-closed — but a hand-built
+  # or future-gated expression must never be silently broadened by
+  # `Query.build_where`'s drop-on-untranslatable catch-all). Defense in depth;
+  # mirrors the update path's eager `scope_to_filter`.
+  defp validate_expression(%AshAge.Query{expression: nil}), do: :ok
+
+  defp validate_expression(%AshAge.Query{} = query) do
+    case AshAge.Query.Filter.translate(query.expression, query) do
+      {:ok, _, _} -> :ok
+      {:error, _} = e -> e
+    end
+  end
+
+  # A build-rejected expression still emits its operation span (the docs'
+  # "every operation" promise), surfacing as :stop with result: :error —
+  # value-free, like every span.
+  defp rejected_span(op, resource, error) do
+    Telemetry.span(op, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      # rls? is FALSE: rejection happens BEFORE with_rls — no GUC transaction ran.
+      {error, %{result: Telemetry.result_tag(error), rls?: false}}
+    end)
+  end
+
   defp scope_to_filter(query, nil), do: query
 
   defp scope_to_filter(query, %Ash.Filter{expression: nil}), do: query
@@ -1843,7 +1945,7 @@ defmodule AshAge.DataLayer do
         key = field |> to_string() |> AshAge.Migration.validate_identifier!()
         param = unique_key(taken, "match_#{key}")
 
-        {["n.#{key} = $#{param}" | clauses], Map.put(params, param, value),
+        {["n.`#{key}` = $#{param}" | clauses], Map.put(params, param, value),
          Map.put(taken, param, value)}
       end)
 
@@ -2048,7 +2150,21 @@ defmodule AshAge.DataLayer do
   # changesets in a batch share the same tenant/graph, and this reuses the exact
   # fail-closed nil-:context-tenant path single-create uses.
   defp bulk_graph(resource, []), do: {:ok, Info.graph(resource)}
+
   defp bulk_graph(resource, [{changeset, _props} | _]), do: write_graph(resource, changeset)
+
+  # Defensive same-graph assertion for :context batches: Ash batches by tenant,
+  # so a batch normally shares one `to_tenant`. A hand-assembled (or future
+  # framework-path) MIXED batch would otherwise write every row to the FIRST
+  # changeset's tenant graph — fail closed instead. :attribute / untenantied
+  # resources share the configured graph; the check is a no-op for them.
+  defp same_write_graph?(resource, graph, entries) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) == :context do
+      entries |> Enum.all?(fn {cs, _} -> write_graph(resource, cs) == {:ok, graph} end)
+    else
+      true
+    end
+  end
 
   defp do_bulk_create(_resource, _graph, [], _opts), do: :ok
 
@@ -2088,7 +2204,7 @@ defmodule AshAge.DataLayer do
     set_clause =
       Enum.map_join(keys, ", ", fn key ->
         key = AshAge.Migration.validate_identifier!(key)
-        "n.#{key} = row.#{key}"
+        "n.`#{key}` = row.`#{key}`"
       end)
 
     cypher =

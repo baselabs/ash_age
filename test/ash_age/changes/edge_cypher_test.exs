@@ -1,0 +1,193 @@
+defmodule AshAge.Changes.EdgeCypherTest do
+  @moduledoc """
+  Unit coverage for `AshAge.Changes.EdgeCypher` — the shared, security-critical
+  edge-Cypher builders. Pins the identifier discipline: every property ref is
+  backtick-quoted (a Cypher-keyword attribute name — `count`, `label` — must
+  not emit a bare ref, which AGE mis-parses as a syntax error), and every VALUE
+  rides a `$param`.
+  """
+  use ExUnit.Case, async: true
+
+  alias AshAge.Changes.EdgeCypher
+
+  describe "source_where/1" do
+    test "backtick-quotes the source PK ref, value as param" do
+      {clause, params} = EdgeCypher.source_where([{"count", 7}])
+
+      assert clause == "a.`count` = $src_count"
+      assert params == %{"src_count" => 7}
+    end
+
+    test "composite source PKs AND-join quoted refs" do
+      {clause, _params} = EdgeCypher.source_where([{"label", "x"}, {"sum", 3}])
+
+      assert clause == "a.`label` = $src_label AND a.`sum` = $src_sum"
+    end
+  end
+
+  describe "tenant_where/1" do
+    test "backtick-quotes both endpoint refs; each endpoint binds its own param" do
+      {clause, params} = EdgeCypher.tenant_where({"label", "count", "s_one", "d_one"})
+
+      assert clause == " AND a.`label` = $tenant AND b.`count` = $dst_tenant"
+      assert params == %{"tenant" => "s_one", "dst_tenant" => "d_one"}
+    end
+
+    test "non-multitenant destination takes no destination clause" do
+      {clause, params} = EdgeCypher.tenant_where({"label", nil, "t1", nil})
+
+      assert clause == " AND a.`label` = $tenant"
+      assert params == %{"tenant" => "t1", "dst_tenant" => nil}
+    end
+  end
+
+  describe "tenant_spec/3 applies the source resource's parse_attribute (vertex-path parity)" do
+    defmodule ParseTenant do
+      def parse("org-" <> org), do: org
+    end
+
+    defmodule TenantSrc do
+      use Ash.Resource,
+        domain: AshAge.TestDomain,
+        validate_domain_inclusion?: false,
+        data_layer: AshAge.DataLayer
+
+      age do
+        graph(:edge_cypher_tenant_src)
+        repo(AshAge.TestRepo)
+        label(:Src)
+      end
+
+      attributes do
+        uuid_primary_key(:id)
+        attribute(:org, :string, public?: true)
+      end
+
+      multitenancy do
+        strategy(:attribute)
+        attribute(:org)
+        parse_attribute({ParseTenant, :parse, []})
+      end
+
+      actions do
+        defaults([:create])
+      end
+    end
+
+    @tenant_edge %AshAge.Edge{
+      name: :rel,
+      label: :REL,
+      direction: :outgoing,
+      destination: TenantSrc,
+      properties: []
+    }
+
+    test "the scoped $tenant value is the PARSED tenant, not the raw to_tenant" do
+      changeset =
+        TenantSrc
+        |> Ash.Changeset.for_create(:create, %{})
+        |> Ash.Changeset.set_tenant("org-acme")
+
+      {_src_attr, _dest_attr, src_value, _dest_value} =
+        EdgeCypher.tenant_spec(TenantSrc, @tenant_edge, changeset)
+
+      assert src_value == "acme"
+    end
+
+    test "each endpoint is parsed by its OWN resource's parse fn (mismatched fns never share a value)" do
+      defmodule DestPlainParse do
+        # Destination parses with the DEFAULT identity parse (no parse_attribute).
+        def identity(tenant), do: tenant
+      end
+
+      defmodule TenantDest do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
+
+        age do
+          graph(:edge_cypher_tenant_dest)
+          repo(AshAge.TestRepo)
+          label(:Dest)
+        end
+
+        attributes do
+          uuid_primary_key(:id)
+          attribute(:org, :string, public?: true)
+        end
+
+        multitenancy do
+          strategy(:attribute)
+          attribute(:org)
+        end
+
+        actions do
+          defaults([:create])
+        end
+      end
+
+      edge = %AshAge.Edge{
+        name: :rel,
+        label: :REL,
+        direction: :outgoing,
+        destination: TenantDest,
+        properties: []
+      }
+
+      changeset =
+        TenantSrc
+        |> Ash.Changeset.for_create(:create, %{})
+        |> Ash.Changeset.set_tenant("org-acme")
+
+      {_src, _dest_attr, src_value, dest_value} =
+        EdgeCypher.tenant_spec(TenantSrc, edge, changeset)
+
+      # Source parses "org-acme" -> "acme"; destination (identity parse) keeps "org-acme".
+      assert src_value == "acme"
+      assert dest_value == "org-acme"
+
+      # And the WHERE binds two DISTINCT params — never one shared value.
+      {clause, params} = EdgeCypher.tenant_where({:org, :org, src_value, dest_value})
+
+      assert clause == " AND a.`org` = $tenant AND b.`org` = $dst_tenant"
+      assert params == %{"tenant" => "acme", "dst_tenant" => "org-acme"}
+    end
+
+    test "a nil tenant (global/tenantless action) is not parsed and does not crash a custom parse fn" do
+      changeset =
+        TenantSrc
+        |> Ash.Changeset.for_create(:create, %{})
+        |> Ash.Changeset.set_tenant(nil)
+
+      {_src, _dest, src_value, _dest_value} =
+        EdgeCypher.tenant_spec(TenantSrc, @tenant_edge, changeset)
+
+      # Fail-closed-empty (matches nothing), no FunctionClauseError.
+      assert src_value == nil
+    end
+
+    test "a non-:attribute resource takes no tenant spec" do
+      defmodule PlainSrc do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
+
+        age do
+          graph(:edge_cypher_plain_src)
+          repo(AshAge.TestRepo)
+          label(:Src)
+        end
+
+        attributes do
+          uuid_primary_key(:id)
+        end
+      end
+
+      # tenant_spec consults the changeset only on the :attribute branch, so a
+      # plain to_tenant-carrying map suffices to prove the non-attribute return.
+      refute EdgeCypher.tenant_spec(PlainSrc, @tenant_edge, %{to_tenant: "org-acme"})
+    end
+  end
+end

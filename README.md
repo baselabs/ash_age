@@ -28,13 +28,14 @@ database to deploy or operate.
 
 | Area | What you get |
 |------|--------------|
-| **CRUD & bulk** | Resources as labeled vertices; `Ash.bulk_create` via `UNWIND`; single and composite primary keys |
+| **CRUD & bulk** | Resources as labeled vertices; `Ash.bulk_create` via `UNWIND`; bulk destroy by query (`destroy_query`); upserts via a two-statement MATCH-then-CREATE path (no `MERGE` — it's banned); single and composite primary keys |
+| **Aggregates** | `count` / `sum` / `avg` / `min` / `max` / `exists` over the resource's own records, with sub-filters |
 | **Atomic updates** | `Ash.Expr` atomics translate to Cypher — `Ash.update`/`bulk_update` via `update_query`, `Ash.update_many` (distinct changes per record) via `update_many` |
 | **Edges** | Create/destroy graph edges from actions, edge properties, incoming / outgoing / undirected |
 | **Traversal** | Bounded variable-length traversal as an Ash manual relationship — per-source dedup, cardinality-aware |
 | **Multitenancy** | Both Ash strategies — `:attribute` (one tenant-filtered graph) and `:context` (graph-per-tenant) — plus opt-in DB-enforced Row-Level Security |
 | **Sensitive data** | Fail-closed classification verifiers; deterministic-encryption equality search on ciphertext |
-| **Filtering** | `eq` / `not_eq` / `in` / `is_nil`, ranges, boolean and nested expressions, sort, limit, offset |
+| **Filtering** | `eq` / `not_eq` / `in` / `is_nil`, ranges, boolean and nested expressions, `contains` / `string_starts_with` / `string_ends_with` (case-sensitive), sort, limit, offset |
 | **Pagination** | Offset **and** keyset pagination — keyset compiles to a filter (`WHERE rank > $x`), avoiding the deep-page `SKIP N` cost of offset |
 | **Raw Cypher** | `AshAge.cypher/5` parameterized escape hatch for queries the DSL can't express |
 | **Telemetry** | A `:telemetry` span on every operation, with metadata guaranteed free of values and secrets |
@@ -48,7 +49,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 2.0"}
+    {:ash_age, "~> 2.1"}
   ]
 end
 ```
@@ -336,7 +337,7 @@ errors surface as compiler diagnostics (Spark-wide behavior) — build with
 Every data-layer operation emits a `:telemetry.span`:
 
 ```
-[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
+[:ash_age, :read | :create | :bulk_create | :upsert | :update | :update_query | :update_many | :destroy | :aggregate | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
 ```
 
 ```elixir
@@ -351,7 +352,10 @@ Every data-layer operation emits a `:telemetry.span`:
 Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums
 only (`resource`, `multitenancy`, `tenant?`, `result`, `row_count`, `direction`,
 …); never a PK/property value, error reason, Cypher, or the tenant-derived graph
-name. See `usage-rules.md` for the full per-op metadata catalog.
+name. The one exception is `:exception` spans (programmer/config raises), whose
+Erlang-standard `kind`/`reason`/`stacktrace` are telemetry-span data and sit
+outside the value-free contract. See `usage-rules.md` for the full per-op
+metadata catalog.
 
 ## Mix Tasks
 

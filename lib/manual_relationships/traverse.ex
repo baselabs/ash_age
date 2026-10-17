@@ -321,7 +321,9 @@ defmodule AshAge.ManualRelationships.Traverse do
   # repeated per branch because AGE requires each UNION query part self-contained.
   defp union_branch(direction, src, dest, label, len, attr, src_match, src_return) do
     {chain, node_vars} = fixed_chain(direction, src, dest, label, len)
-    scope = Enum.map_join(node_vars, " AND ", fn v -> "#{v}.#{attr} = $tenant" end)
+    # Node refs are backtick-quoted (Filter.prop_ref discipline): a tenant
+    # discriminator named with a Cypher keyword must not emit a bare ref.
+    scope = Enum.map_join(node_vars, " AND ", fn v -> "#{v}.`#{attr}` = $tenant" end)
 
     "UNWIND $ids AS sid " <>
       "MATCH #{chain} " <>
@@ -353,7 +355,7 @@ defmodule AshAge.ManualRelationships.Traverse do
   defp src_match(src_pkey) do
     Enum.map_join(src_pkey, " AND ", fn f ->
       f = f |> to_string() |> Migration.validate_identifier!()
-      "a.#{f} = sid.#{f}"
+      "a.`#{f}` = sid.`#{f}`"
     end)
   end
 
@@ -362,7 +364,7 @@ defmodule AshAge.ManualRelationships.Traverse do
     |> Enum.with_index(1)
     |> Enum.map_join(", ", fn {f, i} ->
       f = f |> to_string() |> Migration.validate_identifier!()
-      "a.#{f} AS s#{i}"
+      "a.`#{f}` AS s#{i}"
     end)
   end
 

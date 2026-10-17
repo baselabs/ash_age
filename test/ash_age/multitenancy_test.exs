@@ -404,13 +404,14 @@ defmodule AshAge.MultitenancyTest do
     end
 
     test "an untranslatable filter fails CLOSED (error, never silently unscoped)" do
-      # A genuine Ash operator struct the translator has no clause for. The guarantee
+      # A genuine Ash operator struct the translator has no clause for (Contains
+      # became supported in 2.1.0; Ago is structurally unsupported). The guarantee
       # is: rather than drop the scoping and run an unscoped WHERE, changeset_where
       # surfaces the error so update/destroy return a redacted failure.
       filter = %Ash.Filter{
         resource: nil,
-        expression: %Ash.Query.Function.Contains{
-          arguments: [%Ash.Query.Ref{attribute: %{name: :name}}, "x"]
+        expression: %Ash.Query.Function.Ago{
+          arguments: [1, :year]
         }
       }
 

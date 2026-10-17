@@ -13,20 +13,22 @@ concurrency:
 
 env:
   MIX_ENV: test
-  ELIXIR_VERSION: "1.18"
-  OTP_VERSION: "27"
 
 jobs:
   lint:
-    name: Lint
+    name: Lint (OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.18"
+          otp-version: ${{ matrix.otp }}
 
       - uses: actions/cache@v6
         id: deps-cache
@@ -34,9 +36,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+            ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-
 
       - run: mix deps.get
       - run: mix format --check-formatted
@@ -45,15 +47,19 @@ jobs:
       - run: mix hex.audit
 
   compile:
-    name: Compile
+    name: Compile (OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.18"
+          otp-version: ${{ matrix.otp }}
 
       - uses: actions/cache@v6
         id: deps-cache
@@ -61,17 +67,21 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+            ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-
 
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: MIX_ENV=dev mix docs
 
   test:
-    name: Test
+    name: Test (OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
     services:
       age:
         # Pinned by digest for reproducible AGE behavior (apache/age:release_PG16_1.6.0,
@@ -95,8 +105,8 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.18"
+          otp-version: ${{ matrix.otp }}
 
       - uses: actions/cache@v6
         id: deps-cache
@@ -104,24 +114,28 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+            ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-
 
       - run: mix deps.get
       - run: mix test
 
   dialyzer:
-    name: Dialyzer
+    name: Dialyzer (OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        otp: ["27", "28"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         id: setup-beam
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.18"
+          otp-version: ${{ matrix.otp }}
 
       - uses: actions/cache@v6
         id: deps-cache
@@ -129,17 +143,17 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+            ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-
 
       - uses: actions/cache@v6
         id: plt-cache
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plt-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-plt-1.18-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-plt-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+            ${{ runner.os }}-plt-1.18-${{ matrix.otp }}-
 
       - run: mix deps.get
       - run: mix dialyzer
@@ -169,7 +183,7 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: "1.18"
+          otp-version: "27"
 
       - run: elixir scripts/run_notebook.exs notebooks/getting_started.livemd

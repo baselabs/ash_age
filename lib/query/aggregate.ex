@@ -39,10 +39,10 @@ defmodule AshAge.Query.Aggregate do
         raise ArgumentError, "AshAge count with uniq?: true requires a field to DISTINCT over"
 
       {:count, field, false} ->
-        "count(n.#{validate_field!(field)})"
+        "count(n.`#{validate_field!(field)}`)"
 
       {:count, field, true} ->
-        "count(DISTINCT n.#{validate_field!(field)})"
+        "count(DISTINCT n.`#{validate_field!(field)}`)"
 
       {kind, nil, _uniq?} when kind in [:sum, :avg, :min, :max] ->
         raise ArgumentError,
@@ -55,7 +55,10 @@ defmodule AshAge.Query.Aggregate do
                 "(AGE Cypher has no DISTINCT form for these)"
 
       {kind, field, false} when kind in [:sum, :avg, :min, :max] ->
-        "#{kind}(n.#{validate_field!(field)})"
+        # Property refs are backtick-quoted (same discipline as Filter.prop_ref):
+        # a field named with a Cypher keyword (`count`, `sum`) mis-parses in AGE
+        # as a bare ref.
+        "#{kind}(n.`#{validate_field!(field)}`)"
     end
   end
 

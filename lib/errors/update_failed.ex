@@ -3,9 +3,11 @@ defmodule AshAge.Errors.UpdateFailed do
   Error for failed update operations.
   """
 
+  alias AshAge.Errors.Redaction
+
   use Splode.Error, fields: [:resource, :reason], class: :invalid
 
   def message(%{resource: resource, reason: reason}) do
-    "Update failed for #{inspect(resource)}: #{inspect(reason)}"
+    "Update failed for #{inspect(resource)}: #{Redaction.safe_inspect(reason)}"
   end
 end

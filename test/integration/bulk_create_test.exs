@@ -377,4 +377,137 @@ defmodule AshAge.Integration.BulkCreateTest do
       vlabels: ["Plain"]
     )
   end
+
+  # ------------------------------------------------------------------
+  # Scenario 6: a MIXED-tenant :context batch fails closed.
+  # bulk_graph/2 resolved the whole batch's graph off the FIRST changeset
+  # (trusting Ash's tenant batching with no defensive check) — a hand-built
+  # mixed batch would silently write every row to the first tenant's graph.
+  # The data layer now asserts every changeset resolves the same write graph.
+  # ------------------------------------------------------------------
+  test ":context bulk_create fails closed on a mixed-tenant batch (no silent first-tenant write)" do
+    alpha =
+      AshAge.Multitenancy.graph_name(Doc, "alpha") |> AshAge.Migration.validate_identifier!()
+
+    beta = AshAge.Multitenancy.graph_name(Doc, "beta") |> AshAge.Migration.validate_identifier!()
+
+    # Two tenant graphs, provisioned + torn down together (nested with_graph
+    # leaked a graph when the body failed mid-run).
+    SQL.Sandbox.unboxed_run(AshAge.TestRepo, fn ->
+      exec(~s|SELECT ag_catalog.create_graph('#{alpha}')|)
+      exec(~s|SELECT ag_catalog.create_graph('#{beta}')|)
+
+      try do
+        a =
+          Doc
+          |> Ash.Changeset.for_create(:create, %{title: "a"})
+          |> Ash.Changeset.set_tenant("alpha")
+
+        b =
+          Doc
+          |> Ash.Changeset.for_create(:create, %{title: "b"})
+          |> Ash.Changeset.set_tenant("beta")
+
+        # opts is a MAP (the callback Map.get's it) — [] would BadMapError past
+        # the guard instead of demonstrating the first-tenant write.
+        assert {:error, %AshAge.Errors.CreateFailed{}} =
+                 AshAge.DataLayer.bulk_create(Doc, [a, b], %{})
+
+        # Nothing landed in EITHER tenant's graph.
+        count = fn graph ->
+          {:ok, [%{c: n}]} =
+            AshAge.cypher(AshAge.TestRepo, graph, "MATCH (n:Doc) RETURN count(n) AS c", %{},
+              c: :agtype
+            )
+
+          n
+        end
+
+        assert count.(alpha) == 0
+        assert count.(beta) == 0
+      after
+        exec(~s|SELECT ag_catalog.drop_graph('#{alpha}', true)|)
+        exec(~s|SELECT ag_catalog.drop_graph('#{beta}', true)|)
+      end
+    end)
+  end
+
+  # ------------------------------------------------------------------
+  # Scenario 7: a bulk UPSERT fails closed (no silent duplicate creates).
+  # ------------------------------------------------------------------
+  test "bulk_create with upsert?: true fails closed instead of duplicating rows" do
+    with_graph(
+      "itest_bulk_plain",
+      fn ->
+        result =
+          Ash.bulk_create(
+            [%{name: "x"}, %{name: "y"}],
+            Plain,
+            :create,
+            upsert?: true,
+            upsert_fields: [:name],
+            return_records?: false,
+            return_errors?: true
+          )
+
+        assert %Ash.BulkResult{status: :error, error_count: 2, errors: [first | _]} = result
+        assert Exception.message(first) =~ "bulk upsert is not supported"
+
+        assert {:ok, []} = Plain |> Ash.Query.for_read(:read) |> Ash.read()
+      end,
+      vlabels: ["Plain"]
+    )
+  end
+
+  # ------------------------------------------------------------------
+  # Scenario 8: bulk values reach the database ONLY as the $1 JSON params —
+  # captured from the EXECUTED statement of the real bulk path (the unit-tier
+  # test feeds handwritten Cypher to the builder; this one exercises
+  # run_bulk_group's actual generation through telemetry).
+  # ------------------------------------------------------------------
+  test "bulk_create row values appear only in the $1 params of the executed statement" do
+    parent = self()
+    handler_id = "bulk-interp-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach_many(
+      handler_id,
+      [[:ash_age, :test_repo, :query]],
+      fn _e, _m, meta, _ ->
+        send(parent, {:sql, meta[:query], meta[:params]})
+      end,
+      nil
+    )
+
+    secret = "SUPER-SECRET-BULK-VALUE"
+
+    try do
+      with_graph(
+        "itest_bulk_plain",
+        fn ->
+          assert %Ash.BulkResult{status: :success} =
+                   Ash.bulk_create([%{name: secret}], Plain, :create, return_records?: false)
+        end,
+        vlabels: ["Plain"]
+      )
+    after
+      :telemetry.detach(handler_id)
+    end
+
+    captured = receive_all([])
+    bulk = Enum.filter(captured, fn {sql, _} -> String.contains?(sql, "UNWIND") end)
+    refute bulk == [], "no bulk statement captured — tripwire is vacuous"
+
+    for {sql, params} <- bulk do
+      refute sql =~ secret, "value interpolated into the bulk SQL body: #{sql}"
+      assert inspect(params) =~ secret, "value missing from the $1 params — assertion is vacuous"
+    end
+  end
+
+  defp receive_all(acc) do
+    receive do
+      {:sql, q, p} -> receive_all([{q, p} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 end
