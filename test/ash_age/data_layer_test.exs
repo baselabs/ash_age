@@ -6,6 +6,13 @@ defmodule AshAge.DataLayerTest do
   alias AshAge.Errors.QueryFailed
   alias AshAge.Query
 
+  # A struct with NO Jason.Encoder impl, local to this suite: no dependency
+  # can implement an encoder for it (deps DO ship impls for stdlib types —
+  # an igniter transitive adds Jason.Encoder.Regex).
+  defmodule NeverEncoded do
+    defstruct [:secret]
+  end
+
   # A resource with NO rls_guc — RLS is off; with_rls/4 must run the fun verbatim.
   defmodule NoRlsResource do
     use Ash.Resource,
@@ -229,6 +236,10 @@ defmodule AshAge.DataLayerTest do
     end
 
     test "a struct value (no Jason.Encoder impl) fails closed as the same tuple, never a raise" do
+      # NeverEncoded (module level below) is the fixture: a dep may implement
+      # Jason.Encoder for a common stdlib type (an igniter transitive ships
+      # Jason.Encoder.Regex — caught exactly this brittleness), but nothing can
+      # implement it for a struct defined only in this suite.
       # Jason.encode! raises Protocol.UndefinedError (NOT EncodeError) here, with
       # the value inspected into the message — must be redacted the same way
       assert {:error, :params_not_json_encodable} =
@@ -236,7 +247,7 @@ defmodule AshAge.DataLayerTest do
                  AshAge.TestRepo,
                  :any_graph,
                  "MATCH (n) WHERE n.x = $x RETURN n",
-                 %{"x" => %{"r" => ~r/secret/}}
+                 %{"x" => %{"r" => %NeverEncoded{secret: "x"}}}
                )
     end
 

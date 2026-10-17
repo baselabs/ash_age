@@ -49,10 +49,22 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ash_age, "~> 2.1"}
+    {:ash_age, "~> 2.2"}
   ]
 end
 ```
+
+Then let the installer wire everything (with [Igniter](https://hex.pm/packages/igniter) — the Ash-ecosystem code generator — in your dev deps):
+
+```console
+$ mix igniter.install ash_age
+```
+
+That writes the Postgrex types module (agtype registration), your Repo's
+`after_connect: {AshAge.Session, :setup, []}` + `types:` config, and the
+`config :ash, default_string_length_count: :codepoints` basis ash ≥ 3.33
+requires — then prints the migration + database next steps. Without Igniter,
+`mix ash_age.install` prints the same steps as copy-pasteable instructions.
 
 ### Compatibility
 
