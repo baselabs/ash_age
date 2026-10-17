@@ -23,6 +23,8 @@ defmodule Mix.Tasks.AshAge.Install do
     """
     #{header()}
 
+    #{step_0_database()}
+
     #{step_1_postgrex_types()}
 
     #{step_2_repo_config()}
@@ -41,6 +43,31 @@ defmodule Mix.Tasks.AshAge.Install do
     ============================================================
     ash_age Setup Instructions
     ============================================================\
+    """
+  end
+
+  defp step_0_database do
+    """
+    Step 0: A PostgreSQL Server with Apache AGE
+    ────────────────────────────────────────────
+
+    ash_age needs PostgreSQL 16 + the Apache AGE extension. The quickest
+    local server (the ash_age repo ships this compose file — any
+    apache/age release_PG16 image works):
+
+        services:
+          age:
+            image: apache/age:release_PG16_1.6.0
+            ports: ["5462:5432"]
+            environment:
+              POSTGRES_USER: postgres
+              POSTGRES_PASSWORD: postgres
+              POSTGRES_DB: my_app_test
+
+    Then point your repo config at it. NOTE: the image creates the AGE
+    extension only in POSTGRES_DB at init; create it yourself elsewhere:
+
+        CREATE EXTENSION age;  -- as a superuser, once per database\
     """
   end
 
@@ -72,6 +99,10 @@ defmodule Mix.Tasks.AshAge.Install do
         config :my_app, MyApp.Repo,
           after_connect: {AshAge.Session, :setup, []},
           types: MyApp.PostgrexTypes
+
+        # ash >= 3.33 refuses to compile :string constraints until the
+        # counting basis is explicit (ash_age itself uses :codepoints):
+        config :ash, default_string_length_count: :codepoints
 
     The after_connect hook sets the search_path to include ag_catalog
     and loads the AGE extension on each new connection.\

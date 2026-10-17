@@ -1,0 +1,13 @@
+# Dev-container override: adds the `dev` service on top of the repo's
+# compose.yaml (whose `age` service is the database). Used only by
+# .devcontainer/devcontainer.json — `docker compose up -d` alone still starts
+# just the database.
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+    command: sleep infinity
+    volumes:
+      - ../..:/workspaces:cached
+    depends_on:
+      age:
+        condition: service_healthy

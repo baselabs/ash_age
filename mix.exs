@@ -32,6 +32,8 @@ defmodule AshAge.MixProject do
     [
       preferred_envs: [
         "test.watch": :test,
+        "test.unit": :test,
+        "test.integration": :test,
         credo: :test,
         dialyzer: :test
       ]
@@ -96,13 +98,18 @@ defmodule AshAge.MixProject do
         "notebooks/getting_started.livemd",
         "usage-rules.md",
         "documentation/troubleshooting.md",
+        "documentation/testing.md",
         "documentation/dsls/DSL-AshAge.DataLayer.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "LICENSE"
       ],
       groups_for_extras: [
-        Guides: ["notebooks/getting_started.livemd", "documentation/troubleshooting.md"],
+        Guides: [
+          "notebooks/getting_started.livemd",
+          "documentation/troubleshooting.md",
+          "documentation/testing.md"
+        ],
         Reference: ["documentation/dsls/DSL-AshAge.DataLayer.md", "usage-rules.md"]
       ],
       groups_for_modules: [
@@ -148,7 +155,11 @@ defmodule AshAge.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
-      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"]
+      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"],
+      # The integration tag (not env-var presence) decides the lane — `mix
+      # test.unit` never trips the empty-string-AGE_DATABASE_URL trap.
+      "test.unit": ["test --exclude integration"],
+      "test.integration": ["test --only integration"]
     ]
   end
 end
