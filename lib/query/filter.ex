@@ -10,6 +10,11 @@ defmodule AshAge.Query.Filter do
   - in, is_nil
   - and, or, not
 
+  ## Supported string predicates (case-SENSITIVE — Cypher's operators):
+  - contains / string_starts_with / string_ends_with over plain `:string`
+    attributes (`:ci_string` attributes and `Ash.CiString` values fail closed:
+    openCypher has no case-insensitive form)
+
   ## NOT supported (returns error):
   - like, ilike
   - Aggregate subqueries
@@ -203,12 +208,47 @@ defmodule AshAge.Query.Filter do
     {:ok, query, "#{prop_ref(attr)} IS NOT NULL"}
   end
 
+  # String-function predicates. openCypher's CONTAINS / STARTS WITH / ENDS WITH
+  # are CASE-SENSITIVE — a :ci_string attribute or %Ash.CiString{} value asks
+  # for case-insensitive semantics Cypher cannot express, so those fail closed
+  # (silently downcasting to case-sensitive would return wrong rows).
+  @string_predicates %{
+    Ash.Query.Function.Contains => "CONTAINS",
+    Ash.Query.Function.StringStartsWith => "STARTS WITH",
+    Ash.Query.Function.StringEndsWith => "ENDS WITH"
+  }
+
+  defp do_translate(
+         %mod{arguments: [%Ash.Query.Ref{attribute: attr}, value]},
+         query
+       )
+       when mod in [
+              Ash.Query.Function.Contains,
+              Ash.Query.Function.StringStartsWith,
+              Ash.Query.Function.StringEndsWith
+            ] do
+    with :ok <- string_predicate_case_sensitive(mod, attr, value) do
+      {query, param_ref} = Query.add_param(query, cast_value(value, attr))
+      {:ok, query, "#{prop_ref(attr)} #{@string_predicates[mod]} #{param_ref}"}
+    end
+  end
+
   # Catch-all: unsupported filter. Surface only the operator/function module and
   # the referenced field name (both structural) — never the filtered value, which
   # may be PII/secret.
   defp do_translate(expr, _query) do
     {operator, field} = unsupported_shape(expr)
     {:error, UnsupportedFilter.exception(operator: operator, field: field)}
+  end
+
+  defp string_predicate_case_sensitive(mod, attr, value) do
+    ci_attr? = attr_type(attr) in [:ci_string, Ash.Type.CiString]
+
+    if ci_attr? or is_struct(value, Ash.CiString) do
+      {:error, UnsupportedFilter.exception(operator: @string_predicates[mod], field: attr.name)}
+    else
+      :ok
+    end
   end
 
   # Value casting for AGE compatibility, typed by the ref's attribute (type AND

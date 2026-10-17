@@ -94,9 +94,26 @@ defmodule AshAge.Changes.EdgeCypherTest do
     end
 
     test "a non-:attribute resource takes no tenant spec" do
-      changeset = Ash.Changeset.new(AshAge.DataLayerTest.NoRlsResource)
+      defmodule PlainSrc do
+        use Ash.Resource,
+          domain: AshAge.TestDomain,
+          validate_domain_inclusion?: false,
+          data_layer: AshAge.DataLayer
 
-      refute EdgeCypher.tenant_spec(AshAge.DataLayerTest.NoRlsResource, @tenant_edge, changeset)
+        age do
+          graph(:edge_cypher_plain_src)
+          repo(AshAge.TestRepo)
+          label(:Src)
+        end
+
+        attributes do
+          uuid_primary_key(:id)
+        end
+      end
+
+      # tenant_spec consults the changeset only on the :attribute branch, so a
+      # plain to_tenant-carrying map suffices to prove the non-attribute return.
+      refute EdgeCypher.tenant_spec(PlainSrc, @tenant_edge, %{to_tenant: "org-acme"})
     end
   end
 end

@@ -19,7 +19,7 @@ defmodule AshAge.DataLayer.Transformers.ValidateLabelFormat do
     if label do
       label_str = to_string(label)
 
-      if Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, label_str) do
+      if AshAge.Migration.identifier?(label_str) do
         {:ok, dsl_state}
       else
         {:error,

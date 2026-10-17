@@ -16,7 +16,7 @@ defmodule AshAge.DataLayer.Transformers.ValidateGraph do
     if graph do
       graph_str = to_string(graph)
 
-      if Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, graph_str) do
+      if AshAge.Migration.identifier?(graph_str) do
         {:ok, dsl_state}
       else
         {:error,

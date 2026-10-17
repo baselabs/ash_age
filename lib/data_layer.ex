@@ -189,15 +189,9 @@ defmodule AshAge.DataLayer do
   # Ash.Error.Query.UnsortableField at query build.
   def can?(_, {:sort, :binary}), do: false
   def can?(_, {:sort, _}), do: true
-  def can?(_, {:filter_operator, :eq}), do: true
-  def can?(_, {:filter_operator, :not_eq}), do: true
-  def can?(_, {:filter_operator, :gt}), do: true
-  def can?(_, {:filter_operator, :lt}), do: true
-  def can?(_, {:filter_operator, :gte}), do: true
-  def can?(_, {:filter_operator, :lte}), do: true
-  def can?(_, {:filter_operator, :in}), do: true
-  def can?(_, {:filter_operator, :is_nil}), do: true
-  def can?(_, {:filter_operator, _}), do: false
+  # Operator support is advertised via {:filter_expr, struct} below — Ash core
+  # never queries {:filter_operator, _} (verified against ash 3.33 and 3.36),
+  # so the historical filter_operator clauses were vestigial and are removed.
   def can?(_, {:filter_expr, %Ash.Query.Operator.Eq{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Operator.NotEq{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Operator.In{}}), do: true
@@ -218,6 +212,12 @@ defmodule AshAge.DataLayer do
   # a non-nil attr as `{:not_atomic, "does not support the function type(...)"}`.
   def can?(_, {:filter_expr, %Ash.Query.Function.Type{}}), do: true
   def can?(_, {:filter_expr, %Ash.Query.Function.Error{}}), do: true
+  # String predicates (case-sensitive forms; :ci_string attributes and CiString
+  # values fail closed in Filter.translate — Cypher CONTAINS cannot express
+  # case-insensitive matching).
+  def can?(_, {:filter_expr, %Ash.Query.Function.Contains{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringStartsWith{}}), do: true
+  def can?(_, {:filter_expr, %Ash.Query.Function.StringEndsWith{}}), do: true
   def can?(_, {:filter_expr, _}), do: false
   # Pure capability flag (no callback) gating the atomic-batches destroy path's
   # field-select branch (destroy/bulk.ex:657). Declaring true lets Ash compute a
@@ -314,23 +314,24 @@ defmodule AshAge.DataLayer do
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
     case validate_expression(query) do
-      {:error, _} = e ->
-        e
-
-      :ok ->
-        Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-          result =
-            with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
-            |> unwrap_rls(resource)
-
-          {result,
-           %{
-             row_count: row_count(result),
-             result: Telemetry.result_tag(result),
-             rls?: rls?(resource)
-           }}
-        end)
+      {:error, _} = e -> e
+      :ok -> do_run_query(query, resource)
     end
+  end
+
+  defp do_run_query(query, resource) do
+    Telemetry.span(:read, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn -> run_query_body(query, resource) end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         row_count: row_count(result),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
   end
 
   defp run_query_body(%AshAge.Query{} = query, resource) do
@@ -393,25 +394,26 @@ defmodule AshAge.DataLayer do
   @impl true
   def run_aggregate_query(query, aggregates, resource) do
     case validate_expression(query) do
-      {:error, _} = e ->
-        e
-
-      :ok ->
-        Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-          result =
-            with_rls(resource, query.tenant, query.repo, fn ->
-              run_aggregate_query_body(query, aggregates, resource)
-            end)
-            |> unwrap_rls(resource)
-
-          {result,
-           %{
-             aggregate_count: length(aggregates),
-             result: Telemetry.result_tag(result),
-             rls?: rls?(resource)
-           }}
-        end)
+      {:error, _} = e -> e
+      :ok -> do_run_aggregate_query(query, aggregates, resource)
     end
+  end
+
+  defp do_run_aggregate_query(query, aggregates, resource) do
+    Telemetry.span(:aggregate, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          run_aggregate_query_body(query, aggregates, resource)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         aggregate_count: length(aggregates),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
   end
 
   defp run_aggregate_query_body(query, aggregates, resource) do
@@ -1085,25 +1087,26 @@ defmodule AshAge.DataLayer do
     _ = changeset
 
     case validate_expression(query) do
-      {:error, _} = e ->
-        e
-
-      :ok ->
-        Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
-          result =
-            with_rls(resource, query.tenant, query.repo, fn ->
-              destroy_query_body(query, resource, opts)
-            end)
-            |> unwrap_rls(resource)
-
-          {result,
-           %{
-             tenant?: not is_nil(query.tenant),
-             result: Telemetry.result_tag(result),
-             rls?: rls?(resource)
-           }}
-        end)
+      {:error, _} = e -> e
+      :ok -> do_destroy_query(query, resource, opts)
     end
+  end
+
+  defp do_destroy_query(query, resource, opts) do
+    Telemetry.span(:destroy, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          destroy_query_body(query, resource, opts)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource)
+       }}
+    end)
   end
 
   defp destroy_query_body(query, resource, opts) do
@@ -1149,30 +1152,27 @@ defmodule AshAge.DataLayer do
   @impl true
   def update_query(query, changeset, resource, opts) do
     case validate_expression(query) do
-      {:error, _} = e ->
-        e
-
-      :ok ->
-        Telemetry.span(
-          :update_query,
-          %{resource: resource, multitenancy: strategy(resource)},
-          fn ->
-            result =
-              with_rls(resource, query.tenant, query.repo, fn ->
-                update_query_body(query, changeset, resource, opts)
-              end)
-              |> unwrap_rls(resource)
-
-            {result,
-             %{
-               tenant?: not is_nil(query.tenant),
-               result: Telemetry.result_tag(result),
-               rls?: rls?(resource),
-               atomic?: changeset.atomics != []
-             }}
-          end
-        )
+      {:error, _} = e -> e
+      :ok -> do_update_query(query, changeset, resource, opts)
     end
+  end
+
+  defp do_update_query(query, changeset, resource, opts) do
+    Telemetry.span(:update_query, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      result =
+        with_rls(resource, query.tenant, query.repo, fn ->
+          update_query_body(query, changeset, resource, opts)
+        end)
+        |> unwrap_rls(resource)
+
+      {result,
+       %{
+         tenant?: not is_nil(query.tenant),
+         result: Telemetry.result_tag(result),
+         rls?: rls?(resource),
+         atomic?: changeset.atomics != []
+       }}
+    end)
   end
 
   @impl true

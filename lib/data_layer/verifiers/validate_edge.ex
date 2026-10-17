@@ -42,6 +42,6 @@ defmodule AshAge.DataLayer.Verifiers.ValidateEdge do
   end
 
   defp valid_identifier?(atom) when is_atom(atom) do
-    Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, Atom.to_string(atom))
+    AshAge.Migration.identifier?(atom)
   end
 end

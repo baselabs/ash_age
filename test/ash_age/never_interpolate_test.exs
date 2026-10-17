@@ -6,9 +6,11 @@ defmodule AshAge.NeverInterpolateTest do
   """
   use ExUnit.Case, async: true
 
+  alias AshAge.Changes.{CreateEdge, DestroyEdge, EdgeCypher}
   alias AshAge.Cypher.Parameterized
   alias AshAge.DataLayer
   alias AshAge.Query
+  alias AshAge.Query.Aggregate
   alias AshAge.Query.Filter
 
   alias Ash.Query.Operator.{Eq, In}
@@ -65,10 +67,10 @@ defmodule AshAge.NeverInterpolateTest do
   end
 
   test "an edge source-PK and tenant value appear only in the $1 params, never in the SQL body" do
-    {src_clause, src_params} = AshAge.Changes.EdgeCypher.source_where([{"id", @secret}])
+    {src_clause, src_params} = EdgeCypher.source_where([{"id", @secret}])
 
     {tenant_clause, tenant_params} =
-      AshAge.Changes.EdgeCypher.tenant_where({"org", "org", @secret})
+      EdgeCypher.tenant_where({"org", "org", @secret})
 
     refute src_clause =~ @secret
     refute tenant_clause =~ @secret
@@ -144,13 +146,13 @@ defmodule AshAge.NeverInterpolateTest do
       fn -> Query.delete_cypher(q, :M) |> elem(0) end,
       fn -> Query.update_cypher(q, :M, "n.`name` = $name") |> elem(0) end,
       fn -> Query.duplicate_pk_cypher(q, :M, [:id]) |> elem(0) end,
-      fn -> AshAge.Query.Aggregate.expr({:count, :name, []}) end,
+      fn -> Aggregate.expr({:count, :name, []}) end,
       fn ->
-        AshAge.Changes.CreateEdge.build_create(M, edge, %{"id" => "s"}, "d", %{w: 1}, nil)
+        CreateEdge.build_create(M, edge, %{"id" => "s"}, "d", %{w: 1}, nil)
         |> elem(0)
       end,
       fn ->
-        AshAge.Changes.DestroyEdge.build_destroy(M, edge, %{"id" => "s"}, "d", nil) |> elem(0)
+        DestroyEdge.build_destroy(M, edge, %{"id" => "s"}, "d", nil) |> elem(0)
       end
     ]
 

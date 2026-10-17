@@ -11,11 +11,13 @@ defmodule AshAge.Integration.SessionSearchPathTest do
   use AshAge.DataCase, async: false
   @moduletag :integration
 
+  alias AshAge.Session
   alias AshAge.TestRepo
+  alias Ecto.Adapters.SQL
 
   test "pool connections carry search_path with public FIRST, ag_catalog second" do
     assert {:ok, %{rows: [[path]]}} =
-             Ecto.Adapters.SQL.query(TestRepo, "SHOW search_path", [])
+             SQL.query(TestRepo, "SHOW search_path", [])
 
     normalized = path |> String.replace(" ", "")
     assert normalized =~ ~s(public,ag_catalog,"$user")

@@ -57,7 +57,7 @@ defmodule AshAge.Integration.NoMergeTest do
       end)
 
     cypher_statements = Enum.filter(queries, &String.contains?(&1, "ag_catalog.cypher"))
-    assert length(cypher_statements) > 0, "no cypher statements captured — tripwire is vacuous"
+    refute cypher_statements == [], "no cypher statements captured — tripwire is vacuous"
 
     for sql <- cypher_statements do
       refute sql =~ "MERGE", "executed statement contains banned MERGE: #{sql}"

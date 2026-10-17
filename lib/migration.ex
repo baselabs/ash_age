@@ -153,7 +153,7 @@ defmodule AshAge.Migration do
 
   @doc false
   def validate_identifier!(name) when is_binary(name) do
-    unless Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, name) do
+    unless identifier?(name) do
       raise ArgumentError,
             "invalid AGE identifier: #{inspect(name)}. " <>
               "Must start with a letter or underscore and contain only alphanumeric characters and underscores."
@@ -165,6 +165,16 @@ defmodule AshAge.Migration do
   def validate_identifier!(name) when is_atom(name) do
     validate_identifier!(Atom.to_string(name))
   end
+
+  @doc """
+  The single identifier-shape predicate every compile-time check shares with the
+  runtime `validate_identifier!/1` (one owner — the regex is not re-declared in
+  transformers/verifiers).
+  """
+  def identifier?(name) when is_binary(name),
+    do: Regex.match?(~r/\A[a-zA-Z_][a-zA-Z0-9_]*\z/, name)
+
+  def identifier?(name) when is_atom(name), do: identifier?(Atom.to_string(name))
 
   @doc false
   # Validates a PostgreSQL custom GUC name (`namespace.name`). Postgres requires a

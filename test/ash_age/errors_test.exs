@@ -3,7 +3,7 @@ defmodule AshAge.ErrorsTest do
   use ExUnit.Case, async: true
 
   alias AshAge.DataLayer
-  alias AshAge.Errors.UnsupportedFilter
+  alias AshAge.Errors.{QueryFailed, UnsupportedFilter, UpdateFailed}
   alias AshAge.Query
   alias AshAge.Query.Filter
 
@@ -24,11 +24,16 @@ defmodule AshAge.ErrorsTest do
     test "an unsupported operator's filtered value never reaches the error message" do
       secret = "SSN-123-45-6789"
 
+      # Fragment is genuinely unsupported (contains/starts/ends_with became
+      # supported in 2.1.0; this property needs an operator that still rejects).
       {:error, err} =
-        Filter.translate(%Contains{name: :contains, arguments: [ref(:name), secret]}, q())
+        Filter.translate(
+          %Ash.Query.Function.Fragment{arguments: ["WHERE name = #{secret}"]},
+          q()
+        )
 
       refute Exception.message(err) =~ secret
-      assert Exception.message(err) =~ "Contains"
+      assert Exception.message(err) =~ "Fragment"
     end
 
     test "still names the field when Ref.attribute is a bare atom (not a %{name: _} map)" do
@@ -73,7 +78,7 @@ defmodule AshAge.ErrorsTest do
   describe "error message structural redaction (a raw driver error never inspects through message/1)" do
     test "QueryFailed.message/1 redacts a %Postgrex.Error{} reason" do
       error =
-        AshAge.Errors.QueryFailed.exception(
+        QueryFailed.exception(
           query: "AGE read query",
           reason: %Postgrex.Error{postgres: %{code: "42601", message: "SECRET-sql-detail"}}
         )
@@ -86,7 +91,7 @@ defmodule AshAge.ErrorsTest do
 
     test "QueryFailed.message/1 still shows an already-redacted binary reason" do
       error =
-        AshAge.Errors.QueryFailed.exception(
+        QueryFailed.exception(
           query: "AGE read query",
           reason: "database error (23505)"
         )
@@ -96,7 +101,7 @@ defmodule AshAge.ErrorsTest do
 
     test "UpdateFailed.message/1 redacts a %Postgrex.Error{} reason" do
       error =
-        AshAge.Errors.UpdateFailed.exception(
+        UpdateFailed.exception(
           resource: SomeResource,
           reason: %Postgrex.Error{postgres: %{code: "23505", detail: "SECRET-key=(1)"}}
         )
