@@ -47,8 +47,8 @@ reject cross-tenant writes; rely on it to hide cross-tenant reads.
 `Ash.Error.Changes.StaleRecord`, even for rows that exist.
 
 **Cause.** The primary-key attribute is listed in `age do skip [...] end`, so the
-PK is never written as a graph property and the `WHERE` matches zero rows. As of
-the current version this is a compile-time verifier error (`ValidateSkip`), but
+PK is never written as a graph property and the `WHERE` matches zero rows. Since
+ash_age 1.0.0 this is a compile-time verifier error (`ValidateSkip`), but
 on an older build it fails silently at runtime.
 
 **Fix.** Remove the primary key from `skip`. Compile with `--warnings-as-errors`
@@ -77,7 +77,7 @@ has the same limit). Top-level `:binary` attributes are fine — `ash_age`
 `$age64$`-tags them automatically.
 
 **Fix.** Encode nested bytes app-side (`Base.encode64/1`) or store them in a
-top-level `:binary` attribute. On the current version this fails closed with a
+top-level `:binary` attribute. On ash_age 1.0.0+ this fails closed with a
 value-free error naming the attribute rather than raising.
 
 ## A `:binary` field won't sort or range-filter

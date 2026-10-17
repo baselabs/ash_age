@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-17
+
+A hardening and truth-in-documentation release, plus the most-requested read
+filter. Everything here comes from a full external alignment audit of the 2.0.0
+tree (code quality, security posture, capability gaps, docs currency) — every
+finding below is regression-tested, and the two suite-level invariants that had
+no tripwire (the MERGE ban, the search_path order) now have mutation-proven
+tests.
+
+### Added
+
+- **String-function filters on reads**: `contains/2`, `string_starts_with/2`,
+  `string_ends_with/2` translate to parameterized, backtick-quoted Cypher
+  `CONTAINS` / `STARTS WITH` / `ENDS WITH` (case-sensitive — openCypher's
+  semantics), composable with `not`/`or`/`and`. `:ci_string` attributes and
+  `%Ash.CiString{}` values fail closed with `UnsupportedFilter`: Cypher has no
+  case-insensitive form, and silently downcasting would return wrong rows.
+  The atomic-update translator already knew these shapes; reads now match.
+- **CI now tests OTP 27 and 28.** Lint/Compile/Test/Dialyzer run on both
+  (Linux only, per policy); previously only OTP 27 was ever exercised.
+
+### Fixed
+
+- **Cypher-keyword attribute names now work on every path** (the 2.0.0
+  backtick fix was partial). An attribute or PK named `count`, `label`, `sum`,
+  etc. filtered fine but hit an AGE syntax error on: single update/destroy PK
+  matching, both upsert branches, bulk-create SET, aggregates, edge endpoint /
+  tenant-discriminator / property refs, and traversal PK matching. All
+  property refs in the library are now quoted (grep-enumerated: 23 sites,
+  zero bare), pinned by a dedicated integration suite against a resource whose
+  own PK and attributes are literally `count`/`label`/`sum`.
+- **The read path fails closed on untranslatable filter expressions.**
+  `run_query`, `run_aggregate_query`, `destroy_query` and `update_query` now
+  eagerly validate `query.expression` (the channel Ash uses for `:attribute`
+  tenant predicates) and return `UnsupportedFilter` instead of silently
+  dropping the clause and broadening the statement — the same discipline the
+  update path already had. Reachable only for hand-built expressions (Ash's
+  `can?` build gate rejects the shapes upstream), which is exactly why it was
+  silent.
+- **`AshAge.with_tenant_rls/4` no longer discards rollback reasons**: a fun
+  that calls `repo.rollback/1` now surfaces `{:error, reason}` (matching its
+  documented raw-propagation contract) instead of crashing with a `MatchError`.
+  Raises still re-raise untouched.
+- **Error messages structurally redact raw driver errors.**
+  `AshAge.Errors.QueryFailed.message/1` and `UpdateFailed.message/1` never
+  `inspect` a `%Postgrex.Error{}` — a future caller passing an unredacted
+  reason can no longer leak `DETAIL` lines into logs. Pre-redacted reasons
+  render unchanged.
+- **Edge tenant scoping honors `parse_attribute`**: the `$tenant` param is the
+  source resource's PARSED tenant (vertex-path parity). For custom parse
+  functions the match fails closed-empty (0 rows), never a leak.
+- **A mixed-tenant `:context` bulk batch fails closed** with a value-free
+  `CreateFailed` instead of silently writing every row to the first
+  changeset's tenant graph.
+- **The getting-started notebook runs under ash ≥ 3.33**: its `Mix.install`
+  cell now sets `config: [ash: [default_string_length_count: :codepoints]]`
+  (the basis ash_age itself compiles against). The CI notebook job resolves
+  dependencies fresh from Hex, so without it every run raised
+  `Spark.Error.DslError`.
+
+### Security
+
+- Bump `ash` to 3.36.1 — clears `EEF-CVE-2026-101028` (`Ash.count`/`Ash.exists`
+  /`Ash.aggregate` skip related resources' read policies in filters; fixed
+  3.34.6) and `EEF-CVE-2026-94201` (`unsafe_to_atom?` filter handling can
+  exhaust the BEAM atom table; fixed 3.34.3). The `mix.exs` requirement stays
+  `~> 3.11`; **consumers should resolve ash ≥ 3.34.6 in their own locks**.
+- New mutation-proven invariant tests for the two security rules that had no
+  tripwire: no executed statement ever contains `MERGE` (telemetry-captured
+  SQL across the CRUD/bulk surface, including statements built inline inside
+  callbacks), and pool connections carry `search_path` with `public` FIRST
+  (the `ag_catalog.schema_migrations` shadowing guard).
+
+### Changed
+
+- `mix.lock` only before this release: dependency locks recorded here
+  (ash 3.33.11 / decimal 3.2.0 security bumps) shipped to consumers through
+  their own resolution; this entry records the audit trail.
+
+### Documentation
+
+- The data-layer moduledoc and generated DSL reference now tell the truth
+  about capabilities: upsert, aggregates, `destroy_query`, atomic updates and
+  keyset pagination are documented as supported (they were implemented in
+  2.0.0/1.0.0 while the docs said the opposite); `usage-rules.md` (shipped in
+  the Hex package) received the same corrections plus coverage of 2.0.0's
+  atomic updates and the query-set-tenant breaking edge.
+
 ## [2.0.0] - 2026-08-12
 
 A major release: atomic-aware updates (the headline), plus the breaking edges

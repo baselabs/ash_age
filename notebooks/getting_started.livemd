@@ -35,10 +35,10 @@ line up.
 > settings take effect.
 > 
 > The setup cells (repo start, `CREATE EXTENSION`, migration) are safe to re-run.
-> The **data-creation cells are not** — each insert adds a new row (there is no
-> upsert), so re-running them duplicates `Alice`/`Bob` and a later single-result
-> match will fail. To start over, reconnect the runtime and run all cells top to
-> bottom.
+> The **data-creation cells are not** — these use plain `create` actions (no
+> `upsert?: true`), so re-running them duplicates `Alice`/`Bob` and a later
+> single-result match will fail. To start over, reconnect the runtime and run all
+> cells top to bottom.
 
 ## Install
 

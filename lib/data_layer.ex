@@ -31,14 +31,30 @@ defmodule AshAge.DataLayer do
 
   ## Capabilities
 
-  Supports `:read`, `:create`, `:update`, `:destroy`, `:bulk_create`, `:filter`
-  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions),
-  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute` and
-  `:context`), `:composite_primary_key`, and `:changeset_filter`. Not supported:
-  `:upsert`, aggregates, and lateral joins. One subtlety: binary-storage
-  attributes are **unsortable** (`can?({:sort, :binary})` is `false`) because
-  the stored `$age64$`-tagged base64 form is not byte-order-preserving —
-  sorting on one raises `Ash.Error.Query.UnsortableField` at query build.
+  Supports `:read`, `:create`, `:update`, `:destroy`, `:destroy_query`,
+  `:bulk_create`, `:upsert` (a two-statement MATCH-then-CREATE/SET path — AGE
+  `MERGE` is banned for its performance bugs), `:filter`
+  (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions, and the
+  case-sensitive string predicates contains/string_starts_with/
+  string_ends_with over plain `:string` attributes), aggregates
+  (count/sum/avg/min/max/exists over the resource's own records, with
+  sub-filters), atomic updates (`Ash.Expr` translates to Cypher through
+  `update_query/4`; distinct-changes batches through `update_many/3`),
+  `:sort`, `:limit`, `:offset`, `:transact`, `:multitenancy` (`:attribute`
+  and `:context`), `:composite_primary_key`, and `:changeset_filter`.
+
+  Not supported (all fail closed with Ash build-time errors): lateral joins,
+  relationship joins/paths in filters and aggregates (the bounded
+  `AshAge.ManualRelationships.Traverse` manual relationship is the supported
+  alternative), first/list/custom aggregate kinds, and aggregate sorting.
+
+  Two subtleties: binary-storage attributes are **unsortable**
+  (`can?({:sort, :binary})` is `false`) because the stored `$age64$`-tagged
+  base64 form is not byte-order-preserving — sorting on one raises
+  `Ash.Error.Query.UnsortableField` at query build; and range/sort/filter
+  operations that cannot be pushed down faithfully are rejected rather than
+  approximated (e.g. case-insensitive string predicates — openCypher has no
+  case-insensitive form).
 
   ## Pagination
 

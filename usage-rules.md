@@ -42,11 +42,34 @@ MyResource
 
 **Restrictions:**
 - NO JOIN operations (use Cypher traversal instead)
-- NO aggregate subqueries in filters
-- NO bulk_create (sequential creates only)
-- NO upsert (use MATCH + conditional CREATE)
+- NO relationship paths in filters (no `filter(exists(related, ...))`, no
+  relationship-pathed aggregates — load via `AshAge.ManualRelationships.Traverse`
+  instead; `exists`-as-aggregate over the resource's own records IS supported)
 - NO lateral_join operations
-- NO like/ilike filters (use regex or application-side filtering)
+- NO like/ilike filters; the string predicates `contains`, `string_starts_with`,
+  `string_ends_with` ARE supported (case-sensitive — `:ci_string` attributes and
+  `Ash.CiString` values are rejected, fail-closed, because Cypher has no
+  case-insensitive form)
+
+**Bulk operations** (all supported): `Ash.bulk_create/4` runs as a single
+`UNWIND $rows AS row CREATE ...` per key-set group (order-preserving with
+`sorted?: true`); `Ash.bulk_update/4` with atomics and `Ash.bulk_destroy/3`
+with a query run as single Cypher statements through the data layer's
+`update_query`/`update_many`/`destroy_query` paths. For bulk update/destroy
+with a query, the TENANT must be set on the QUERY
+(`Ash.Query.set_tenant/2`), not just passed as an option — Ash's atomic bulk
+dispatch reads it from the query.
+
+**Upsert** (`Ash.bulk_create/4` or `Ash.create/2` with `upsert?: true`) runs a
+two-statement existence-MATCH-then-SET/CREATE path (AGE `MERGE` is banned).
+It is explicitly NON-atomic across concurrent upserts of the same identity —
+two racing upserts can both take the CREATE branch. Use `all_tenants?: true`
+on an `:attribute`-multitenant upsert to match identity across tenants.
+
+**Atomic updates.** `Ash.Expr` atomics (`Ash.update/2` with atomic exprs,
+`Ash.bulk_update/4`) translate to single Cypher statements (`update_query/4`
+for queries and single-record reroutes, `update_many/3` for distinct-changes
+batches). Unsupported expression nodes fail closed as `UnsupportedExpression`.
 
 ## Security Requirements
 
@@ -259,8 +282,9 @@ end
 **Mutation scoping.** For `:attribute` (and any `Ash.Policy` filter), the tenant/
 policy filter is applied to `update`/`destroy` WHERE clauses, not just reads —
 a changeset carrying another tenant's primary key cannot modify or delete that
-tenant's rows. A scoping-denied `destroy` returns `Ash.Error.Query.NotFound`
-(a no-match / already-deleted destroy therefore returns `NotFound`, not `:ok`).
+tenant's rows. A scoping-denied (or no-match / already-deleted) record-based
+`update`/`destroy` returns `Ash.Error.Changes.StaleRecord` — the Ash contract
+for record-based mutations (`NotFound` is for identifier lookups).
 
 **Choosing a strategy.** `:attribute` scales to many tenants in one graph (index
 the discriminator) and is the default recommendation. `:context` gives physical
@@ -582,7 +606,7 @@ AshAge.cypher(MyApp.Repo, "my_graph",
 Every data-layer operation emits a `:telemetry.span`:
 
 ```
-[:ash_age, :read | :create | :bulk_create | :update | :destroy | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
+[:ash_age, :read | :create | :bulk_create | :upsert | :update | :update_query | :update_many | :destroy | :aggregate | :create_edge | :destroy_edge | :traverse | :cypher, :start | :stop | :exception]
 ```
 
 Attach a handler the usual way:
@@ -610,24 +634,29 @@ Attach a handler the usual way:
 | `resource` | all (`:start`) | the Ash resource module |
 | `multitenancy` | all (`:start`) | `nil \| :attribute \| :context` (the strategy, not the tenant) |
 | `result` | all (`:stop`) | `:ok \| :error` |
-| `row_count` | read | rows returned |
+| `row_count` | read, cypher | rows returned |
 | `tenant?` | writes | whether the op was tenant-scoped (boolean) |
 | `stale?` | update/destroy | the 0-row not-found path (boolean) |
 | `batch_size`, `group_count` | bulk_create | rows in the batch / key-set groups |
+| `atomic?` | update_query/update_many | whether the statement carries atomic exprs (boolean) |
+| `rls?` | all (when an `rls_guc` is configured) | whether the op ran inside the RLS GUC transaction |
+| `aggregate_count` | aggregate | aggregates computed in the call |
 | `destination_count`, `direction`, `properties?` | create_edge/destroy_edge | edges written / edge direction / any properties set (`properties?` create only) |
 | `destination_count`, `row_count`, `depth`, `direction` | traverse | destinations (post-dedup) / rows (pre-dedup fan-out) / `max_depth` / traversal direction |
-| `row_count` | cypher | rows returned |
 
 `:exception` fires only on a programmer/config error (e.g. an undeclared `edge:`) — DB errors are returned as redacted `{:error, _}` tuples and surface as `:stop` with `result: :error`. Its `kind`/`reason`/`stacktrace` are Erlang-standard telemetry-span data and are intentionally **outside** the value-free contract.
 
 ## Supported Capabilities
 
-- CRUD: `:read`, `:create`, `:update`, `:destroy`
-- Multitenancy: `:attribute` (single graph, tenant-filtered) and `:context` (graph-per-tenant); `changeset.filter` scoping honored on update/destroy
+- CRUD: `:read`, `:create`, `:update`, `:destroy`, `:destroy_query` (single-statement bulk destroy by query)
+- Upsert: two-statement MATCH-then-CREATE/SET (non-atomic under concurrency; `all_tenants?: true` for cross-tenant identity)
+- Atomic updates: `Ash.Expr` → Cypher via `update_query/4` (single-record + query/bulk) and `update_many/3` (distinct-changes batches); unsupported nodes fail closed
+- Multitenancy: `:attribute` (single graph, tenant-filtered) and `:context` (graph-per-tenant); `changeset.filter` scoping honored on update/destroy; DB-enforced RLS read-backstop via `rls_guc`
 - Primary keys: single-attribute (`:id` or any attribute name) and composite
 - Binary attributes: `:binary` / `Ash.Type.Binary` (and AshCloak-encrypted fields) round-trip via base64
 - Transactions: `:transact` with `rollback/2`
-- Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`
+- Filtering: `:eq`, `:not_eq`, `:gt`, `:lt`, `:gte`, `:lte`, `:in`, `:is_nil`, plus `contains`, `string_starts_with`, `string_ends_with` (case-sensitive; `:ci_string` fails closed)
+- Aggregates: `count` (optionally `DISTINCT`), `sum`, `avg`, `min`, `max`, `exists` over the resource's own records, with sub-filters
 - Boolean expressions: `and`, `or`, `not`
 - Sort, limit, offset
 - Pagination: both offset (`SKIP .. LIMIT ..`) and keyset (`page: [after: <keyset>]`); keyset is served via Ash's sort+filter rewrite (no native `can?(:keyset)`), so it compiles to a `WHERE` filter rather than deep-page `SKIP N`
@@ -636,3 +665,7 @@ Attach a handler the usual way:
 - Traversal: bounded variable-length via `AshAge.ManualRelationships.Traverse` (all directions incl. `:both`, per-source dedup, cardinality-aware, fail-closed tenancy)
 - Raw Cypher: `AshAge.cypher/5` parameterized escape hatch (decoded rows, explicit-graph tenancy)
 - Telemetry: value-free `[:ash_age, <op>, :start | :stop | :exception]` spans on every operation
+
+Not supported (fails closed at query build): joins/lateral joins, relationship
+paths in filters and aggregates, first/list/custom aggregates, aggregate sort,
+locks, query combination, expression calculations.
