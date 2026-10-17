@@ -95,12 +95,20 @@ defmodule AshAge.Changes.CreateEdgeTest do
   end
 
   test ":attribute tenancy scopes BOTH endpoints by the tenant discriminator" do
-    # tenant tuple: {source_attr, dest_attr, tenant_value}
+    # tenant tuple: {source_attr, dest_attr, src_value, dest_value}
     {cypher, params} =
-      CreateEdge.build_create(Src, @edge, %{"id" => "s"}, "d", %{}, {:org_id, :org_id, "t1"})
+      CreateEdge.build_create(
+        Src,
+        @edge,
+        %{"id" => "s"},
+        "d",
+        %{},
+        {:org_id, :org_id, "t1", "t1"}
+      )
 
-    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $tenant"
+    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $dst_tenant"
     assert params["tenant"] == "t1"
+    assert params["dst_tenant"] == "t1"
   end
 
   describe "edge_properties/2 serializes by declared argument type" do

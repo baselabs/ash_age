@@ -3,7 +3,7 @@ defmodule AshAge.ErrorsTest do
   use ExUnit.Case, async: true
 
   alias AshAge.DataLayer
-  alias AshAge.Errors.{QueryFailed, UnsupportedFilter, UpdateFailed}
+  alias AshAge.Errors.{CreateFailed, QueryFailed, UnsupportedFilter, UpdateFailed}
   alias AshAge.Query
   alias AshAge.Query.Filter
 
@@ -110,6 +110,67 @@ defmodule AshAge.ErrorsTest do
 
       refute msg =~ "SECRET-key"
       assert msg =~ "database error"
+    end
+
+    test "wrapped {:error, %Postgrex.Error{}} tuples redact recursively" do
+      error =
+        QueryFailed.exception(
+          query: "AGE read query",
+          reason: {:error, %Postgrex.Error{postgres: %{message: "SECRET-detail"}}}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-detail"
+      assert msg =~ "{:error, database error (redacted)}"
+    end
+
+    test "%Jason.EncodeError{} redacts (its message can carry the offending bytes)" do
+      error =
+        QueryFailed.exception(
+          query: "AGE read query",
+          reason: %Jason.EncodeError{message: "SECRET-bytes"}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-bytes"
+      assert msg =~ "redacted"
+    end
+
+    test "any other struct keeps only its structural name (DBConnection errors)" do
+      error =
+        UpdateFailed.exception(
+          resource: SomeResource,
+          reason: %DBConnection.ConnectionError{message: "SECRET-conn"}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-conn"
+      assert msg =~ "redacted"
+    end
+
+    test "CreateFailed.message/1 redacts raw reasons (the write path carries encode errors)" do
+      error =
+        CreateFailed.exception(
+          resource: SomeResource,
+          reason: %Postgrex.Error{postgres: %{detail: "SECRET-create"}}
+        )
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-create"
+      assert msg =~ "database error"
+    end
+
+    test "QueryFailed.message/1 redacts a non-binary query field (a struct could carry params)" do
+      error =
+        QueryFailed.exception(query: %{params: %{"p1" => "SECRET-param"}}, reason: "static")
+
+      msg = Exception.message(error)
+
+      refute msg =~ "SECRET-param"
     end
   end
 end

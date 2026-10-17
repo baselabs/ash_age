@@ -231,14 +231,45 @@ defmodule AshAge.Cypher.Expr do
   defp do_translate(%StringTrim{arguments: [arg]}, acc),
     do: unary_fn("trim", arg, acc)
 
-  defp do_translate(%StringStartsWith{arguments: [left, right]}, acc),
-    do: predicate_fn(left, "STARTS WITH", right, acc)
+  # The case-sensitive string predicates share the filter path's ci rejection:
+  # openCypher has no case-insensitive form, so a :ci_string-typed attribute
+  # (resolved through the one type home, NewType wrappers included) or a
+  # %Ash.CiString{} VALUE fails closed rather than silently downcasting to
+  # case-sensitive semantics.
+  @string_predicates %{
+    StringStartsWith => "STARTS WITH",
+    StringEndsWith => "ENDS WITH",
+    Contains => "CONTAINS"
+  }
 
-  defp do_translate(%StringEndsWith{arguments: [left, right]}, acc),
-    do: predicate_fn(left, "ENDS WITH", right, acc)
+  defp do_translate(
+         %mod{arguments: [%Ref{relationship_path: [], attribute: attr}, value]},
+         acc
+       )
+       when mod in [StringStartsWith, StringEndsWith, Contains] do
+    if ci_string_predicate?(attr, value) do
+      {:error, unsupported(mod, "case-insensitive string matching is not expressible in Cypher")}
+    else
+      predicate_fn(
+        %Ref{relationship_path: [], attribute: attr},
+        @string_predicates[mod],
+        value,
+        acc
+      )
+    end
+  end
 
-  defp do_translate(%Contains{arguments: [left, right]}, acc),
-    do: predicate_fn(left, "CONTAINS", right, acc)
+  # Non-attribute-left forms (e.g. contains(merge(...), "x")) keep their 2.0.0
+  # translation; a %Ash.CiString{} VALUE is still rejected (no attr type to
+  # resolve for the left side here).
+  defp do_translate(%mod{arguments: [left, right]}, acc)
+       when mod in [StringStartsWith, StringEndsWith, Contains] do
+    if is_struct(right, Ash.CiString) do
+      {:error, unsupported(mod, "case-insensitive string matching is not expressible in Cypher")}
+    else
+      predicate_fn(left, @string_predicates[mod], right, acc)
+    end
+  end
 
   # Ash's type-assertion wrapper. AGE is dynamically typed, so the cast is a
   # no-op — translate the inner expr and drop the type/constraints args. The
@@ -271,6 +302,11 @@ defmodule AshAge.Cypher.Expr do
   defp do_translate(node, _acc) do
     {:error,
      unsupported(node_label(node), "the Cypher translator does not map this Ash.Expr node")}
+  end
+
+  defp ci_string_predicate?(attr, value) do
+    Cast.storage_class(Map.get(attr, :type), Map.get(attr, :constraints) || []) == :ci_string or
+      is_struct(value, Ash.CiString)
   end
 
   # --- Internals ---------------------------------------------------------

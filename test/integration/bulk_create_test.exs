@@ -408,8 +408,10 @@ defmodule AshAge.Integration.BulkCreateTest do
           |> Ash.Changeset.for_create(:create, %{title: "b"})
           |> Ash.Changeset.set_tenant("beta")
 
+        # opts is a MAP (the callback Map.get's it) — [] would BadMapError past
+        # the guard instead of demonstrating the first-tenant write.
         assert {:error, %AshAge.Errors.CreateFailed{}} =
-                 AshAge.DataLayer.bulk_create(Doc, [a, b], [])
+                 AshAge.DataLayer.bulk_create(Doc, [a, b], %{})
 
         # Nothing landed in EITHER tenant's graph.
         count = fn graph ->
@@ -428,5 +430,38 @@ defmodule AshAge.Integration.BulkCreateTest do
         exec(~s|SELECT ag_catalog.drop_graph('#{beta}', true)|)
       end
     end)
+  end
+
+  # ------------------------------------------------------------------
+  # Scenario 7: a bulk UPSERT fails closed (no silent duplicate creates).
+  # Ash passes upsert?: true through to bulk_create/3; AGE has no unique
+  # constraint to upsert against, and treating the batch as plain creates
+  # would duplicate rows with no error. The data layer rejects it.
+  # ------------------------------------------------------------------
+  test "bulk_create with upsert?: true fails closed instead of duplicating rows" do
+    with_graph(
+      "itest_bulk_plain",
+      fn ->
+        result =
+          Ash.bulk_create(
+            [%{name: "x"}, %{name: "y"}],
+            Plain,
+            :create,
+            upsert?: true,
+            upsert_fields: [:name],
+            return_records?: false,
+            return_errors?: true
+          )
+
+        assert %Ash.BulkResult{status: :error, error_count: 2, errors: [first | _]} = result
+        # Every surfaced error is the fail-closed rejection (Ash wraps the
+        # data layer's CreateFailed; the message is value-free either way).
+        assert Exception.message(first) =~ "bulk upsert is not supported"
+
+        # And nothing was written.
+        assert {:ok, []} = Plain |> Ash.Query.for_read(:read) |> Ash.read()
+      end,
+      vlabels: ["Plain"]
+    )
   end
 end

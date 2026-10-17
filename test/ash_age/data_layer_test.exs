@@ -307,5 +307,34 @@ defmodule AshAge.DataLayerTest do
       assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
                DataLayer.run_query(query, NoRlsResource)
     end
+
+    test "run_aggregate_query / destroy_query / update_query reject it too (each wiring)" do
+      base = %Query{
+        resource: NoRlsResource,
+        graph: :data_layer_no_rls,
+        label: :NoRls,
+        repo: AshAge.TestRepo,
+        params: %{},
+        filters: []
+      }
+
+      expr = %Ash.Filter{
+        resource: NoRlsResource,
+        expression: %Ash.Query.Function.Ago{arguments: [1, :year]}
+      }
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.run_aggregate_query(
+                 %{base | expression: expr},
+                 [%Ash.Query.Aggregate{name: :c, kind: :count}],
+                 NoRlsResource
+               )
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.destroy_query(%{base | expression: expr}, %{}, NoRlsResource, %{})
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               DataLayer.update_query(%{base | expression: expr}, %{}, NoRlsResource, %{})
+    end
   end
 end

@@ -34,9 +34,9 @@ defmodule AshAge.Changes.DestroyEdgeTest do
 
   test ":attribute tenancy scopes both endpoints" do
     {cypher, params} =
-      DestroyEdge.build_destroy(Src, @edge, %{"id" => "s"}, "d", {:org_id, :org_id, "t"})
+      DestroyEdge.build_destroy(Src, @edge, %{"id" => "s"}, "d", {:org_id, :org_id, "t", "t"})
 
-    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $tenant"
+    assert cypher =~ "a.`org_id` = $tenant AND b.`org_id` = $dst_tenant"
     assert params["tenant"] == "t"
   end
 end

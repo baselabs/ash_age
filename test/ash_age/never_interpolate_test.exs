@@ -70,7 +70,7 @@ defmodule AshAge.NeverInterpolateTest do
     {src_clause, src_params} = EdgeCypher.source_where([{"id", @secret}])
 
     {tenant_clause, tenant_params} =
-      EdgeCypher.tenant_where({"org", "org", @secret})
+      EdgeCypher.tenant_where({"org", "org", @secret, @secret})
 
     refute src_clause =~ @secret
     refute tenant_clause =~ @secret

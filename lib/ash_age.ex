@@ -178,7 +178,9 @@ defmodule AshAge do
     DB and encode failures in a redacted `QueryFailed`). The caller owns error
     handling for this wrapper's own `set_config` queries.
   """
-  @spec with_tenant_rls(module(), String.t(), term(), (-> result)) :: result when result: var
+  @spec with_tenant_rls(module(), String.t(), term(), (-> result)) ::
+          result | {:error, term()}
+        when result: var
   def with_tenant_rls(repo, guc, tenant, fun) when is_function(fun, 0) do
     _ = AshAge.Migration.validate_guc!(guc)
 

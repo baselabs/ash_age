@@ -32,8 +32,9 @@ defmodule AshAge.DataLayer do
   ## Capabilities
 
   Supports `:read`, `:create`, `:update`, `:destroy`, `:destroy_query`,
-  `:bulk_create`, `:upsert` (a two-statement MATCH-then-CREATE/SET path — AGE
-  `MERGE` is banned for its performance bugs), `:filter`
+  `:bulk_create`, single-record `:upsert` (a two-statement MATCH-then-CREATE/SET
+  path — AGE `MERGE` is banned for its performance bugs; BULK upserts fail
+  closed: AGE has no unique constraint to upsert a batch against), `:filter`
   (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions, and the
   case-sensitive string predicates contains/string_starts_with/
   string_ends_with over plain `:string` attributes), aggregates
@@ -330,7 +331,7 @@ defmodule AshAge.DataLayer do
   @impl true
   def run_query(%AshAge.Query{} = query, resource) do
     case validate_expression(query) do
-      {:error, _} = e -> e
+      {:error, _} = e -> rejected_span(:read, resource, e)
       :ok -> do_run_query(query, resource)
     end
   end
@@ -410,7 +411,7 @@ defmodule AshAge.DataLayer do
   @impl true
   def run_aggregate_query(query, aggregates, resource) do
     case validate_expression(query) do
-      {:error, _} = e -> e
+      {:error, _} = e -> rejected_span(:aggregate, resource, e)
       :ok -> do_run_aggregate_query(query, aggregates, resource)
     end
   end
@@ -635,7 +636,27 @@ defmodule AshAge.DataLayer do
   # graph exactly as single-create does (via write_graph/2 through bulk_graph/2),
   # so the fail-closed nil-:context-tenant behavior is identical; Ash batches by
   # tenant, so every changeset in a batch shares one graph, resolved off the first.
+  #
+  # A bulk UPSERT (`upsert?: true` in opts — Ash passes it through from
+  # `Ash.bulk_create/4`) fails CLOSED: AGE has no unique constraint to upsert
+  # against, the single-record `upsert/4` path is a two-statement
+  # existence-MATCH, and silently treating an upsert batch as plain creates
+  # would duplicate rows with no error. Callers upsert per-record.
   defp bulk_create_body(resource, entries, opts) do
+    if Map.get(opts, :upsert?, false) do
+      {:error,
+       CreateFailed.exception(
+         resource: resource,
+         reason:
+           "bulk upsert is not supported (AGE has no unique constraint to upsert " <>
+             "against); use per-record Ash.create/2 with upsert?: true"
+       )}
+    else
+      bulk_create_grouped(resource, entries, opts)
+    end
+  end
+
+  defp bulk_create_grouped(resource, entries, opts) do
     case bulk_graph(resource, entries) do
       {:ok, graph} ->
         if same_write_graph?(resource, graph, entries) do
@@ -1103,7 +1124,7 @@ defmodule AshAge.DataLayer do
     _ = changeset
 
     case validate_expression(query) do
-      {:error, _} = e -> e
+      {:error, _} = e -> rejected_span(:destroy, resource, e)
       :ok -> do_destroy_query(query, resource, opts)
     end
   end
@@ -1168,7 +1189,7 @@ defmodule AshAge.DataLayer do
   @impl true
   def update_query(query, changeset, resource, opts) do
     case validate_expression(query) do
-      {:error, _} = e -> e
+      {:error, _} = e -> rejected_span(:update_query, resource, e)
       :ok -> do_update_query(query, changeset, resource, opts)
     end
   end
@@ -1427,12 +1448,12 @@ defmodule AshAge.DataLayer do
   # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
   # `build_where` swallows). Threaded params land in `query.params`. `nil` and
   # `%Ash.Filter{expression: nil}` mean "no filter" — no clause added.
-  # Fail-closed pre-check for every query carrying an `expression` (the channel
-  # Ash uses for :attribute tenant predicates and bulk filters):
-  # `Query.build_where`'s catch-all DROPS an untranslatable expression — an
-  # unreachable case through Ash's `can?({:filter_expr, _})` build gate, but a
-  # hand-built or future-gated expression must never silently broaden a read,
-  # delete, or update. Mirrors the update path's eager `scope_to_filter`.
+  # Fail-closed pre-check for every query carrying an `expression` (a channel
+  # no current Ash path populates — Ash's :attribute tenant predicate and bulk
+  # filters arrive through `filter/3`, already fail-closed — but a hand-built
+  # or future-gated expression must never be silently broadened by
+  # `Query.build_where`'s drop-on-untranslatable catch-all). Defense in depth;
+  # mirrors the update path's eager `scope_to_filter`.
   defp validate_expression(%AshAge.Query{expression: nil}), do: :ok
 
   defp validate_expression(%AshAge.Query{} = query) do
@@ -1440,6 +1461,15 @@ defmodule AshAge.DataLayer do
       {:ok, _, _} -> :ok
       {:error, _} = e -> e
     end
+  end
+
+  # A build-rejected expression still emits its operation span (the docs'
+  # "every operation" promise), surfacing as :stop with result: :error —
+  # value-free, like every span.
+  defp rejected_span(op, resource, error) do
+    Telemetry.span(op, %{resource: resource, multitenancy: strategy(resource)}, fn ->
+      {error, %{result: Telemetry.result_tag(error), rls?: rls?(resource)}}
+    end)
   end
 
   defp scope_to_filter(query, nil), do: query

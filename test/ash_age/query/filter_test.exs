@@ -294,6 +294,26 @@ defmodule AshAge.Query.FilterTest do
                )
     end
 
+    test "a NewType wrapping :ci_string fails closed too (storage_class resolution)" do
+      defmodule WrappedCi do
+        use Ash.Type.NewType, subtype_of: :ci_string
+      end
+
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [typed_ref(:name, WrappedCi), "x"]},
+                 q()
+               )
+    end
+
+    test "a column-to-column string predicate fails closed (not a JSON-encode error)" do
+      assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
+               Filter.translate(
+                 %Contains{arguments: [ref(:name), ref(:other)]},
+                 q()
+               )
+    end
+
     test "a %Ash.CiString{} VALUE fails closed (case-insensitive semantics untranslatable)" do
       assert {:error, %AshAge.Errors.UnsupportedFilter{}} =
                Filter.translate(

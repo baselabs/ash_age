@@ -19,7 +19,7 @@ defmodule AshAge.Integration.SessionSearchPathTest do
     assert {:ok, %{rows: [[path]]}} =
              SQL.query(TestRepo, "SHOW search_path", [])
 
-    normalized = path |> String.replace(" ", "")
-    assert normalized =~ ~s(public,ag_catalog,"$user")
+    # EXACT order (a substring match would accept `ag_catalog,public,...`).
+    assert String.replace(path, " ", "") == ~s(public,ag_catalog,"$user")
   end
 end

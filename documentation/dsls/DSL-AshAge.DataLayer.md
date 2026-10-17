@@ -35,8 +35,9 @@ end
 ## Capabilities
 
 Supports `:read`, `:create`, `:update`, `:destroy`, `:destroy_query`,
-`:bulk_create`, `:upsert` (a two-statement MATCH-then-CREATE/SET path — AGE
-`MERGE` is banned for its performance bugs), `:filter`
+`:bulk_create`, single-record `:upsert` (a two-statement MATCH-then-CREATE/SET
+path — AGE `MERGE` is banned for its performance bugs; BULK upserts fail
+closed: AGE has no unique constraint to upsert a batch against), `:filter`
 (eq/not_eq/gt/lt/gte/lte/in/is_nil, boolean and nested expressions, and the
 case-sensitive string predicates contains/string_starts_with/
 string_ends_with over plain `:string` attributes), aggregates

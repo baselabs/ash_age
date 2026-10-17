@@ -219,6 +219,23 @@ defmodule AshAge.Query.Filter do
   }
 
   defp do_translate(
+         %mod{arguments: [%Ash.Query.Ref{attribute: attr}, %Ash.Query.Ref{} = rhs]},
+         _query
+       )
+       when mod in [
+              Ash.Query.Function.Contains,
+              Ash.Query.Function.StringStartsWith,
+              Ash.Query.Function.StringEndsWith
+            ] do
+    # Column-to-column string predicates are unsupported (the filter path binds
+    # the RHS as a param) — reject cleanly instead of failing later at JSON
+    # encode with a misleading "not encodable" error. Mirrors the operator
+    # path's ref-on-ref guard.
+    _ = rhs
+    {:error, UnsupportedFilter.exception(operator: @string_predicates[mod], field: attr.name)}
+  end
+
+  defp do_translate(
          %mod{arguments: [%Ash.Query.Ref{attribute: attr}, value]},
          query
        )
@@ -242,7 +259,9 @@ defmodule AshAge.Query.Filter do
   end
 
   defp string_predicate_case_sensitive(mod, attr, value) do
-    ci_attr? = attr_type(attr) in [:ci_string, Ash.Type.CiString]
+    # Resolve through the ONE type home (Cast.storage_class) so NewType
+    # wrappers of :ci_string are caught, not just the bare type atoms.
+    ci_attr? = Cast.storage_class(attr_type(attr), attr_constraints(attr)) == :ci_string
 
     if ci_attr? or is_struct(value, Ash.CiString) do
       {:error, UnsupportedFilter.exception(operator: @string_predicates[mod], field: attr.name)}

@@ -19,7 +19,7 @@ defmodule AshAge.Integration.NoMergeTest do
       data_layer: AshAge.DataLayer
 
     age do
-      graph(:itest_no_merge)
+      graph(:itest_nomerge_ban)
       repo(AshAge.TestRepo)
       label(:Widget)
     end
@@ -35,22 +35,33 @@ defmodule AshAge.Integration.NoMergeTest do
     end
   end
 
-  test "no executed statement for create/read/update/bulk/destroy contains MERGE" do
+  test "no executed statement for create/read/update/bulk/upsert/edge/destroy contains MERGE" do
     queries =
       capture_sql(fn ->
         with_graph(
-          "itest_no_merge",
+          "itest_nomerge_ban",
           fn ->
+            # Results are ASSERTED (not discarded): an early failure must not
+            # pass the tripwire vacuously.
             {:ok, w} = Widget |> Ash.Changeset.for_create(:create, %{name: "a"}) |> Ash.create()
-            _ = Ash.read(Widget)
-            _ = w |> Ash.Changeset.for_update(:update, %{name: "b"}) |> Ash.update()
+            assert {:ok, [%{name: "a"}]} = Ash.read(Widget)
 
-            _ =
-              Ash.bulk_create([%{name: "c"}, %{name: "d"}], Widget, :create,
-                return_records?: false
-              )
+            assert {:ok, _} =
+                     w |> Ash.Changeset.for_update(:update, %{name: "b"}) |> Ash.update()
 
-            :ok = Ash.destroy(w)
+            assert %Ash.BulkResult{status: :success} =
+                     Ash.bulk_create([%{name: "c"}, %{name: "d"}], Widget, :create,
+                       return_records?: false
+                     )
+
+            # The upsert path — where MERGE is the natural temptation — runs the
+            # two-statement existence MATCH instead (upsert by :name).
+            assert {:ok, _upserted} =
+                     Widget
+                     |> Ash.Changeset.for_create(:create, %{name: "b"})
+                     |> Ash.create(upsert?: true, upsert_fields: [:name])
+
+            assert :ok = Ash.destroy(w)
           end,
           vlabels: ["Widget"]
         )
@@ -59,8 +70,21 @@ defmodule AshAge.Integration.NoMergeTest do
     cypher_statements = Enum.filter(queries, &String.contains?(&1, "ag_catalog.cypher"))
     refute cypher_statements == [], "no cypher statements captured — tripwire is vacuous"
 
+    # Case-insensitive, scoped to the Cypher BODY between the dollar-quote
+    # fences (the graph name is caller data — a graph literally named
+    # "merge_test" must not trip the keyword ban).
     for sql <- cypher_statements do
-      refute sql =~ "MERGE", "executed statement contains banned MERGE: #{sql}"
+      body = cypher_body(sql)
+
+      refute String.contains?(String.upcase(body), "MERGE"),
+             "executed Cypher contains banned MERGE: #{sql}"
+    end
+  end
+
+  defp cypher_body(sql) do
+    case Regex.run(~r/\$\$(.*?)\$\$/s, sql) do
+      [_, body] -> body
+      _ -> ""
     end
   end
 

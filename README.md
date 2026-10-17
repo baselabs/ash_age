@@ -352,7 +352,10 @@ Every data-layer operation emits a `:telemetry.span`:
 Metadata is **value-free** — schema identifiers, counts, booleans, and DSL enums
 only (`resource`, `multitenancy`, `tenant?`, `result`, `row_count`, `direction`,
 …); never a PK/property value, error reason, Cypher, or the tenant-derived graph
-name. See `usage-rules.md` for the full per-op metadata catalog.
+name. The one exception is `:exception` spans (programmer/config raises), whose
+Erlang-standard `kind`/`reason`/`stacktrace` are telemetry-span data and sit
+outside the value-free contract. See `usage-rules.md` for the full per-op
+metadata catalog.
 
 ## Mix Tasks
 

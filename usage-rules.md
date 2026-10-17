@@ -60,16 +60,24 @@ with a query, the TENANT must be set on the QUERY
 (`Ash.Query.set_tenant/2`), not just passed as an option — Ash's atomic bulk
 dispatch reads it from the query.
 
-**Upsert** (`Ash.bulk_create/4` or `Ash.create/2` with `upsert?: true`) runs a
+**Upsert** (single-record `Ash.create/2` with `upsert?: true`) runs a
 two-statement existence-MATCH-then-SET/CREATE path (AGE `MERGE` is banned).
 It is explicitly NON-atomic across concurrent upserts of the same identity —
 two racing upserts can both take the CREATE branch. Use `all_tenants?: true`
 on an `:attribute`-multitenant upsert to match identity across tenants.
+A BULK upsert (`Ash.bulk_create/4` with `upsert?: true`) FAILS CLOSED with a
+value-free `CreateFailed` — AGE has no unique constraint to upsert a batch
+against; upsert per record.
+
+**String predicates and nil.** `contains(ref, nil)` follows SQL/Cypher null
+semantics on the database side (the row does not match — `not contains(ref,
+nil)` therefore also does not match it), while Ash's in-memory evaluation of
+`contains(x, nil)` is `false`. Pushed-down reads use the database semantics.
 
 **Atomic updates.** `Ash.Expr` atomics (`Ash.update/2` with atomic exprs,
 `Ash.bulk_update/4`) translate to single Cypher statements (`update_query/4`
 for queries and single-record reroutes, `update_many/3` for distinct-changes
-batches). Unsupported expression nodes fail closed as `UnsupportedExpression`.
+batches). Unsupported expression nodes fail closed: as `{:error, UnsupportedExpression}` where the expr translator is entered directly, and as `UpdateFailed` ("unsupported atomic expression") where the update callbacks reject the changeset — either way the update is refused, never approximated.
 
 ## Security Requirements
 
@@ -639,7 +647,7 @@ Attach a handler the usual way:
 | `stale?` | update/destroy | the 0-row not-found path (boolean) |
 | `batch_size`, `group_count` | bulk_create | rows in the batch / key-set groups |
 | `atomic?` | update_query/update_many | whether the statement carries atomic exprs (boolean) |
-| `rls?` | all (when an `rls_guc` is configured) | whether the op ran inside the RLS GUC transaction |
+| `rls?` | data-layer ops (read/create/update/destroy/upsert/bulk/aggregate/update_query/update_many) | whether the op ran inside the RLS GUC transaction (edge/traversal/raw-cypher spans omit it) |
 | `aggregate_count` | aggregate | aggregates computed in the call |
 | `destination_count`, `direction`, `properties?` | create_edge/destroy_edge | edges written / edge direction / any properties set (`properties?` create only) |
 | `destination_count`, `row_count`, `depth`, `direction` | traverse | destinations (post-dedup) / rows (pre-dedup fan-out) / `max_depth` / traversal direction |
