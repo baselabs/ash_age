@@ -65,6 +65,10 @@ two-statement existence-MATCH-then-SET/CREATE path (AGE `MERGE` is banned).
 It is explicitly NON-atomic across concurrent upserts of the same identity —
 two racing upserts can both take the CREATE branch. Use `all_tenants?: true`
 on an `:attribute`-multitenant upsert to match identity across tenants.
+For writes that must be exactly-once under concurrency, pair with
+[ash_onetime](https://hex.pm/packages/ash_onetime) — see the
+[idempotent upserts guide](documentation/idempotent-upserts.md) (executably
+verified in ash_age's CI).
 A BULK upsert (`Ash.bulk_create/4` with `upsert?: true`) FAILS CLOSED with a
 value-free `CreateFailed` — AGE has no unique constraint to upsert a batch
 against; upsert per record.

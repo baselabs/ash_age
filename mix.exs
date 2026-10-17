@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "2.2.0"
+  @version "2.2.1"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
@@ -74,7 +74,11 @@ defmodule AshAge.MixProject do
       # Pure-Elixir SAT solver so Ash.Policy filter-producing policies can be
       # verified + exercised in the test suite (the policy-authorized atomic
       # update path). Host apps that use policies bring their own solver.
-      {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false}
+      {:simple_sat, "~> 0.1", only: [:dev, :test], runtime: false},
+      # Test-only: proves the documented race-free-upsert pattern with
+      # ash_onetime (the owner's keyed-admission library) — see
+      # documentation/idempotent-upserts.md. Not a runtime dependency.
+      {:ash_onetime, "~> 1.6", only: :test, runtime: false}
     ]
   end
 
@@ -104,6 +108,8 @@ defmodule AshAge.MixProject do
         "usage-rules.md",
         "documentation/troubleshooting.md",
         "documentation/testing.md",
+        "documentation/idempotent-upserts.md",
+        "documentation/webhooks-with-ash-hooks.md",
         "documentation/dsls/DSL-AshAge.DataLayer.md",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
@@ -113,7 +119,9 @@ defmodule AshAge.MixProject do
         Guides: [
           "notebooks/getting_started.livemd",
           "documentation/troubleshooting.md",
-          "documentation/testing.md"
+          "documentation/testing.md",
+          "documentation/idempotent-upserts.md",
+          "documentation/webhooks-with-ash-hooks.md"
         ],
         Reference: ["documentation/dsls/DSL-AshAge.DataLayer.md", "usage-rules.md"]
       ],
