@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-17
+
+Docs + ecosystem-integration release.
+
+### Added
+
+- **[Race-free upserts with ash_onetime](documentation/idempotent-upserts.md)** —
+  a guide to making graph writes exactly-once by pairing ash_age's upsert
+  with [ash_onetime](https://hex.pm/packages/ash_onetime)'s
+  PostgreSQL-authoritative admission: the unique constraint becomes the
+  arbiter AGE lacks. The pattern is pinned by a new integration test
+  (`test/integration/onetime_upsert_test.exs`, runs in CI against live AGE)
+  that renders ash_onetime's REAL install migration through `Ecto.Migrator`
+  and proves all three guarantees: a two-transaction race lands exactly one
+  vertex; a replayed key returns the stored response with no new vertex; and
+  a rollback after the graph write removes the claim AND the vertex together.
+  ash_onetime is a TEST-ONLY dependency of ash_age — never a runtime one;
+  the guide documents the `AshOnetime.Transaction` boundary (the composable
+  seam — `protect` requires AshPostgres.DataLayer and does not apply to
+  ash_age-backed resources).
+- **[Graph change events with ash_hooks](documentation/webhooks-with-ash-hooks.md)** —
+  a cookbook for announcing/ingesting graph changes via
+  [ash_hooks](https://hex.pm/packages/ash_hooks); composes with zero
+  integration code, including on edge-carrying actions, with the
+  exactly-once combination inbound-ledger + admission keys.
+
+### Fixed
+
+- The README's `.env.example` link is now an absolute repository URL — the
+  relative link did not resolve on hexdocs.
+
 ## [2.2.0] - 2026-10-17
 
 DX release: a code-generating installer and contributor substrate polish.

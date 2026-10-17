@@ -90,7 +90,8 @@ $ AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix 
 ```
 
 `mix test.unit` runs the no-database lane, `mix test.integration` the live-AGE
-lane (see [`.env.example`](.env.example)). CI pins the same image by digest, so
+lane (see [`.env.example`](https://github.com/baselabs/ash_age/blob/master/.env.example)
+in the repo). CI pins the same image by digest, so
 local and CI run the same AGE build. A [dev container](.devcontainer/) with the
 database pre-wired is included for Codespaces / VS Code.
 
