@@ -43,7 +43,14 @@ line up.
 ## Install
 
 ```elixir
-Mix.install([{:ash_age, "~> 2.0"}])
+# ash >= 3.33 requires an explicit string-length counting basis before it compiles a
+# :string attribute's constraints. Host applications set this once in config/config.exs;
+# in a notebook it rides Mix.install's :config option. `:codepoints` is the basis ash_age
+# itself compiles against (see its config/config.exs).
+Mix.install(
+  [{:ash_age, "~> 2.0"}],
+  config: [ash: [default_string_length_count: :codepoints]]
+)
 ```
 
 ## Register Postgrex types for AGE's `agtype`
