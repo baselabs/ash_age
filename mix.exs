@@ -1,7 +1,7 @@
 defmodule AshAge.MixProject do
   use Mix.Project
 
-  @version "2.1.0"
+  @version "2.2.0"
   @source_url "https://github.com/baselabs/ash_age"
 
   def project do
@@ -62,6 +62,11 @@ defmodule AshAge.MixProject do
       {:telemetry, "~> 1.0"},
 
       # Dev/Test dependencies
+      # Igniter powers `mix ash_age.install` / `mix igniter.install ash_age`
+      # (code-generating installer). The dep is build-only: consumers never
+      # pull it unless they install igniter themselves; the installer module
+      # is guarded by Code.ensure_loaded?(Igniter).
+      {:igniter, ">= 0.6.29 and < 1.0.0-0", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

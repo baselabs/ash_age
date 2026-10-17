@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-17
+
+DX release: a code-generating installer and contributor substrate polish.
+
+### Added
+
+- **`mix ash_age.install` now WRITES the wiring when
+  [Igniter](https://hex.pm/packages/igniter) is available** (including via the
+  ecosystem entry point `mix igniter.install ash_age`): it creates the
+  Postgrex types module (top-level `Postgrex.Types.define/3`, agtype
+  registered), configures your Repo's `after_connect:
+  {AshAge.Session, :setup, []}` + `types:`, and sets
+  `config :ash, default_string_length_count: :codepoints` (the basis ash
+  ≥ 3.33 requires). It never guesses: with zero or multiple `*.Repo` modules
+  it prints the manual steps instead, and it is idempotent. Without Igniter
+  the task remains the print-instructions task — same text, no behavior
+  change for non-Igniter users. Verified end-to-end against a scratch host
+  app (wiring written, app compiles, rerun writes nothing, no-Repo falls
+  back to instructions). Igniter joins as a build-only dependency
+  (`only: [:dev, :test]`) — consumers never pull it transitively.
+- Igniter route documented as the primary install path in the README.
+
+### Changed
+
+- One test fixture in the suite now uses a suite-local struct instead of
+  `Regex` for the no-Jason-encoder case: an Igniter transitive implements
+  `Jason.Encoder.Regex`, which made the old fixture environment-dependent.
+  Same property asserted, environment-independent fixture.
+
 ## [2.1.0] - 2026-10-17
 
 A hardening and truth-in-documentation release, plus the most-requested read
