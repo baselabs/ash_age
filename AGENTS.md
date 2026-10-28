@@ -75,6 +75,30 @@ the application's DB role is a **non-superuser without `BYPASSRLS`** — RLS
 `BYPASSRLS` roles, with no error signal. Never point `rls_guc` at a resource served
 by a superuser/BYPASSRLS connection and assume it is enforced.
 
+## Workflow (owner ruling, October 28, 2026)
+
+Process is sized to the risk of the specific change, never the repository. Each check, gate,
+record or review names the failure it prevents.
+
+- **Heavy** when the diff touches Cypher generation and params (`lib/cypher/`, `lib/query.ex`,
+  `lib/query/`), identifier validation and DDL (`lib/migration.ex`), tenancy and RLS
+  (`lib/multitenancy.ex`, `with_rls`/upsert/bulk paths in `lib/data_layer.ex`), sensitive
+  classification (`lib/type/cast.ex`, `validate_sensitive`/`validate_skip`), the redaction
+  boundary (`lib/errors/`), or the session search_path (`lib/session.ex`). Write the failing
+  test first, get one independent review and do one fix round, and run the declared local gate
+  (`mix quality` plus the unit and integration lanes) once before pushing. Heavy pushes need the
+  owner's approval.
+- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
+  is the gate. No outcome record, gauge or review; the commit message is the record. A light
+  change the owner asked for lands without a separate push approval.
+- Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
+- A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
+  change that finds it.
+- Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
+  a contract changes.
+- `master` is branch-protected (pull request plus required checks); land through a PR.
+- Dated narratives and superseded instructions live in `docs/reference/agent-history.md`.
+
 ## Common Patterns
 
 ### Adding a New Filter Operator / Function
@@ -91,8 +115,6 @@ by a superuser/BYPASSRLS connection and assume it is enforced.
 4. Add transformer test to `test/ash_age/data_layer/transformers_test.exs` (transformer DslErrors RAISE out of `defmodule` — use `assert_raise`; verifier errors need `Spark.Test`'s `assert_dsl_error`/`refute_dsl_errors` collectors)
 
 ## Testing Guidelines
-
-**Always TDD:** Write test first, watch it RED for the right reason, then implement.
 
 **Integration vs Unit tests:**
 - `test/ash_age/*_test.exs` — Unit tests (no PostgreSQL required)
@@ -114,21 +136,5 @@ by a superuser/BYPASSRLS connection and assume it is enforced.
 6. **Passing a repo to `Session.setup/1`** — it takes a raw DBConnection (it's an `after_connect` hook)
 7. **Nested `with_graph`** — leaks graphs when a body fails mid-run; provision multi-graph tests with one `unboxed_run` + `try/after`
 8. **AGE `cypher()`'s graph argument is a string literal** — it cannot be a `$param`; that's why `Parameterized` interpolates a validated identifier
-
-## Version History
-
-Full history in [CHANGELOG.md](CHANGELOG.md). Summary of agent-relevant shifts:
-
-- **2.1.0:** Every property ref backtick-quoted (Cypher-keyword attrs work on all paths); read path fails closed on untranslatable expressions; string predicates (contains/starts_with/ends_with, case-sensitive) on reads; mixed-tenant `:context` bulk batches fail closed; `with_tenant_rls` rollback reasons preserved; error messages structurally redact driver errors; edge tenant honors `parse_attribute`; identifier regex single-homed in `Migration.identifier?/1`; OTP 27+28 CI matrix; MERGE-ban + search_path-order invariant tests (mutation-proven).
-- **2.0.0:** Atomic-aware updates (`Ash.Expr` → Cypher via `update_query/4`/`update_many/3`, `lib/cypher/expr.ex`); `bulk_destroy`/`bulk_update` with a query REQUIRE the tenant on the QUERY (`Ash.Query.set_tenant/2`); keyword-attr backtick fix landed for filter/sort/SET (`prop_ref/1`); `can?` advertisement is load-bearing dispatch — grep `data_layer_can?` in `deps/ash/lib/ash/actions/` before changing any clause. Known Ash interaction: `Ash.update_many/4` without `return_records?: true` raises `BadBooleanError` (Ash-side strict-`or` contract).
-- **1.0.1:** Getting-started Livebook guide.
-- **1.0.0:** Sensitive-data classification (`sensitive`/`skip` verifiers, `Cast.storage_class/2` the single type home, `serialize_value/2` the single encoder, `$age64$` binary wire form, value-free JSON boundary); DB-enforced RLS (opt-in `rls_guc`, `with_rls/4`, `enable_tenant_rls`, `mix ash_age.verify` exits non-zero); traversal + raw `AshAge.cypher/5`; edge CRUD + bulk create; multitenancy `:attribute`/`:context` (record-based 0-row scoped mutations return StaleRecord, not NotFound); telemetry value-free spans; composite / non-`:id` primary keys.
-- **0.2.x:** Core data pipeline (agtype parser, parameterized Cypher, idempotent migrations), Postgrex wire-protocol fixes, phantom-reference cleanup, MERGE removal (AGE bugs), search_path fix, index SQL via `ag_catalog.agtype_access_operator()`.
-
-## graphify (code knowledge graph)
-
-`graphify-out/graph.json` maps this repo (tree-sitter AST; rebuilt by the git post-commit hook; gitignored).
-
-- For orientation ("where is X handled", "what connects A to B", "explain module M"), prefer `graphify query "<question>"` / `graphify explain "<Module>"` / `graphify path "<A>" "<B>"` over grep/Read fan-outs — one call returns a scoped subgraph with file:line hits.
-- Graph output is NAVIGATION, never evidence. Edges reflect the last build, not the working tree, and cross-module call edges can be incomplete (Elixir: file-local only — alias-mediated calls are NOT resolved). Consumer sweeps and every load-bearing claim (review finding, plan anchor) still verify against live code: grep + file:line read.
-- After large uncommitted changes, `graphify update .` refreshes the graph (AST-only, no API cost, no key).
+9. **Bulk update/destroy with a query without a tenant** — `bulk_destroy`/`bulk_update` with a query REQUIRE the tenant on the QUERY (`Ash.Query.set_tenant/2`)
+10. **`Ash.update_many/4` without `return_records?: true`** — raises `BadBooleanError` (Ash-side strict-`or` contract)
