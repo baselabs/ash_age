@@ -75,28 +75,20 @@ the application's DB role is a **non-superuser without `BYPASSRLS`** — RLS
 `BYPASSRLS` roles, with no error signal. Never point `rls_guc` at a resource served
 by a superuser/BYPASSRLS connection and assume it is enforced.
 
-## Workflow (owner ruling, October 28, 2026)
+## Workflow
 
-Process is sized to the risk of the specific change, never the repository. Each check, gate,
-record or review names the failure it prevents.
+Make the change, run the tests that cover it, commit with named paths, and push to `master`.
+CI runs once on `master`; if it goes red, fix forward.
 
-- **Heavy** when the diff touches Cypher generation and params (`lib/cypher/`, `lib/query.ex`,
-  `lib/query/`), identifier validation and DDL (`lib/migration.ex`), tenancy and RLS
-  (`lib/multitenancy.ex`, `with_rls`/upsert/bulk paths in `lib/data_layer.ex`), sensitive
-  classification (`lib/type/cast.ex`, `validate_sensitive`/`validate_skip`), the redaction
-  boundary (`lib/errors/`), or the session search_path (`lib/session.ex`). Write the failing
-  test first, get one independent review and do one fix round, and run the declared local gate
-  (`mix quality` plus the unit and integration lanes) once before pushing. Heavy pushes need the
-  owner's approval.
-- **Light** for everything else: focused checks on the changed behavior, then push; hosted CI
-  is the gate. No outcome record, gauge or review; the commit message is the record. A light
-  change the owner asked for lands without a separate push approval.
+CI runs: `mix format --check-formatted`, `mix credo --strict`, `mix deps.unlock --check-unused`,
+`mix hex.audit`, `mix compile --warnings-as-errors`, `mix docs`, `mix test` (with AGE), `mix dialyzer`
+and the getting-started notebook, on OTP 27 and 28. Run the ones that cover your change.
+
 - Publishing, deploying and pushes to mirrors always need the owner's approval for that action.
 - A test that fails on every run is a defect: fix it, or quarantine it with a reason, in the
   change that finds it.
 - Update the CHANGELOG when behavior, a dependency or a contract changes; other docs only when
   a contract changes.
-- `master` is branch-protected (pull request plus required checks); land through a PR.
 - Dated narratives and superseded instructions live in `docs/reference/agent-history.md`.
 
 ## Common Patterns
