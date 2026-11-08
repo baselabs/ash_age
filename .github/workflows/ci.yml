@@ -23,14 +23,14 @@ jobs:
       matrix:
         otp: ["27", "28"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: ${{ matrix.otp }}
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: deps-cache
         with:
           path: |
@@ -54,14 +54,14 @@ jobs:
       matrix:
         otp: ["27", "28"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: ${{ matrix.otp }}
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: deps-cache
         with:
           path: |
@@ -101,14 +101,14 @@ jobs:
     env:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: ${{ matrix.otp }}
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: deps-cache
         with:
           path: |
@@ -129,15 +129,15 @@ jobs:
       matrix:
         otp: ["27", "28"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         id: setup-beam
         with:
           elixir-version: "1.18"
           otp-version: ${{ matrix.otp }}
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: deps-cache
         with:
           path: |
@@ -147,7 +147,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-1.18-${{ matrix.otp }}-
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: plt-cache
         with:
           path: priv/plts
@@ -179,9 +179,9 @@ jobs:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
       ASH_AGE_SRC: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
           elixir-version: "1.18"
           otp-version: "27"
