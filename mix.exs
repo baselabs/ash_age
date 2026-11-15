@@ -8,7 +8,7 @@ defmodule AshAge.MixProject do
     [
       app: :ash_age,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       consolidate_protocols: Mix.env() != :test,
@@ -34,6 +34,7 @@ defmodule AshAge.MixProject do
         "test.watch": :test,
         "test.unit": :test,
         "test.integration": :test,
+        precommit: :test,
         credo: :test,
         dialyzer: :test
       ]
@@ -67,7 +68,7 @@ defmodule AshAge.MixProject do
       # pull it unless they install igniter themselves; the installer module
       # is guarded by Code.ensure_loaded?(Igniter).
       {:igniter, ">= 0.6.29 and < 1.0.0-0", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.31", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
@@ -168,6 +169,17 @@ defmodule AshAge.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
+      # The loop before every push, in the test environment: the static gates, the
+      # documentation build and the suite. Integration tests join only where
+      # AGE_DATABASE_URL names a live AGE database. Not Dialyzer.
+      precommit: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "deps.unlock --check-unused",
+        "docs",
+        "test"
+      ],
       "deps.audit": ["deps.unlock --check-unused", "hex.audit", "deps.audit"],
       # test_helper.exs starts the Repo whenever AGE_DATABASE_URL is set, even
       # to an empty string; unset it for a run with no database.

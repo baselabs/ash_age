@@ -41,6 +41,10 @@ application's role must be neither.
 
 ## Build and test
 
+Commands run from the repository root on the toolchain in `.tool-versions`: the first version of
+each tool is the default, and every other Elixir build, paired with its Erlang by OTP major, is a
+compatibility lane CI also runs.
+
 - **Build.** `mix compile --warnings-as-errors`.
 - **Covering tests.** `mix test <paths>` for the changed files and their direct
   dependents. Unit tests (`test/ash_age/`) need no database: run them with
@@ -48,13 +52,18 @@ application's role must be neither.
   (`test/integration/`, `@moduletag :integration`) run only when `AGE_DATABASE_URL`
   points at a live AGE database; `test/test_helper.exs` starts the test Repo whenever
   the variable is set, even to an empty string. Load it from the gitignored `.env`
-  (`set -a; . ./.env; set +a`) or run an AGE container on a free host port.
-- **Before a push.** `mix format --check-formatted`, `mix credo --strict` and
-  `mix dialyzer` (`mix quality` runs all three), plus `mix deps.audit`.
+  (`set -a; . ./.env; set +a`).
+- **Before a push.** `mix precommit`, in the test environment: format check, compile with warnings
+  as errors (test support included), `credo --strict`, the unused-lock check, the documentation
+  build and the suite (integration tests only where `AGE_DATABASE_URL` is set). Not Dialyzer.
 - **Exceptions.** Notebook: `elixir scripts/run_notebook.exs notebooks/getting_started.livemd`
-  with `AGE_DATABASE_URL` set. DSL docs: `mix run scripts/gen_dsl_cheatsheet.exs`.
-- **CI.** `.github/workflows/ci.yml` runs lint, compile and docs, the test suite with
-  AGE, and dialyzer on OTP 27 and 28, and the notebook on OTP 27.
+  with `AGE_DATABASE_URL` and `ASH_AGE_SRC` set. DSL docs: `mix run scripts/gen_dsl_cheatsheet.exs`.
+- **Landing.** A commit reaches `master` only after CI's run on its landing branch is green.
+- **CI.** One `ci.yml`. On the default toolchain: lint (format, `credo --strict`, the unused-lock
+  check, `hex.audit`), compile and docs, the suite with AGE, Dialyzer and the notebook. On every
+  compatibility lane: compile, the suite with AGE and Dialyzer. On the floor toolchain in
+  `ci/floor/.tool-versions`: the runtime dependencies resolved fresh and compiled with warnings as
+  errors. Raising the floor changes `elixir` in `mix.exs`, that file and CONTRIBUTING.md together.
 
 ## Testing Guidelines
 

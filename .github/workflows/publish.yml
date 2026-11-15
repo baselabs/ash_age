@@ -10,16 +10,24 @@ env:
 jobs:
   publish:
     name: Publish
-    runs-on: ubuntu-latest
+    # The Hex key lives only in the protected publish environment, and only a
+    # release the owner's account published, and re-ran if at all, may use it.
+    if: github.actor == 'palermo-git' && github.triggering_actor == 'palermo-git'
+    environment: publish
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Read the default toolchain
+        id: versions
+        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
-          elixir-version: "1.18"
-          otp-version: "27"
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
 
       - run: mix deps.get
       - run: mix hex.publish --yes

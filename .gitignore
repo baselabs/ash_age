@@ -17,9 +17,6 @@ priv/plts/
 .env
 .env.local
 
-# Local toolchain pin
-.tool-versions
-
 # OS
 .DS_Store
 *.DS_Store

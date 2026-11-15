@@ -2,7 +2,8 @@
 
 ## Prerequisites
 
-- **Elixir** 1.15 or later. CI tests Elixir 1.18 on Erlang/OTP 27 and 28.
+- **Elixir** and **Erlang/OTP** as pinned in `.tool-versions` (the first version of each is the
+  default). The package supports Elixir 1.17+ on Erlang/OTP 26+; CI proves that floor.
 - **PostgreSQL** with the [Apache AGE](https://age.apache.org/) extension. CI tests
   PostgreSQL 16 with AGE 1.6.0.
 - Run `CREATE EXTENSION IF NOT EXISTS age;` in your test database.
