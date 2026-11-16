@@ -66,10 +66,9 @@ defmodule AshAge.DataLayer do
   its rewrite branch: it over-fetches by `limit + 1` and rewrites
   `page: [after: <keyset>]` into a compound sort + filter expression
   (`(rank > $x) OR (rank = $x AND id > $y)`, fully parameterized) built only
-  from the comparison and boolean operators AshAge already supports. The
-  practical win: keyset pages cost a constant-time `WHERE` filter instead of
-  the O(page_offset) walk-and-discard deep `SKIP N` pages impose on the AGE
-  planner. Binary-storage attributes are not keyset-sortable for the same
+  from the comparison and boolean operators AshAge already supports. A keyset
+  page filters with `WHERE` instead of walking and discarding the rows a deep
+  `SKIP N` page skips. Binary-storage attributes are not keyset-sortable for the same
   reason they are not sortable (see above) — sort on a non-binary attribute.
   """
 
@@ -176,8 +175,7 @@ defmodule AshAge.DataLayer do
     transformers: [
       AshAge.DataLayer.Transformers.ValidateGraph,
       AshAge.DataLayer.Transformers.EnsureLabelled,
-      AshAge.DataLayer.Transformers.ValidateLabelFormat,
-      AshAge.DataLayer.Transformers.DefaultRelate
+      AshAge.DataLayer.Transformers.ValidateLabelFormat
     ],
     verifiers: [
       AshAge.DataLayer.Verifiers.ValidateMultitenancyAttr,
@@ -246,7 +244,7 @@ defmodule AshAge.DataLayer do
   def can?(_, :bulk_create), do: true
   def can?(_, :destroy_query), do: true
   def can?(_, {:lateral_join, _}), do: false
-  # Aggregates (Slice A): count/sum/avg/min/max/exists over the resource's own
+  # Aggregates: count/sum/avg/min/max/exists over the resource's own
   # records (no relationship path). A no-path aggregate is `is_unrelated?` in Ash
   # (`query.ex:3507-3510`), which requires BOTH `{:aggregate, kind}` AND
   # `{:aggregate, :unrelated}` — declaring only the former rejects every aggregate
@@ -314,17 +312,11 @@ defmodule AshAge.DataLayer do
 
   @impl true
   def set_context(_resource, %AshAge.Query{} = query, context) do
-    # Captures the tenant for RLS on reads. Ash sets context.private.tenant for ALL
-    # strategies (Ash.Query.data_layer_query/2), including :attribute — where
-    # set_tenant/3 never fires. Pure annotation; no query behavior changes unless
-    # the resource declares rls_guc.
-    #
-    # This is the RAW query tenant (not the parse_attribute-coerced `to_tenant` the
-    # write path uses); with_rls sets the GUC to `to_string(this)`. Those coincide
-    # only within the supported tenant envelope — :string / uuid-as-string / integer,
-    # where `Ash.ToTenant` and `parse_attribute` are identity (spec §3.2). A custom
-    # `Ash.ToTenant`/`parse_attribute` would make the read GUC differ from the stored
-    # property, so RLS would hide all rows — fail-closed (empty), never a leak.
+    # Captures the raw query tenant for RLS on reads, for every multitenancy
+    # strategy (set_tenant/3 does not fire for :attribute). It changes nothing
+    # unless the resource declares rls_guc. A custom `Ash.ToTenant` or
+    # `parse_attribute` that changes the tenant's string form makes the read GUC
+    # differ from the stored property, so RLS returns no rows rather than leaking.
     {:ok, %{query | tenant: get_in(context, [:private, :tenant])}}
   end
 
@@ -391,7 +383,7 @@ defmodule AshAge.DataLayer do
     end
   end
 
-  # === Aggregate Callbacks (Slice A) ===
+  # === Aggregate Callbacks ===
 
   @impl true
   def add_aggregate(query, aggregate, _resource) do
@@ -616,10 +608,9 @@ defmodule AshAge.DataLayer do
     end)
   end
 
-  # An empty batch (e.g. a fully-filtered stream) writes nothing and touches no DB
-  # — zero scoping surface — so it bypasses with_rls and returns the pre-S6 result
-  # (`:ok`) rather than the blank-tenant fail-closed path. This is the ONLY
-  # exception to the with_rls wrap-pin, justified by there being nothing to scope.
+  # An empty batch (e.g. a fully filtered stream) writes nothing and touches no DB,
+  # so it has nothing to scope: it bypasses with_rls and returns `:ok` rather than
+  # the blank-tenant error. It is the only callback that skips with_rls.
   defp run_bulk_create(resource, [] = entries, opts),
     do: bulk_create_body(resource, entries, opts)
 
@@ -631,17 +622,11 @@ defmodule AshAge.DataLayer do
     |> unwrap_rls(resource)
   end
 
-  # The inner work of bulk_create/3 (named like run_query_body/do_create so the
-  # with_rls wrap shape is identical to the other four callbacks). Resolves the
-  # graph exactly as single-create does (via write_graph/2 through bulk_graph/2),
-  # so the fail-closed nil-:context-tenant behavior is identical; Ash batches by
-  # tenant, so every changeset in a batch shares one graph, resolved off the first.
-  #
-  # A bulk UPSERT (`upsert?: true` in opts — Ash passes it through from
-  # `Ash.bulk_create/4`) fails CLOSED: AGE has no unique constraint to upsert
-  # against, the single-record `upsert/4` path is a two-statement
-  # existence-MATCH, and silently treating an upsert batch as plain creates
-  # would duplicate rows with no error. Callers upsert per-record.
+  # Resolves the graph as single-create does, so a nil :context tenant fails
+  # closed; Ash batches by tenant, so the first changeset's graph serves the
+  # batch. A bulk upsert (`upsert?: true`) fails closed: AGE has no unique
+  # constraint to upsert against, and treating the batch as plain creates would
+  # duplicate rows. Callers upsert per record.
   defp bulk_create_body(resource, entries, opts) do
     if Map.get(opts, :upsert?, false) do
       {:error,
@@ -928,17 +913,11 @@ defmodule AshAge.DataLayer do
     end
   end
 
-  # === Upsert (Slice B) ===
-  #
-  # Two-statement, NON-MERGE path (AGENTS.md rule 2: AGE MERGE has catastrophic
-  # perf bugs). Inside the existing transaction (`:transact`): an existence MATCH
-  # (identity AND tenant predicate) → CREATE branch if absent/cross-tenant-excluded,
-  # SET branch if present (same tenant). Not atomic across concurrent upserts of
-  # the same identity (both see c==0, both create → duplicate); AGE enforces no PK
-  # uniqueness, so this is the inherent AGE contract — documented, same shape as
-  # the existing "no idempotent create" reality. A host needing race protection
-  # must enforce uniqueness outside AGE (a UNIQUE index over the agtype property is
-  # unprobed on this build).
+  # Upsert without MERGE: inside the action's transaction, an existence MATCH on
+  # identity and tenant, then SET when the vertex exists or CREATE when it does
+  # not. Concurrent upserts of the same identity can both create, because AGE
+  # enforces no uniqueness. A host that needs race protection enforces
+  # uniqueness outside AGE.
 
   @impl true
   def upsert(resource, changeset, identity_fields, _identity) do
@@ -1102,7 +1081,7 @@ defmodule AshAge.DataLayer do
     )
   end
 
-  # === destroy_query (Slice C) ===
+  # === destroy_query ===
   #
   # Bulk destroy by query: one `MATCH ... WHERE <translated filter> DETACH DELETE n`
   # over the full filtered set (Ash's `:destroy_query` gate). The WHERE is the SAME
@@ -1323,23 +1302,11 @@ defmodule AshAge.DataLayer do
     # update_query path; covers update_many's synthesized query.
     query = reserve_attr_params(query, resource)
 
-    # Translate the group's shared changeset.filter EAGERLY and fail CLOSED on an
-    # untranslatable operator. Putting the filter into `query.expression` instead
-    # (as a prior revision did) lets `build_where` swallow translation errors
-    # (`_ -> {[], query}`, lib/query.ex), so a changeset.filter using an
-    # unsupported operator (optimistic-lock, a ref-to-ref policy filter, a
-    # fragment) would be silently dropped and the SET would fall back to PK +
-    # tenant scope — updating rows the filter was meant to exclude (cross-vendor
-    # closeout finding B2; violates the `can?(:changeset_filter)` fail-closed
-    # contract). Pre-translating here makes the error loud before any write.
-    #
-    # NOTE: a no-op group (no atomics AND no effective attrs — `age skip` attrs
-    # don't count) is handled below `case query do` by running a scoped READ and
-    # returning the matched records unchanged (read_update_many_matches). That is
-    # the honest path between a bare `:ok` (Ash reads as all-stale) and an early
-    # return of the inputs (which bypassed changeset.filter — cross-vendor
-    # delta-2 finding, reverted). The filter is translated above (fail-closed on
-    # an untranslatable operator); the read gates the result on it.
+    # Translate the group's changeset.filter now and fail closed on an
+    # untranslatable operator; `build_where` would drop it and widen the SET to
+    # primary key and tenant. A no-op group (no atomics and no effective attrs)
+    # runs a scoped read below and returns the matched records unchanged, so the
+    # filter still gates the result.
     query = scope_to_filter(query, representative.filter)
 
     case query do
@@ -1444,16 +1411,8 @@ defmodule AshAge.DataLayer do
     end
   end
 
-  # Fail-closed translation of the group's changeset.filter into a pre-built
-  # WHERE clause on `query.filters` (NOT `query.expression`, whose translation
-  # `build_where` swallows). Threaded params land in `query.params`. `nil` and
-  # `%Ash.Filter{expression: nil}` mean "no filter" — no clause added.
-  # Fail-closed pre-check for every query carrying an `expression` (a channel
-  # no current Ash path populates — Ash's :attribute tenant predicate and bulk
-  # filters arrive through `filter/3`, already fail-closed — but a hand-built
-  # or future-gated expression must never be silently broadened by
-  # `Query.build_where`'s drop-on-untranslatable catch-all). Defense in depth;
-  # mirrors the update path's eager `scope_to_filter`.
+  # Rejects a query whose `expression` does not translate, so
+  # `Query.build_where` never drops it and broadens the query.
   defp validate_expression(%AshAge.Query{expression: nil}), do: :ok
 
   defp validate_expression(%AshAge.Query{} = query) do
@@ -1473,6 +1432,9 @@ defmodule AshAge.DataLayer do
     end)
   end
 
+  # Translates a changeset.filter into a WHERE clause on `query.filters` (not
+  # `query.expression`, which `build_where` drops when untranslatable), failing
+  # closed. A nil filter adds no clause.
   defp scope_to_filter(query, nil), do: query
 
   defp scope_to_filter(query, %Ash.Filter{expression: nil}), do: query

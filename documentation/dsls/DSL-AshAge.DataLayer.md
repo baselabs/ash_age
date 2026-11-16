@@ -69,10 +69,9 @@ capability — `can?(:keyset)` is intentionally not declared, so
 its rewrite branch: it over-fetches by `limit + 1` and rewrites
 `page: [after: <keyset>]` into a compound sort + filter expression
 (`(rank > $x) OR (rank = $x AND id > $y)`, fully parameterized) built only
-from the comparison and boolean operators AshAge already supports. The
-practical win: keyset pages cost a constant-time `WHERE` filter instead of
-the O(page_offset) walk-and-discard deep `SKIP N` pages impose on the AGE
-planner. Binary-storage attributes are not keyset-sortable for the same
+from the comparison and boolean operators AshAge already supports. A keyset
+page filters with `WHERE` instead of walking and discarding the rows a deep
+`SKIP N` page skips. Binary-storage attributes are not keyset-sortable for the same
 reason they are not sortable (see above) — sort on a non-binary attribute.
 
 

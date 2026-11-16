@@ -1,5 +1,3 @@
-# graphify: prune editor/LSP state dirs — their nested catch-all .gitignore ('*')
-# poisons graphify's flat ignore list (fnmatch '*' crosses '/') and zeroes the scan.
-# See graphify detect.py _is_ignored root-relative matching of nested patterns.
+# Editor and language-server state directories.
 /.elixir_ls/
 /.expert/

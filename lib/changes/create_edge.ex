@@ -193,18 +193,11 @@ defmodule AshAge.Changes.CreateEdge do
   end
 
   @doc false
-  # Pure fn of `(changeset, edge)` -- unit-tested. Collects each edge property's
-  # value from the same-named action argument, rejects unset (nil) properties (so
-  # an optional property that wasn't supplied is NOT written as an explicit null,
-  # matching single-create vertex sparse semantics), and routes every value
-  # through `Cast.serialize_value/2` by its DECLARED argument type -- so a
-  # `:binary` property is `$age64$`-tagged and a datetime/date becomes ISO8601,
-  # byte-identical in fidelity to how vertex attributes are stored. Returns
-  # `{:error, key}` (fail closed) when a key classified `sensitive` on the
-  # source resource has no binary-storage-typed declared argument backing it --
-  # an undeclared (`set_argument`-injected) or plaintext argument would
-  # otherwise store the classified datum untagged on the edge. This is the
-  # runtime half of ValidateSensitive R4.
+  # Collects each edge property from the same-named action argument, skips nil
+  # values (sparse, like vertex creates), and serializes each value by its
+  # declared argument type through `Cast.serialize_value/2`. Returns
+  # `{:error, key}` when a `sensitive` key has no binary-storage declared
+  # argument behind it, so a classified value is never stored untagged.
   def edge_properties(changeset, edge) do
     arg_types = argument_types(changeset)
     sensitive = Info.sensitive(changeset.resource)

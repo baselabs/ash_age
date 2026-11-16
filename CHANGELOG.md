@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the ash_hooks webhooks guide to the ash_hooks API.
+
 ## [2.2.1] - 2026-10-17
 
 Docs + ecosystem-integration release.

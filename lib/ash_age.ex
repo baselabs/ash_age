@@ -73,9 +73,9 @@ defmodule AshAge do
 
   ## Mix Tasks
 
-  - `mix ash_age.install` — Print setup instructions
-  - `mix ash_age.gen.migration` — Generate an AGE migration
-  - `mix ash_age.verify` — Verify AGE database configuration
+  - `mix ash_age.install`: Write the setup wiring with Igniter, or print it without Igniter
+  - `mix ash_age.gen.migration`: Generate an AGE migration
+  - `mix ash_age.verify`: Verify AGE database configuration
 
   ## Modules
 

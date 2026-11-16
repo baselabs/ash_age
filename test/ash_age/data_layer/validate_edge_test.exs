@@ -3,11 +3,6 @@ defmodule AshAge.DataLayer.ValidateEdgeTest do
 
   alias AshAge.DataLayer.Info
 
-  # Spark verifier errors raised inside the `@after_verify` hook are converted
-  # to stderr diagnostics by Elixir/Spark rather than propagated as exceptions,
-  # so `assert_raise` around an inline `defmodule` cannot catch them (Spark
-  # documents this in `Spark.Test`; see also AshAge.MultitenancyTest). Use
-  # Spark's sanctioned collector helpers.
   import Spark.Test, only: [assert_dsl_error: 2, refute_dsl_errors: 1]
 
   test "compile fails when an edge label is not a valid AGE identifier" do

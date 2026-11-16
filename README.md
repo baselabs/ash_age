@@ -92,7 +92,7 @@ $ AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix 
 `mix test.unit` runs the no-database lane, `mix test.integration` the live-AGE
 lane (see [`.env.example`](https://github.com/baselabs/ash_age/blob/master/.env.example)
 in the repo). CI pins the same image by digest, so
-local and CI run the same AGE build. A [dev container](.devcontainer/) with the
+local and CI run the same AGE build. A [dev container](https://github.com/baselabs/ash_age/tree/master/.devcontainer) with the
 database pre-wired is included for Codespaces / VS Code.
 
 ### Quick Start
@@ -311,9 +311,8 @@ Keyset works without a data-layer-native keyset capability: AshAge does not decl
 `can?(:keyset)`, so Ash rewrites `page: [after: <keyset>]` into a compound sort +
 filter expression — `(rank > $x) OR (rank = $x AND id > $y)`, fully parameterized —
 which AshAge answers with the same comparison and boolean operators it already
-supports. Prefer keyset for large result sets: each page costs a constant-time
-`WHERE` filter rather than the O(page_offset) walk-and-discard that deep `SKIP N`
-pages force the AGE planner into.
+supports. Prefer keyset for large result sets: a keyset page filters with `WHERE`
+instead of walking and discarding the rows a deep `SKIP N` page skips.
 
 ### Multitenancy
 
@@ -387,9 +386,9 @@ metadata catalog.
 
 ## Mix Tasks
 
-- **`mix ash_age.install`** — Print step-by-step setup instructions
-- **`mix ash_age.gen.migration NAME`** — Generate a timestamped AGE migration
-- **`mix ash_age.verify`** — Verify AGE extension, search_path, and graph existence
+- **`mix ash_age.install`**: Write the setup wiring with Igniter, or print step-by-step instructions without it
+- **`mix ash_age.gen.migration NAME`**: Generate a timestamped AGE migration
+- **`mix ash_age.verify`**: Verify AGE extension, search_path, and graph existence
 
 ## Development
 

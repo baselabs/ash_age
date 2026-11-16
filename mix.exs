@@ -168,9 +168,9 @@ defmodule AshAge.MixProject do
   defp aliases do
     [
       quality: ["format --check-formatted", "credo --strict", "dialyzer"],
-      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "mix_audit"],
-      # The integration tag (not env-var presence) decides the lane — `mix
-      # test.unit` never trips the empty-string-AGE_DATABASE_URL trap.
+      "deps.audit": ["deps.unlock --check-unused", "hex.audit", "deps.audit"],
+      # test_helper.exs starts the Repo whenever AGE_DATABASE_URL is set, even
+      # to an empty string; unset it for a run with no database.
       "test.unit": ["test --exclude integration"],
       "test.integration": ["test --only integration"]
     ]

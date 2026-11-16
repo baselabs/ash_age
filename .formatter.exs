@@ -1,9 +1,9 @@
 # Used by `mix format`.
 # `spark_locals_without_parens` lists ash_age's own `age do ... end` DSL calls so
 # `mix format` leaves them unparenthesized, and `export:` shares them with consumers
-# that add `:ash_age` to their `import_deps`. Derived from the `age` section +
-# `edge` entity schema in `AshAge.DataLayer` (equivalent to `mix spark.formatter
-# --extensions AshAge.DataLayer`, which needs the optional :sourceror dep).
+# that add `:ash_age` to their `import_deps`. The list is maintained by hand: every
+# new `age` option or `edge` key in `AshAge.DataLayer` is added here as `name: arity`,
+# or consumers' `mix format` parenthesizes it.
 spark_locals_without_parens = [
   graph: 1,
   repo: 1,

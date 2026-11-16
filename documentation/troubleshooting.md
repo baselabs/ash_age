@@ -3,6 +3,21 @@
 The sharp edges specific to running Ash on Apache AGE. Each entry is
 symptom → cause → fix.
 
+## `schema "ag_catalog" does not exist`
+
+**Symptom.** The first graph call, such as `create_graph`, fails with
+`schema "ag_catalog" does not exist`.
+
+**Cause.** The database has no `age` extension. `AshAge.Session.setup/1` only sets
+`search_path` and runs `LOAD 'age'`, which succeeds without the extension. The
+`apache/age` image creates the extension only in `POSTGRES_DB`, at the container's
+first start; a database created later with `CREATE DATABASE` does not have it.
+
+**Fix.** Run `CREATE EXTENSION IF NOT EXISTS age;` in that database as a superuser
+before any graph call. `mix ash_age.verify` reports a missing extension. Outside a
+migration, provision graphs and labels with `AshAge.Migration.provision_tenant/3`;
+the `create_age_graph` and label helpers run only inside an Ecto migration.
+
 ## Row-Level Security appears to do nothing
 
 **Symptom.** You enabled `rls_guc` and ran `enable_tenant_rls/2`, but every

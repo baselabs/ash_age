@@ -3,8 +3,7 @@ defmodule AshAge.DataLayer.TransformersTest do
   Coverage for the age-DSL compile-time transformers: ValidateGraph (graph
   name is a valid AGE identifier), ValidateLabelFormat (label likewise), and
   EnsureLabelled (label defaults to the resource module's short name when not
-  configured). AGENTS.md's "Adding DSL Configuration" recipe has pointed at
-  this file since S3 — it now exists.
+  configured).
   """
   use ExUnit.Case, async: true
 

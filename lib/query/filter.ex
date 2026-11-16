@@ -60,17 +60,11 @@ defmodule AshAge.Query.Filter do
     end
   end
 
-  # Ash's policy-authorization wrapper, attached to a query when a filter-
-  # producing policy authorizes an atomic update: `if policy_filter do true else
-  # error(...) end` (can.ex:1012-1022). In a WHERE clause, "the row is authorized
-  # if policy_filter holds" IS just `policy_filter` — a row the filter excludes is
-  # denied (not returned), the same effect as the error branch, which AGE cannot
-  # raise from a WHERE. Strip the wrapper and translate the condition. Without
-  # this clause the wrapper hit the catch-all and every policy-authorized atomic
-  # update hard-errored (cross-vendor closeout finding; fail-closed but a
-  # functional regression on the default authorized path). The error branch is
-  # unreachable in the WHERE translation, so a bare `%Error{}` still falls through
-  # to the catch-all reject.
+  # Ash wraps a filter policy on an atomic update as `if policy_filter do true
+  # else error(...) end`. In a WHERE clause that is just `policy_filter`: a row
+  # the filter excludes is not matched, which denies it as the error branch
+  # would. Translate the condition. A bare `%Error{}` still falls through to the
+  # catch-all reject.
   defp do_translate(
          %Ash.Query.Function.If{arguments: [cond, _then, %Ash.Query.Function.Error{}]},
          query

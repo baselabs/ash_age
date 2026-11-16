@@ -88,17 +88,12 @@ defmodule AshAge.Integration.RlsDataLayerTest do
               :reads_ok
             end)
 
-          # A fabricated cross-tenant update fails closed. The ENFORCER here is the
-          # app-layer :attribute write barrier: Ash injects `org_id == @t2` into the
-          # update cypher WHERE, which matches 0 rows for a t1 row (→ StaleRecord)
-          # regardless of RLS. RLS's USING would also hide the row, but is redundant
-          # for this :attribute source, and RLS's write-side WITH CHECK is bypassed by
-          # AGE cypher() anyway (documented). It runs in its OWN role-pinned
-          # transaction: Ash core wraps the update action in a transaction and calls
-          # rollback on the failed action, so the enclosing TestRepo.transaction
-          # returns {:error, changeset}. Match on THAT — the StaleRecord fail-closed
-          # is the security proof of the :attribute barrier (unchanged), and isolating
-          # it in its own transaction keeps that rollback from poisoning the reads.
+          # A cross-tenant update fails closed through the :attribute write
+          # barrier: Ash adds `org_id == @t2` to the WHERE, which matches no t1
+          # row, so the update returns StaleRecord whatever RLS does. It runs in
+          # its own role-pinned transaction because Ash rolls back the failed
+          # action, so that transaction returns {:error, changeset}; isolating
+          # it keeps the rollback from affecting the reads.
           txn_result =
             in_role_txn(@role, fn ->
               struct(Doc, id: a.id, org_id: @t2, body: "a")

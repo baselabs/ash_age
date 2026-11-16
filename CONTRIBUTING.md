@@ -1,12 +1,11 @@
 # Contributing to AshAge
 
-Thank you for your interest in contributing to AshAge!
-
 ## Prerequisites
 
-- **Elixir** 1.15+ and **Erlang/OTP** 26+
-- **PostgreSQL** 14+ with [Apache AGE](https://age.apache.org/) extension installed
-- Run `CREATE EXTENSION IF NOT EXISTS age;` in your test database
+- **Elixir** 1.15 or later. CI tests Elixir 1.18 on Erlang/OTP 27 and 28.
+- **PostgreSQL** with the [Apache AGE](https://age.apache.org/) extension. CI tests
+  PostgreSQL 16 with AGE 1.6.0.
+- Run `CREATE EXTENSION IF NOT EXISTS age;` in your test database.
 
 ## Getting Started
 
@@ -17,11 +16,18 @@ mix deps.get
 mix test
 ```
 
-## Development Workflow
+`mix test` runs the unit tests with no database. Set `AGE_DATABASE_URL` to a live AGE
+database to run the integration tests as well:
 
-1. **Fork** the repository and create a feature branch from `master`
-2. Make your changes with clear, descriptive commit messages
-3. Ensure all checks pass before opening a PR:
+```bash
+docker compose up -d
+AGE_DATABASE_URL=postgres://postgres:postgres@localhost:5462/ash_age_test mix test.integration
+```
+
+An empty `AGE_DATABASE_URL` still counts as set and starts the test Repo. For a run with
+no database, unset it: `env -u AGE_DATABASE_URL mix test`.
+
+## Checks
 
 ```bash
 mix format             # Format code
@@ -29,31 +35,15 @@ mix credo --strict     # Lint
 mix compile --warnings-as-errors  # Zero warnings
 mix test               # Run tests
 mix dialyzer           # Type checking (slow on first run)
+mix deps.audit         # Unused locks, retired packages and security advisories
 ```
 
-4. Update `CHANGELOG.md` under `[Unreleased]`
-5. Open a Pull Request against `master`
-
-## CI Pipeline
-
-Every PR runs the following checks automatically:
-
-| Check                              | What it does                         |
-| ---------------------------------- | ------------------------------------ |
-| `mix format --check-formatted`     | Enforces consistent formatting       |
-| `mix credo --strict`               | Lints for code quality issues        |
-| `mix compile --warnings-as-errors` | Zero tolerance for compiler warnings |
-| `mix test`                         | Runs all tests against Apache AGE    |
-| `mix dialyzer`                     | Static type analysis                 |
-
-All checks must pass before a PR can be merged.
-
-## Code Style
-
-- Follow existing patterns in the codebase
-- Use `mix format` — the `.formatter.exs` handles the config
-- Keep functions small and well-documented
-- Add `@moduledoc` and `@doc` to public modules and functions
+CI runs `mix hex.audit`, which fails on any locked dependency with a published security
+advisory. A new advisory can turn CI red with no code change. To find the fixed version,
+query OSV (`curl -s https://api.osv.dev/v1/query -X POST -d
+'{"package":{"name":"<dep>","ecosystem":"Hex"}}'`) and read each entry's
+`affected[].ranges[].events[].fixed`, then bump the dependency, and any dependency whose
+version constraint blocks it, to at least that version.
 
 ## Reporting Issues
 

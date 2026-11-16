@@ -22,13 +22,15 @@ end
 **Important:**
 - Repo must define a Postgrex types module with `AshAge.Postgrex.AgtypeExtension` and set `types:` in config
 - Graph must exist in PostgreSQL (create via migration or `mix ash_age.gen.migration`)
-- Repo must have `after_connect: {AshAge.Session, :setup, []}` in config
+- Repo must have `after_connect: {AshAge.Session, :setup, []}` in config. `Session.setup/1` is a connection hook: it takes the raw DBConnection, not a repo
 - Search path must include `ag_catalog` and `public` (Session.setup handles this)
 - Session.setup sets search_path to: `public, ag_catalog, "$user"` — this order prevents `ag_catalog.schema_migrations` from shadowing Ecto's `public.schema_migrations`
-- Run `mix ash_age.install` for full setup instructions
+- Run `mix ash_age.install` to write the setup wiring (with Igniter) or print it (without)
 - Run `mix ash_age.verify` to check your database configuration
 
 ## Query Operations
+
+ash_age targets Ash 3 (`ash ~> 3.11`); write filters with Ash 3's operator and function modules.
 
 **Read operations** work through Ash.Query:
 
@@ -83,6 +85,9 @@ nil)` therefore also does not match it), while Ash's in-memory evaluation of
 for queries and single-record reroutes, `update_many/3` for distinct-changes
 batches). Unsupported expression nodes fail closed: as `{:error, UnsupportedExpression}` where the expr translator is entered directly, and as `UpdateFailed` ("unsupported atomic expression") where the update callbacks reject the changeset — either way the update is refused, never approximated.
 
+Call `Ash.update_many/4` with `return_records?: true`. Without it, Ash 3 raises
+`BadBooleanError` from a strict `or` in its own `update_many` path.
+
 ## Security Requirements
 
 **ALL dynamic values MUST use parameterized queries:**
@@ -93,6 +98,9 @@ batches). Unsupported expression nodes fail closed: as `{:error, UnsupportedExpr
   ```elixir
   AshAge.Cypher.Parameterized.build(graph, cypher, %{"param" => value})
   ```
+- AGE's `cypher()` takes the graph name as a string literal, not a `$` parameter,
+  so ash_age writes a graph name into the statement only after its identifier check
+  passes
 
 **Error messages are redacted:** AshAge never puts filtered values or PostgreSQL
 `DETAIL` lines (which echo row values) into error messages or logs.
@@ -296,7 +304,9 @@ policy filter is applied to `update`/`destroy` WHERE clauses, not just reads —
 a changeset carrying another tenant's primary key cannot modify or delete that
 tenant's rows. A scoping-denied (or no-match / already-deleted) record-based
 `update`/`destroy` returns `Ash.Error.Changes.StaleRecord` — the Ash contract
-for record-based mutations (`NotFound` is for identifier lookups).
+for record-based mutations (`NotFound` is for identifier lookups). A tenant or policy
+filter that ash_age cannot translate to Cypher rejects the mutation; it never runs
+unscoped.
 
 **Choosing a strategy.** `:attribute` scales to many tenants in one graph (index
 the discriminator) and is the default recommendation. `:context` gives physical
@@ -354,7 +364,12 @@ end
   a replacement.
 - **Fail-closed on a blank/unset GUC.** The policy predicate requires
   `current_setting(guc, true) <> ''`; an unset or empty GUC matches zero rows rather
-  than falling through to unscoped access.
+  than falling through to unscoped access. Data-layer actions on an `rls_guc`
+  resource return an error for a nil or blank tenant before any query.
+- ash_age sets only the GUC, with `set_config(guc, tenant, true)`: both values are
+  bound parameters and the setting is transaction-local, so it never carries over to
+  the next use of a pooled connection. ash_age never runs `SET ROLE`; choosing the
+  connection role is the host's job.
 - `AshAge.with_tenant_rls/4` is the auditable way to tenant-scope raw `AshAge.cypher/5`
   calls: it runs `fun` inside a transaction with the GUC `set_config`'d on the same
   pinned connection. Do not hand-roll `set_config` around a raw cypher call — use this.
@@ -385,6 +400,8 @@ end
 - `collect()` and `count()` aggregates are supported.
 - `OPTIONAL MATCH` is supported, including the multi-pattern form
   (`OPTIONAL MATCH (a:P), (b:P)`).
+- `CREATE (n:Label $props)` is NOT supported; set properties with
+  `CREATE (n:Label) SET n.key = $val`.
 - `datetime()` is NOT supported (`function datetime does not exist`); `timestamp()`
   works and returns epoch milliseconds. Do date/datetime handling application-side —
   ash_age serializes `%Date{}`/`%DateTime{}`/`%NaiveDateTime{}` to ISO8601 on write
@@ -544,7 +561,9 @@ end
 records. Destinations are **deduped per source** (in Elixir, by destination primary
 key — no SQL `DISTINCT`) and **cardinality-aware**: a `has_one` manual relationship
 yields a single record per source, `has_many` yields a list. Works with both
-**single and composite primary keys** on source and destination.
+**single and composite primary keys** on source and destination. Each source key is
+cast to the source resource's attribute types before it keys the map, so `Date`,
+`DateTime` and other non-string primary keys associate like UUID and integer keys.
 
 **Tenancy is FAIL-CLOSED:**
 - `:context` — resolves the per-tenant graph; a nil/blank tenant fails closed.
@@ -598,12 +617,12 @@ AshAge.cypher(MyApp.Repo, "my_graph",
   `{k: v}`) is returned as its **raw agtype string** — aggregate decoding is out of
   scope. Use Cypher `UNWIND` to project collections into individual rows.
 - **Tenancy is explicit:** the `graph` you pass IS the isolation boundary. `cypher/5`
-  opens no transaction of its own; for RLS defense-in-depth, call it inside your own
-  tenant-GUC (`SET LOCAL`) transaction.
+  opens no transaction of its own; for RLS defense-in-depth, call it inside
+  `AshAge.with_tenant_rls/4`, which sets the tenant GUC for one transaction.
 
 ## Bulk Create
 
-`can?(:bulk_create)` is now `true`. `Ash.bulk_create` emits a single `UNWIND $rows AS row CREATE (n:Label) SET n.key = row.key … RETURN n` per key-set group.
+`can?(:bulk_create)` is `true`. `Ash.bulk_create` emits a single `UNWIND $rows AS row CREATE (n:Label) SET n.key = row.key … RETURN n` per key-set group.
 
 **Key-set grouping:** Rows are grouped by their attribute key-set — a row with an optional attribute missing is NOT null-filled to match other rows. Each group's `UNWIND` emits SET clauses for exactly that group's keys, preserving single-create's sparse stored shape.
 
@@ -611,7 +630,7 @@ AshAge.cypher(MyApp.Repo, "my_graph",
 
 **Binary/date values:** Round-trip correctly through the `$rows` parameter nesting (same `$age64$`/ISO8601 serialization as single-create).
 
-**Atomicity:** `UNWIND` is one statement — atomic per batch (`{:error, …}` on any failure), not `:partial_success`. On the default `transaction: :batch` path (Ash wraps the batch in a transaction), a later-group failure rolls back earlier groups; under `transaction: false` a partial write is possible (same contract single-create and AshPostgres carry). A `:context` bulk with a nil tenant fails closed.
+**Atomicity:** `UNWIND` is one statement, atomic per batch (`{:error, …}` on any failure), not `:partial_success`. On the default `transaction: :batch` path (Ash wraps the batch in a transaction), a later-group failure rolls back earlier groups; under `transaction: false` a partial write is possible (same contract single-create and AshPostgres carry). A `:context` bulk with a nil tenant fails closed. An empty batch writes nothing and returns `:ok`, even on an `rls_guc` resource with no tenant.
 
 ## Telemetry
 

@@ -90,10 +90,6 @@ defmodule AshAge.Integration.RlsVerifyTest do
         # --- NEGATIVE / DRIFT: no policy yet (label exists, RLS never enabled). ---
         # This is the load-bearing assertion: the guard MUST report NO match here,
         # otherwise it can never go red on real drift.
-        #
-        # RED discipline (quoted in the report): asserting `== true` here made the
-        # test fail with `Assertion ... failed ... false`, proving the value is
-        # genuinely `false` — so `refute` below is a non-vacuous drift detection.
         refute Verify.rls_policy_matches?(TestRepo, args),
                "expected DRIFT (no matching policy) before enable_tenant_rls, but the guard reported a match"
 

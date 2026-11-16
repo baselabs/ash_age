@@ -875,11 +875,8 @@ defmodule AshAge.Integration.TraverseTest do
   end
 
   # ===================================================================
-  # Test 15 — NewType-over-:date source PK: storage-class coercion keeps
-  # the F3 keyed map keyed by %Date{} (pre-fix: coerce returned the ISO
-  # STRING, so the map key never equaled the record key and the
-  # relationship silently loaded empty — the silent-drop class in memory
-  # ash-age-manual-rel-f3-key-coercion).
+  # Test 15: a NewType-over-:date source PK is coerced by storage class, so the
+  # keyed map is keyed by %Date{} and matches the record key.
   # ===================================================================
   test "traversal from a NewType-date PK source returns the F3 keyed map" do
     a = ~D[2026-01-01]

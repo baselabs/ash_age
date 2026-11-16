@@ -48,8 +48,6 @@ defmodule AshAge.Integration.Probes.TraverseUnwindProbeTest do
         assert {:ok, %{rows: rows}} = SQL.query(TestRepo, sql, pg_params)
 
         reached = rows |> Enum.map(fn [_s1, bid] -> Agtype.decode(bid) end) |> Enum.sort()
-        # PASS => P-S5a = yes (Task 4 uses this exact mechanism).
-        # {:error, %Postgrex.Error{}} => P-S5a = no (record it, use the fallback).
         assert reached == ["b", "c"]
       end,
       vlabels: ["Node"],

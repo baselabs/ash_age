@@ -17,8 +17,7 @@ priv/plts/
 .env
 .env.local
 
-# Local toolchain pin (asdf). CI pins via setup-beam (elixir 1.18 / otp 27);
-# a committed pin would diverge, so this stays developer-local.
+# Local toolchain pin
 .tool-versions
 
 # OS

@@ -94,8 +94,6 @@ defmodule AshAge.CypherTest do
     assert AshAge.with_tenant_rls(AshAge.TestRepo, "ash_age.tenant_id", "t1", fn -> :done end) ==
              :done
   rescue
-    # In the pure-unit lane (no DB) the transaction can't open; assert the arity/exists
-    # via function_exported? instead, and cover the live path in the integration suite.
     _ -> assert function_exported?(AshAge, :with_tenant_rls, 4)
   end
 

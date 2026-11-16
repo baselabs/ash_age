@@ -12,11 +12,6 @@ defmodule AshAge.Integration.AtomicUpdateTest do
   defp minus(n), do: %Minus{left: ref(:count), right: n}
   defp times(n), do: %Times{left: ref(:count), right: n}
 
-  # A plain resource for atomic-update-over-per-record-update (Tripwires #5, #7).
-  # `:update_query` is still false at this slice (Task 4 adds it), so Ash falls
-  # back to per-record update/2 — which now carries atomics via atomic_set_clauses
-  # (closing the S7 silent-drop gap, D-rev8). The resource name and graph carry
-  # the slice tag so graph isolation is unique.
   defmodule Counter do
     use Ash.Resource,
       domain: AshAge.TestDomain,

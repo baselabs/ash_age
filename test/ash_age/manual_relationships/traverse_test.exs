@@ -296,23 +296,12 @@ defmodule AshAge.ManualRelationships.TraverseTest do
   end
 
   test "an rls_guc :attribute source with a blank tenant fails closed (confidentiality tripwire)" do
-    # Confidentiality tripwire on traverse's PRE-EXISTING fail-closed behavior: for
-    # an rls_guc-declaring :attribute source with a blank context.tenant, load/3
-    # returns a value-free %QueryFailed{}, no rows, and opens NO connection (this
-    # runs in the unit lane with no DB, so any SQL.query would raise a DBConnection
-    # error instead of returning this tuple). It short-circuits at resolve_tenant
-    # (attribute_scope/2 -> {:error, tenant_required()}) BEFORE the query is built
-    # and BEFORE with_rls is called — so this test does NOT exercise the with_rls
-    # layer and would pass identically with the wrap removed. It guards that a
-    # blank-tenant :attribute traversal can never touch the shared multi-tenant
-    # graph. Scope of the other two layers:
-    #   (a) the NEW with_rls-routing code's RED-capability is carried by the two
-    #       wrap_traverse_error/1 tests above (the error-normalization seam);
-    #   (b) live GUC enforcement (valid tenant -> GUC set on the pinned connection
-    #       -> RLS-scoped traversal) needs a DB and is proven in the integration
-    #       lane (Task 8). with_rls's own blank-tenant clause is structurally
-    #       unreachable from traverse (both strategies fail closed upstream), so no
-    #       DB-free unit test can isolate that layer.
+    # For an rls_guc :attribute source with a blank tenant, load/3 returns a
+    # value-free %QueryFailed{} and no rows without opening a connection (this
+    # runs with no database, so any query would raise instead). It fails at
+    # tenant resolution, before the query is built and before with_rls, so a
+    # blank-tenant traversal never touches the shared graph. Live GUC enforcement
+    # is covered by the integration tests.
     rel = ResourceInfo.relationship(__MODULE__.RlsSource, :descendants)
 
     records = [%{id: Ash.UUID.generate()}]

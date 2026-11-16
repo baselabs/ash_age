@@ -160,25 +160,13 @@ defmodule AshAge.Integration.BulkCreateTest do
     :ok
   end
 
-  # ------------------------------------------------------------------
-  # Scenario 1: cross-GROUP reassembly via bulk_create_index
-  # ------------------------------------------------------------------
-  # This scenario must genuinely EXERCISE T9's `bulk_create_index` stamping — the
-  # plan-drift correction whose whole point is that records are mapped back to
-  # changesets by that stamp, NOT by positional order. A single-key-set batch is
-  # VACUOUS for this: all rows land in one UNWIND group, Ash pre-orders the batch
-  # by index before dispatch, and `sorted?: true` is a stable sort, so records
-  # come back in `idx` order no matter what index the layer stamps (a reviewer
-  # confirmed a constant-index stamp still passed a single-group test).
-  #
-  # So the 20 inputs INTERLEAVE two distinct key-sets across `idx`: `note` is
-  # PRESENT on even idx and ABSENT on odd idx. `group_bulk_entries/1` splits this
-  # into two groups — `{id, idx}` (odds: 1,3,5,…,19) and `{id, idx, note}`
-  # (evens: 2,4,6,…,20) — each holding a NON-CONTIGUOUS, out-of-order subset of
-  # the 1..20 sequence. With correct per-record `bulk_create_index` stamping the
-  # two groups' records reassemble to full 1..20; with a broken (e.g. constant)
-  # stamp the cross-group interleave comes back out of order. We do NOT sort the
-  # records ourselves — `sorted?: true` + the stamp is the mechanism under test.
+  # Records map back to changesets by `bulk_create_index`, not by position. A
+  # single key-set batch cannot show that (one UNWIND group comes back in order
+  # anyway), so the 20 inputs interleave two key-sets: `note` is present on even
+  # `idx` and absent on odd `idx`, giving two groups that each hold a
+  # non-contiguous subset of 1..20. Correct stamping reassembles 1..20; a broken
+  # stamp returns the interleave out of order. The test does not sort the
+  # records itself; `sorted?: true` and the stamp are under test.
   test "bulk_create reassembles records across key-set GROUPS in input order (bulk_create_index)" do
     with_graph(
       "itest_bulk_item",

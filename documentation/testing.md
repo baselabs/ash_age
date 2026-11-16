@@ -65,7 +65,9 @@ end
 
 The shape to internalize: **wrap the whole test body** (create → assertions →
 drop), don't create the graph in `setup` — a helper that drops on exit after
-`setup` returns will have already dropped it before the test runs.
+`setup` returns will have already dropped it before the test runs. When a test needs several graphs, provision them in one
+`unboxed_run` with one `try/after`; nesting a per-graph helper leaks graphs when
+the body fails partway.
 
 Labels matter too: AGE creates a vertex label implicitly on first `CREATE`,
 but provisioning labels explicitly (as above) keeps `drop_graph` behavior
@@ -80,6 +82,18 @@ your real migrations.
   attacker record in a DIFFERENT tenant (seeded first), then assert the
   cross-tenant read/update/destroy fails closed — not merely that the right
   tenant's rows come back.
+- Most paths touch more than one resource: the source and destination of a
+  traversal, both endpoints of an edge, the changeset and the stored record. Test
+  each participant with a cross-tenant tripwire plus a positive control that
+  shows the in-tenant result is non-empty, so an all-empty result cannot pass.
+- With `rls_guc`, RLS and the `:attribute` filter hide the same rows, so
+  cross-tenant absence alone does not show that RLS works. Test RLS on its own
+  with raw `AshAge.cypher/5` inside `AshAge.with_tenant_rls/4`, under a role
+  without `BYPASSRLS` (`SET LOCAL ROLE` to a test role; the default `postgres`
+  superuser skips RLS). Through Ash actions, the RLS observable is that
+  own-tenant rows are visible once the GUC is set. A cross-tenant update that
+  returns `StaleRecord` shows the `:attribute` write barrier, not RLS, because
+  `cypher()` writes bypass `WITH CHECK`.
 
 ## What to assert beyond happy paths
 
@@ -89,9 +103,22 @@ The failure modes worth pinning for a data layer:
   failure surfaces operator/SQLSTATE-shaped errors, never row values.
 - **Scoped mutations return `StaleRecord`** on a 0-row tenant/policy match
   (the Ash contract for record-based updates/destroys).
+- **Typed traversal keys**: load a traversal from a source with a `Date` or
+  `DateTime` primary key and assert each destination arrives on its source.
+  UUID and integer keys match even without casting, so only a temporal key
+  catches a missing cast.
 - **Parameterization**: if you capture executed SQL (Ecto's
   `[:my_app, :repo, :query]` telemetry carries `query` and `params`), user
   values appear only in the params, never in the SQL body.
+
+## Testing verifiers
+
+Spark reports verifier errors as compiler warnings, so a resource defined in a
+test compiles even when a verifier fires. Assert a rule that must fire with
+`Spark.Test.assert_dsl_error/2`, and a valid declaration that must pass with
+`Spark.Test.refute_dsl_errors/1`; a bare `defmodule` cannot catch a verifier
+that fires when it should not. This warning behavior belongs to Spark, so
+re-check it when upgrading Spark.
 
 ## Reference
 

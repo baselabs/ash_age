@@ -286,17 +286,11 @@ defmodule AshAge.Cypher.Expr do
   # (`if is_nil(type(expr, Type, [])) do error else expr end`).
   defp do_translate(%Type{arguments: [expr | _]}, acc), do: do_translate(expr, acc)
 
-  # A bare `Ash.Query.Function.Error{}` reachable here means an atomic
-  # VALIDATION produced `if(violation, error(...), ref(attr))` (Ash's
-  # `add_atomic_validations`, changeset.ex:3998-40119) and the allow_nil?
-  # wrapper clause above did NOT strip it (its cond is a compare/other, not
-  # `is_nil(type(expr))`). AGE Cypher cannot raise an Ash error from a SET
-  # expression, so translating `error(...)` to `null` would emit
-  # `SET attr = CASE WHEN violation THEN null ELSE attr END` — a validation
-  # violation would write null and SUCCEED (silent bypass + data corruption,
-  # cross-vendor closeout finding B1). Fail CLOSED instead: reject the node so
-  # the changeset is not translated to a Cypher write. AGE-side enforcement of
-  # atomic validations is a named limitation (validations must run per-record).
+  # An `error(...)` node here comes from an atomic validation that the
+  # allow_nil? clause above did not strip. Cypher cannot raise an Ash error from
+  # a SET expression, and translating it to null would write null and succeed.
+  # Reject the node so the update fails closed; atomic validations must run
+  # per record.
   defp do_translate(%Error{arguments: _}, _acc) do
     {:error,
      unsupported(
