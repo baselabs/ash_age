@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # kci/** is the short-lived landing branch: the full run there is what
+    # admits a commit to master.
+    branches: [master, 'kci/**']
     paths-ignore: ['**/*.md', 'docs/**', 'LICENSE*', '.github/ISSUE_TEMPLATE/**']
   pull_request:
     branches: [master]
