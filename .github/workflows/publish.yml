@@ -1,8 +1,7 @@
 name: Publish to Hex.pm
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 env:
   MIX_ENV: dev
@@ -10,9 +9,9 @@ env:
 jobs:
   publish:
     name: Publish
-    # The Hex key lives only in the protected publish environment, and only a
-    # release the owner's account published, and re-ran if at all, may use it.
-    if: github.actor == 'palermo-git' && github.triggering_actor == 'palermo-git'
+    # The Hex key lives only in the protected publish environment, and only an
+    # owner's dispatch from the default branch, and re-run if at all, may use it.
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
     permissions:
