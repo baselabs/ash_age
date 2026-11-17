@@ -1,0 +1,70 @@
+name: Exact BEAM runtime
+description: Install the declared runtime and refuse a different installed version.
+inputs:
+  tool-versions:
+    description: Toolchain declaration, relative to the repository root.
+    default: .tool-versions
+  elixir-version:
+    description: Exact Elixir build for a compatibility lane; defaults to the declaration.
+    default: ''
+  otp-version:
+    description: Exact OTP version for a compatibility lane; defaults to the declaration.
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Read the declared runtime
+      id: versions
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        TOOL_VERSIONS: ${{ inputs.tool-versions }}
+        LANE_ELIXIR: ${{ inputs.elixir-version }}
+        LANE_OTP: ${{ inputs.otp-version }}
+      run: |
+        python3 - <<'PYTHON'
+        import os, pathlib, re
+        path = pathlib.Path(os.environ['TOOL_VERSIONS'])
+        if not path.is_file():
+            raise SystemExit(f'::error::Missing runtime declaration: {path}')
+        versions = {}
+        for line in path.read_text().splitlines():
+            fields = line.split('#', 1)[0].split()
+            if fields:
+                if len(fields) < 2 or fields[0] in versions:
+                    raise SystemExit('::error::Invalid or duplicate runtime declaration')
+                versions[fields[0]] = fields[1]
+        elixir = os.environ['LANE_ELIXIR'] or versions.get('elixir', '')
+        otp = os.environ['LANE_OTP'] or versions.get('erlang', '')
+        match = re.fullmatch(r'(\d+\.\d+\.\d+)-otp-(\d+)', elixir)
+        if not match or not re.fullmatch(r'\d+\.\d+\.\d+(?:\.\d+)*', otp):
+            raise SystemExit('::error::Declare exact Elixir and OTP versions in .tool-versions')
+        if match[2] != otp.split('.')[0]:
+            raise SystemExit('::error::Elixir build and OTP major differ')
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f'elixir={elixir}\notp={otp}\n')
+        PYTHON
+
+    - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+      with:
+        elixir-version: ${{ steps.versions.outputs.elixir }}
+        otp-version: ${{ steps.versions.outputs.otp }}
+        version-type: strict
+
+    - name: Refuse an installed runtime that differs from the declaration
+      shell: bash
+      env:
+        EXPECTED_ELIXIR: ${{ steps.versions.outputs.elixir }}
+        EXPECTED_OTP: ${{ steps.versions.outputs.otp }}
+      run: |
+        elixir -e '
+          [version, build_otp] = String.split(System.fetch_env!("EXPECTED_ELIXIR"), "-otp-")
+          otp_major = to_string(:erlang.system_info(:otp_release))
+          otp_file = Path.join([to_string(:code.root_dir()), "releases", otp_major, "OTP_VERSION"])
+          actual_otp = otp_file |> File.read!() |> String.trim()
+          unless System.version() == version and
+                   to_string(System.build_info().otp_release) == build_otp and
+                   actual_otp == System.fetch_env!("EXPECTED_OTP") do
+            raise "Installed Elixir/OTP differs from the declared exact runtime"
+          end
+        '

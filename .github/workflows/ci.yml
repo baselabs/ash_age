@@ -25,13 +25,15 @@ jobs:
   toolchain:
     name: Read suite toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 5 # run 44128064091
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
       beam_lanes: ${{ steps.versions.outputs.beam_lanes }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
         run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
@@ -40,16 +42,18 @@ jobs:
     name: Lint
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5 # run 44128064091
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -58,26 +62,29 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix format --check-formatted
       - run: mix credo --strict
       - run: mix deps.unlock --check-unused
       - run: mix hex.audit
+      - run: mix deps.audit
 
   compile:
     name: Compile and docs
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5 # run 44128064091
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -86,7 +93,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: MIX_ENV=dev mix docs
 
@@ -94,7 +101,7 @@ jobs:
     name: Test
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5 # run 44128064091
     services:
       age:
         # Pinned by digest for reproducible AGE behavior (apache/age:release_PG16_1.6.0,
@@ -114,14 +121,16 @@ jobs:
     env:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -130,23 +139,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix test
 
   dialyzer:
     name: Dialyzer
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 5 # run 44128064091
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -155,21 +166,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-plt-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix dialyzer
 
   notebook:
     name: Notebook
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 5 # run 44128064091
     services:
       age:
         image: apache/age@sha256:16aa423d20a31aed36a3313244bf7aa00731325862f20ed584510e381f2feaed
@@ -188,9 +199,11 @@ jobs:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
       ASH_AGE_SRC: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
@@ -198,27 +211,30 @@ jobs:
       - run: elixir scripts/run_notebook.exs notebooks/getting_started.livemd
 
   # The declared floor (elixir in mix.exs) as a consumer meets it: the toolchain
-  # in ci/floor/.tool-versions, the runtime dependencies resolved fresh with no
-  # mix.lock, and the package compiled with warnings as errors.
+  # in ci/floor/.tool-versions, the committed production lock, and the package
+  # compiled with warnings as errors. No qualification lane may rewrite a lock.
   floor:
     name: Floor
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5 # run 44128064091
     env:
       MIX_ENV: prod
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Read the floor toolchain
         id: versions
         run: sh scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
+          tool-versions: ci/floor/.tool-versions
 
-      - run: rm mix.lock && mix deps.get --only prod
+      - run: mix deps.get --only prod --check-locked
       - run: mix compile --warnings-as-errors
 
   # Every other Elixir and Erlang pair .tool-versions lists: compile, the suite
@@ -228,7 +244,7 @@ jobs:
     needs: toolchain
     if: needs.toolchain.outputs.beam_lanes != '[]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 5 # run 44128064091
     strategy:
       fail-fast: false
       matrix:
@@ -250,14 +266,16 @@ jobs:
     env:
       AGE_DATABASE_URL: postgres://postgres:postgres@localhost:5432/ash_age_test
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - uses: ./.github/actions/setup-beam
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
@@ -266,39 +284,36 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
           key: ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-
 
-      - run: mix deps.get
+      - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
       - run: mix test
       - run: mix dialyzer
 
-  # The one verdict a landing reads: every job above succeeded. Compatibility
-  # may be skipped only when .tool-versions lists no second toolchain.
+  # The one verdict a landing reads: every job above succeeded. A skipped,
+  # canceled, or failed prerequisite refuses qualification.
   qualified:
     name: qualified
     if: always()
     needs: [toolchain, lint, compile, test, dialyzer, notebook, floor, compatibility]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 5 # run 44128064091
     steps:
       - name: Require every qualification job to succeed
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          python3 - <<'PY'
+          python3 - <<'PYTHON'
           import json, os, sys
           results = json.loads(os.environ['NEEDS'])
-          lanes = results['toolchain'].get('outputs', {}).get('beam_lanes')
-          def passed(name, job):
-              return job['result'] == 'success' or (name == 'compatibility' and job['result'] == 'skipped' and lanes == '[]')
-          failed = [name for name, job in results.items() if not passed(name, job)]
+          failed = [name for name, job in results.items() if job['result'] != 'success']
           if failed:
               print('Qualification refused: ' + ', '.join(failed))
-          sys.exit(bool(failed))
-          PY
+          sys.exit(bool(failed) or not results)
+          PYTHON

@@ -3,33 +3,117 @@ name: Publish to Hex.pm
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 env:
   MIX_ENV: dev
+  HEX_API_URL: https://hex.pm/api
 
 jobs:
   publish:
     name: Publish
-    # The Hex key lives only in the protected publish environment, and only an
-    # owner's dispatch from the default branch, and re-run if at all, may use it.
-    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
+    timeout-minutes: 5 # run 39079831016
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Read the default toolchain
-        id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
-
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
+      - name: Refuse a ref other than the default branch
+        env:
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "$DEFAULT_REF" ]; then
+            echo "::error::Run this workflow from the default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          elixir-version: ${{ steps.versions.outputs.elixir }}
-          otp-version: ${{ steps.versions.outputs.otp }}
+          persist-credentials: false
 
-      - run: mix deps.get
-      - run: mix hex.publish --yes
+      - uses: ./.github/actions/setup-beam
+
+      - name: Pin the Hex client used to build and publish
+        run: mix local.hex 2.7.0 --force
+
+      - name: Fetch locked dependencies
+        run: mix deps.get --check-locked
+
+      - name: Read the package identity
+        run: |
+          mix run --no-start -e '
+            config = Mix.Project.config()
+            package = to_string(Keyword.get(config[:package] || [], :name, config[:app]))
+            version = config[:version]
+            Version.parse!(version)
+            File.write!(System.fetch_env!("GITHUB_ENV"),
+              "PACKAGE=#{package}\nVERSION=#{version}\n" <>
+              "PACKAGE_ARCHIVE=#{System.fetch_env!("RUNNER_TEMP")}/#{package}-#{version}.tar\n" <>
+              "DOCS_ARCHIVE=#{System.fetch_env!("RUNNER_TEMP")}/hex-docs.tar.gz\n", [:append])
+          '
+
+      - name: Refuse an existing version tag or Hex release
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" "refs/tags/${VERSION}"; then
+            echo "::error::This version already has a tag."
+            exit 1
+          else
+            status=$?
+            [ "$status" -eq 2 ] || exit "$status"
+          fi
+          python3 - <<'PYTHON'
+          import os, urllib.error, urllib.parse, urllib.request
+          package = urllib.parse.quote(os.environ['PACKAGE'], safe='')
+          version = urllib.parse.quote(os.environ['VERSION'], safe='')
+          url = f'https://hex.pm/api/packages/{package}/releases/{version}'
+          try:
+              with urllib.request.urlopen(url, timeout=30):
+                  pass
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise SystemExit(f'::error::Hex version lookup failed (HTTP {error.code})')
+          except urllib.error.URLError:
+              raise SystemExit('::error::Hex version lookup failed')
+          else:
+              raise SystemExit('::error::This version is already published on Hex.pm')
+          PYTHON
+
+      - name: Build documentation
+        run: |
+          mix docs --warnings-as-errors
+          test -s doc/index.html
+          tar -C doc -czf "$DOCS_ARCHIVE" .
+
+      - name: Build and inspect the exact release archive
+        run: |
+          mix hex.build --output "$PACKAGE_ARCHIVE"
+          tar -tf "$PACKAGE_ARCHIVE"
+          tar -xOf "$PACKAGE_ARCHIVE" contents.tar.gz | tar -tzf -
+          sha256sum "$PACKAGE_ARCHIVE" "$DOCS_ARCHIVE" > "$RUNNER_TEMP/hex-publish.sha256"
+
+      - name: Publish the inspected package and documentation bytes
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: |
+          test -n "$HEX_API_KEY"
+          sha256sum --check "$RUNNER_TEMP/hex-publish.sha256"
+          # hex.publish rebuilds its archive. The same Hex APIs upload these inspected bytes.
+          # No project or dependency code runs in the process holding the publishing key.
+          mix run --no-mix-exs --no-start -e '
+            Hex.start()
+            auth = [key: System.fetch_env!("HEX_API_KEY")]
+            published! = fn
+              {:ok, {_status, _, %{"status" => "staged"}}} ->
+                Mix.raise("Hex staged publication for approval; publication is incomplete")
+              {:ok, {status, _, _}} when status in 200..299 -> :ok
+              _ -> Mix.raise("Hex publication failed")
+            end
+            Hex.API.Release.publish(nil, File.read!(System.fetch_env!("PACKAGE_ARCHIVE")),
+              auth, fn _ -> nil end, replace: false) |> published!.()
+            Hex.API.ReleaseDocs.publish(nil, System.fetch_env!("PACKAGE"),
+              System.fetch_env!("VERSION"), File.read!(System.fetch_env!("DOCS_ARCHIVE")), auth)
+              |> published!.()
+          '

@@ -60,10 +60,10 @@ compatibility lane CI also runs.
   with `AGE_DATABASE_URL` and `ASH_AGE_SRC` set. DSL docs: `mix run scripts/gen_dsl_cheatsheet.exs`.
 - **Landing.** A commit reaches `master` only after CI's run on its landing branch is green.
 - **CI.** One `ci.yml`. On the default toolchain: lint (format, `credo --strict`, the unused-lock
-  check, `hex.audit`), compile and docs, the suite with AGE, Dialyzer and the notebook. On every
+  check, `hex.audit`, `deps.audit`), compile and docs, the suite with AGE, Dialyzer and the notebook. On every
   compatibility lane: compile, the suite with AGE and Dialyzer. On the floor toolchain in
-  `ci/floor/.tool-versions`: the runtime dependencies resolved fresh and compiled with warnings as
-  errors. Raising the floor changes `elixir` in `mix.exs`, that file and CONTRIBUTING.md together.
+  `ci/floor/.tool-versions`: the locked runtime dependencies compiled with warnings as errors.
+  Raising the floor changes `elixir` in `mix.exs`, that file and CONTRIBUTING.md together.
 
 ## Testing Guidelines
 
@@ -74,3 +74,10 @@ compatibility lane CI also runs.
 - Helpers: `test/support/data_case.ex` (SQL Sandbox, `with_graph/3`, `cypher_query/3`,
   `exec/1`), `test/support/test_repo.ex`, `test/support/test_domain.ex`
   (`allow_unregistered? true` for inline test resources).
+
+## CI/CD and releases
+
+Releases, deployments, and publications are done by the infra session (`infra-1`). The project
+lands on its default branch with `kimosabe-land --repo . --sha <full sha>` and stops there.
+The requirements live in the infra repository at `baselabs/docs/ci.md`,
+"What infra requires of every product".
