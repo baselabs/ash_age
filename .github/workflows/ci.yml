@@ -1,16 +1,12 @@
 name: CI
 
+# One qualification run per landing candidate: the commit is pushed to `kci/<sha>`,
+# the `qualified` job below is its verdict, and only then does master move to it.
+# Nothing else starts this workflow, and no path filter narrows it: a candidate
+# with no run can never land.
 on:
   push:
-    branches:
-      - master
-      # The landing branch: a commit reaches master only after this workflow's
-      # run on kci/<sha> is green.
-      - "kci/**"
-    paths-ignore: ['LICENSE*', '.github/ISSUE_TEMPLATE/**']
-  pull_request:
-    branches: [master]
-  workflow_dispatch:
+    branches: ['kci/**']
 
 permissions:
   contents: read
@@ -44,6 +40,7 @@ jobs:
     name: Lint
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -71,6 +68,7 @@ jobs:
     name: Compile and docs
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -96,6 +94,7 @@ jobs:
     name: Test
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       age:
         # Pinned by digest for reproducible AGE behavior (apache/age:release_PG16_1.6.0,
@@ -138,6 +137,7 @@ jobs:
     name: Dialyzer
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -169,6 +169,7 @@ jobs:
     name: Notebook
     needs: toolchain
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       age:
         image: apache/age@sha256:16aa423d20a31aed36a3313244bf7aa00731325862f20ed584510e381f2feaed
@@ -202,6 +203,7 @@ jobs:
   floor:
     name: Floor
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       MIX_ENV: prod
     steps:
@@ -226,6 +228,7 @@ jobs:
     needs: toolchain
     if: needs.toolchain.outputs.beam_lanes != '[]'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -274,3 +277,28 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test
       - run: mix dialyzer
+
+  # The one verdict a landing reads: every job above succeeded. Compatibility
+  # may be skipped only when .tool-versions lists no second toolchain.
+  qualified:
+    name: qualified
+    if: always()
+    needs: [toolchain, lint, compile, test, dialyzer, notebook, floor, compatibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every qualification job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ['NEEDS'])
+          lanes = results['toolchain'].get('outputs', {}).get('beam_lanes')
+          def passed(name, job):
+              return job['result'] == 'success' or (name == 'compatibility' and job['result'] == 'skipped' and lanes == '[]')
+          failed = [name for name, job in results.items() if not passed(name, job)]
+          if failed:
+              print('Qualification refused: ' + ', '.join(failed))
+          sys.exit(bool(failed))
+          PY

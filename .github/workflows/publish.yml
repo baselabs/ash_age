@@ -11,9 +11,10 @@ jobs:
     name: Publish
     # The Hex key lives only in the protected publish environment, and only an
     # owner's dispatch from the default branch, and re-run if at all, may use it.
-    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     environment: publish
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
