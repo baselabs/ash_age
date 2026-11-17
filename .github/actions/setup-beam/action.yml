@@ -33,9 +33,11 @@ runs:
             if fields:
                 if len(fields) < 2 or fields[0] in versions:
                     raise SystemExit('::error::Invalid or duplicate runtime declaration')
-                versions[fields[0]] = fields[1]
-        elixir = os.environ['LANE_ELIXIR'] or versions.get('elixir', '')
-        otp = os.environ['LANE_OTP'] or versions.get('erlang', '')
+                versions[fields[0]] = fields[1:]
+        elixir = os.environ['LANE_ELIXIR'] or versions.get('elixir', [''])[0]
+        otp = os.environ['LANE_OTP'] or versions.get('erlang', [''])[0]
+        if elixir not in versions.get('elixir', []) or otp not in versions.get('erlang', []):
+            raise SystemExit('::error::Runtime lane is absent from the toolchain declaration')
         match = re.fullmatch(r'(\d+\.\d+\.\d+)-otp-(\d+)', elixir)
         if not match or not re.fullmatch(r'\d+\.\d+\.\d+(?:\.\d+)*', otp):
             raise SystemExit('::error::Declare exact Elixir and OTP versions in .tool-versions')

@@ -53,15 +53,6 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
-
       - run: mix deps.get --check-locked
       - run: mix format --check-formatted
       - run: mix credo --strict
@@ -83,15 +74,6 @@ jobs:
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
@@ -130,15 +112,6 @@ jobs:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
-
       - run: mix deps.get --check-locked
       - run: mix test
 
@@ -156,22 +129,6 @@ jobs:
         with:
           elixir-version: ${{ needs.toolchain.outputs.elixir }}
           otp-version: ${{ needs.toolchain.outputs.otp }}
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: priv/plts
-          key: ${{ runner.os }}-plt-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-plt-${{ needs.toolchain.outputs.elixir }}-${{ needs.toolchain.outputs.otp }}-
 
       - run: mix deps.get --check-locked
       - run: mix dialyzer
@@ -274,22 +231,6 @@ jobs:
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            deps
-            _build
-          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: priv/plts
-          key: ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-plt-${{ matrix.elixir }}-${{ matrix.otp }}-
 
       - run: mix deps.get --check-locked
       - run: mix compile --warnings-as-errors
