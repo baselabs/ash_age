@@ -25,7 +25,7 @@ jobs:
   toolchain:
     name: Read suite toolchains
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     outputs:
       elixir: ${{ steps.versions.outputs.elixir }}
       otp: ${{ steps.versions.outputs.otp }}
@@ -42,7 +42,7 @@ jobs:
     name: Lint
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,7 +64,7 @@ jobs:
     name: Compile and docs
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 7 # run 44201139874
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,7 +83,7 @@ jobs:
     name: Test
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     services:
       age:
         # Pinned by digest for reproducible AGE behavior (apache/age:release_PG16_1.6.0,
@@ -119,7 +119,7 @@ jobs:
     name: Dialyzer
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 10 # run 44201139874
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,7 +137,7 @@ jobs:
     name: Notebook
     needs: toolchain
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     services:
       age:
         image: apache/age@sha256:16aa423d20a31aed36a3313244bf7aa00731325862f20ed584510e381f2feaed
@@ -173,7 +173,7 @@ jobs:
   floor:
     name: Floor
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     env:
       MIX_ENV: prod
     steps:
@@ -201,7 +201,7 @@ jobs:
     needs: toolchain
     if: needs.toolchain.outputs.beam_lanes != '[]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 11 # run 44201139874
     strategy:
       fail-fast: false
       matrix:
@@ -244,7 +244,7 @@ jobs:
     if: always()
     needs: [toolchain, lint, compile, test, dialyzer, notebook, floor, compatibility]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 44128064091
+    timeout-minutes: 5 # run 44201139874
     steps:
       - name: Require every qualification job to succeed
         env:
