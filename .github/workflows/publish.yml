@@ -55,6 +55,28 @@ jobs:
               "DOCS_ARCHIVE=#{System.fetch_env!("RUNNER_TEMP")}/hex-docs.tar.gz\n", [:append])
           '
 
+      - name: Refuse a package name the registry has never had
+        run: |
+          python3 - <<'PYTHON'
+          import http.client, os, urllib.error, urllib.parse, urllib.request
+          name = os.environ['PACKAGE']
+          package = urllib.parse.quote(name, safe='')
+          package_url = f'https://hex.pm/api/packages/{package}'
+          try:
+              with urllib.request.urlopen(package_url, timeout=30) as response:
+                  if response.status != 200:
+                      raise SystemExit(f'::error::Hex.pm registry could not be read for {name} (HTTP {response.status})')
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  raise SystemExit(
+                      f'::error::{name} has never been published to Hex.pm: '
+                      'this workflow publishes new versions of existing packages only. '
+                      "A first publication is the owner's decision.")
+              raise SystemExit(f'::error::Hex.pm registry could not be read for {name} (HTTP {error.code})')
+          except (OSError, http.client.HTTPException):
+              raise SystemExit(f'::error::Hex.pm registry could not be read for {name}')
+          PYTHON
+
       - name: Refuse an existing version tag or Hex release
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" "refs/tags/${VERSION}"; then

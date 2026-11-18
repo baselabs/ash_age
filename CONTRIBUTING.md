@@ -46,6 +46,11 @@ query OSV (`curl -s https://api.osv.dev/v1/query -X POST -d
 `affected[].ranges[].events[].fixed`, then bump the dependency, and any dependency whose
 version constraint blocks it, to at least that version.
 
+## Publication
+
+The publication workflow publishes new versions of existing Hex.pm packages only and
+refuses a package name the registry has never had. A first publication is the owner's decision.
+
 ## Reporting Issues
 
 Use the [issue templates](https://github.com/baselabs/ash_age/issues/new/choose) on GitHub. Include your Elixir, OTP, and Apache AGE versions.
