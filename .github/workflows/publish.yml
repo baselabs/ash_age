@@ -91,6 +91,9 @@ jobs:
         run: |
           mix docs --warnings-as-errors
           test -s doc/index.html
+          # Docs render files the package does not carry; this names the commit that built them.
+          printf '{"package": "%s", "version": "%s", "commit": "%s"}\n' \
+            "$PACKAGE" "$VERSION" "$GITHUB_SHA" > doc/release.json
           tar -C doc -czf "$DOCS_ARCHIVE" .
 
       - name: Build and inspect the exact release archive
@@ -139,5 +142,14 @@ jobs:
             end
           '
 
-      - name: Read back the served package bytes and docs
+      - name: Read back the served package bytes and docs, and assemble release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 "$GITHUB_WORKSPACE/scripts/hex_release_state.py" read-back
+
+      - name: Upload release-assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/
+          if-no-files-found: error
