@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Publish Hex releases with GitHub workload identity in a separate upload job; build and read-back hold no publishing credential.
 - **Requires Elixir 1.17 or later.** The declared `~> 1.15` was never tested, and current Ash
   releases require Elixir 1.17. CI proves the floor (Elixir 1.17.0 on Erlang/OTP 26,
   dependencies resolved fresh) beside the pinned default and compatibility toolchains.

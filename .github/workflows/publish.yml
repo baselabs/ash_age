@@ -3,8 +3,11 @@ name: Publish to Hex.pm
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
   group: publish
@@ -15,12 +18,18 @@ env:
   HEX_API_URL: https://hex.pm/api
 
 jobs:
-  publish:
-    name: Publish
+  build:
+    name: Build and plan
     if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
-    environment: publish
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 5 # run 39079831016
+    timeout-minutes: 5 # no green keyless run yet; retain the existing small limit
+    outputs:
+      UPLOAD_PACKAGE: ${{ steps.plan.outputs.UPLOAD_PACKAGE }}
+      UPLOAD_DOCS: ${{ steps.plan.outputs.UPLOAD_DOCS }}
+      PACKAGE: ${{ steps.plan.outputs.PACKAGE }}
+      VERSION: ${{ steps.plan.outputs.VERSION }}
     steps:
       - name: Refuse a ref other than the default branch
         env:
@@ -101,30 +110,142 @@ jobs:
           mix hex.build --output "$PACKAGE_ARCHIVE"
           tar -tf "$PACKAGE_ARCHIVE"
           tar -xOf "$PACKAGE_ARCHIVE" contents.tar.gz | tar -tzf -
-          sha256sum "$PACKAGE_ARCHIVE" "$DOCS_ARCHIVE" > "$RUNNER_TEMP/hex-publish.sha256"
+          # Relative names survive transfer to another job's RUNNER_TEMP.
+          cd "$RUNNER_TEMP"
+          sha256sum "${PACKAGE}-${VERSION}.tar" hex-docs.tar.gz > hex-publish.sha256
 
       # A release is two uploads, and a second dispatch on the same commit finishes the first
       # (the organization's CI requirements, Releases). The package is the release: served package bytes
       # must equal the archive just built. Docs builds are not byte-stable, so served docs are
       # kept and read back as present, never compared. Nothing is ever replaced.
       - name: Plan the uploads from the served release
+        id: plan
         run: |
-          python3 "$GITHUB_WORKSPACE/scripts/hex_release_state.py" plan >> "$GITHUB_ENV"
+          python3 "$GITHUB_WORKSPACE/scripts/hex_release_state.py" plan > "$RUNNER_TEMP/hex-publish.plan"
+          printf 'PACKAGE=%s\nVERSION=%s\n' "$PACKAGE" "$VERSION" >> "$RUNNER_TEMP/hex-publish.plan"
+          cat "$RUNNER_TEMP/hex-publish.plan" >> "$GITHUB_OUTPUT"
+
+      - name: Pass the inspected archives, checksums and plan to the next jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hex-publish
+          path: |
+            ${{ env.PACKAGE_ARCHIVE }}
+            ${{ env.DOCS_ARCHIVE }}
+            ${{ runner.temp }}/hex-publish.sha256
+            ${{ runner.temp }}/hex-publish.plan
+          if-no-files-found: error
+          retention-days: 1
+
+  upload:
+    name: Upload inspected bytes
+    needs: build
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) && (needs.build.outputs.UPLOAD_PACKAGE == 'true' || needs.build.outputs.UPLOAD_DOCS == 'true')
+    environment: publish
+    permissions:
+      contents: read # Sparse checkout of the workflow action and runtime declaration only.
+      id-token: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # no green keyless run yet; retain the existing small limit
+    env:
+      PACKAGE: ${{ needs.build.outputs.PACKAGE }}
+      VERSION: ${{ needs.build.outputs.VERSION }}
+      UPLOAD_PACKAGE: ${{ needs.build.outputs.UPLOAD_PACKAGE }}
+      UPLOAD_DOCS: ${{ needs.build.outputs.UPLOAD_DOCS }}
+    steps:
+      - name: Refuse a ref other than the default branch
+        env:
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "$DEFAULT_REF" ]; then
+            echo "::error::Run this workflow from the default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/
+            /.tool-versions
+
+      - uses: ./.github/actions/setup-beam
+
+      - name: Prepare isolated Hex and archive paths
+        run: |
+          printf 'HEX_HOME=%s/hex-publish-home\nMIX_HOME=%s/hex-publish-mix\n' \
+            "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'PACKAGE_ARCHIVE=%s/%s-%s.tar\nDOCS_ARCHIVE=%s/hex-docs.tar.gz\n' \
+            "$RUNNER_TEMP" "$PACKAGE" "$VERSION" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Pin the Hex client without loading a project
+        run: |
+          cd "$RUNNER_TEMP"
+          mix local.hex 2.7.0 --force
+
+      - name: Download the inspected archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hex-publish
+          path: ${{ runner.temp }}
+
+      - name: Verify the inspected archives
+        run: |
+          cd "$RUNNER_TEMP"
+          sha256sum --check hex-publish.sha256
+
+      - name: Exchange a package-scoped Hex workload token
+        run: |
+          python3 - <<'PYTHON'
+          import http.client, json, os, pathlib, urllib.error, urllib.parse, urllib.request
+
+          def request_json(url, data=None, headers=None):
+              try:
+                  request = urllib.request.Request(url, data=data, headers=headers or {})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'::error::Workload identity request failed (HTTP {error.code})') from None
+              except (OSError, http.client.HTTPException, ValueError):
+                  raise SystemExit('::error::Workload identity request failed') from None
+
+          # The configured audience is fixed here, never chosen by a server response.
+          if request_json('https://hex.pm/api/oidc/audience').get('audience') != 'hexpm':
+              raise SystemExit('::error::Hex workload identity audience differs from hexpm')
+          oidc = request_json(
+              os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=hexpm',
+              headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          assertion = oidc.get('value')
+          if not isinstance(assertion, str) or not assertion:
+              raise SystemExit('::error::GitHub returned no OIDC token')
+          scope = 'package:hexpm/' + os.environ['PACKAGE']
+          result = request_json('https://hex.pm/api/oauth/token', data=urllib.parse.urlencode({
+              'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+              'assertion': assertion,
+              'scope': scope,
+          }).encode(), headers={'Content-Type': 'application/x-www-form-urlencoded'})
+          token = result.get('access_token')
+          if not isinstance(token, str) or not token or not all(33 <= ord(char) <= 126 for char in token):
+              raise SystemExit('::error::Hex returned no usable access token')
+          # Persist before checking metadata so always() can revoke even an unexpected grant.
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'hex-publish-token'
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'w') as handle:
+              handle.write(token)
+          if (result.get('token_type') != 'bearer' or result.get('scope') != scope or
+                  not isinstance(result.get('expires_in'), int) or not 0 < result['expires_in'] <= 900):
+              raise SystemExit('::error::Hex returned unexpected workload token metadata')
+          PYTHON
 
       - name: Upload the inspected package and documentation bytes
-        if: env.UPLOAD_PACKAGE == 'true' || env.UPLOAD_DOCS == 'true'
-        env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
-          test -n "$HEX_API_KEY"
-          sha256sum --check "$RUNNER_TEMP/hex-publish.sha256"
-          # hex.publish compiles the project and rebuilds its archive. The same Hex APIs upload
-          # these inspected bytes from a directory with no mix.exs, so no project or dependency
-          # code runs in the process holding the publishing key.
+          # No mix.exs or dependency code is loaded in this job. Hex 2.7.0's
+          # lib/hex/api/client.ex:21-25 adds Bearer for the explicit oauth: true option.
           cd "$RUNNER_TEMP"
           mix run --no-mix-exs --no-start -e '
             Hex.start()
-            auth = [key: System.fetch_env!("HEX_API_KEY")]
+            token_file = Path.join(System.fetch_env!("RUNNER_TEMP"), "hex-publish-token")
+            auth = [key: File.read!(token_file), oauth: true]
             published! = fn
               {:ok, {_status, _, %{"status" => "staged"}}} ->
                 Mix.raise("Hex staged publication for approval; dispatch again on this commit once it is approved")
@@ -141,6 +262,67 @@ jobs:
                 |> published!.()
             end
           '
+
+      - name: Revoke the workload token and remove its file
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import http.client, os, pathlib, urllib.error, urllib.parse, urllib.request
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'hex-publish-token'
+          if path.exists():
+              try:
+                  request = urllib.request.Request('https://hex.pm/api/oauth/revoke',
+                      data=urllib.parse.urlencode({'token': path.read_text()}).encode(),
+                      headers={'Content-Type': 'application/x-www-form-urlencoded'})
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      if response.status != 200:
+                          raise SystemExit('::error::Hex workload token revocation failed')
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'::error::Hex workload token revocation failed (HTTP {error.code})') from None
+              except (OSError, http.client.HTTPException):
+                  raise SystemExit('::error::Hex workload token revocation failed') from None
+              finally:
+                  path.unlink()
+          PYTHON
+
+  read-back:
+    name: Read back the release
+    needs: [build, upload]
+    if: >-
+      !cancelled() && contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) &&
+      needs.build.result == 'success' && (needs.upload.result == 'success' || needs.upload.result == 'skipped')
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5 # no green keyless run yet; retain the existing small limit
+    env:
+      PACKAGE: ${{ needs.build.outputs.PACKAGE }}
+      VERSION: ${{ needs.build.outputs.VERSION }}
+    steps:
+      - name: Refuse a ref other than the default branch
+        env:
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "$DEFAULT_REF" ]; then
+            echo "::error::Run this workflow from the default branch."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the inspected archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hex-publish
+          path: ${{ runner.temp }}
+
+      - name: Verify the inspected archives and set their paths
+        run: |
+          cd "$RUNNER_TEMP"
+          sha256sum --check hex-publish.sha256
+          printf 'PACKAGE_ARCHIVE=%s/%s-%s.tar\nDOCS_ARCHIVE=%s/hex-docs.tar.gz\n' \
+            "$RUNNER_TEMP" "$PACKAGE" "$VERSION" "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Read back the served package bytes and docs, and assemble release-assets
         env:

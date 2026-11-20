@@ -48,8 +48,22 @@ version constraint blocks it, to at least that version.
 
 ## Publication
 
-The publication workflow publishes new versions of existing Hex.pm packages only and
-refuses a package name the registry has never had. A first publication is the owner's decision.
+The dispatch-only `publish.yml` runs from the default branch and publishes new versions
+of existing Hex.pm packages only. It refuses a package name the registry has never had;
+a first publication is the owner's decision.
+
+The `build` job builds and inspects the package and docs without a publishing environment.
+It passes the archives, checksums and upload plan to `upload`, the only job in environment
+`publish`. That job runs no project code, verifies the checksums, and exchanges GitHub OIDC
+for a 15-minute Hex workload token scoped to this public package. It uploads with the pinned
+Hex client and revokes the token even after failure. No stored Hex key is used. Only this job
+has `id-token: write`; every job retains the publisher actor restrictions.
+
+A second dispatch on the same commit finishes a staged or partial publication: an existing
+package must match the inspected bytes, served docs are kept, and nothing is replaced.
+The `read-back` job runs after a successful upload or when nothing needs uploading. It checks
+the served package and docs, including the docs' `release.json` commit, and assembles the
+existing `release-assets` artifact without a publishing environment or token.
 
 ## Reporting Issues
 
