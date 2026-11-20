@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+# Every step runs as bash -eo pipefail; a failure behind a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
