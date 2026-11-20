@@ -77,31 +77,15 @@ jobs:
               raise SystemExit(f'::error::Hex.pm registry could not be read for {name}')
           PYTHON
 
-      - name: Refuse an existing version tag or Hex release
+      - name: Refuse a version that already has a tag
         run: |
           if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" "refs/tags/${VERSION}"; then
-            echo "::error::This version already has a tag."
+            echo "::error::This version already has a tag: its release is complete."
             exit 1
           else
             status=$?
             [ "$status" -eq 2 ] || exit "$status"
           fi
-          python3 - <<'PYTHON'
-          import os, urllib.error, urllib.parse, urllib.request
-          package = urllib.parse.quote(os.environ['PACKAGE'], safe='')
-          version = urllib.parse.quote(os.environ['VERSION'], safe='')
-          url = f'https://hex.pm/api/packages/{package}/releases/{version}'
-          try:
-              with urllib.request.urlopen(url, timeout=30):
-                  pass
-          except urllib.error.HTTPError as error:
-              if error.code != 404:
-                  raise SystemExit(f'::error::Hex version lookup failed (HTTP {error.code})')
-          except urllib.error.URLError:
-              raise SystemExit('::error::Hex version lookup failed')
-          else:
-              raise SystemExit('::error::This version is already published on Hex.pm')
-          PYTHON
 
       - name: Build documentation
         run: |
@@ -116,26 +100,44 @@ jobs:
           tar -xOf "$PACKAGE_ARCHIVE" contents.tar.gz | tar -tzf -
           sha256sum "$PACKAGE_ARCHIVE" "$DOCS_ARCHIVE" > "$RUNNER_TEMP/hex-publish.sha256"
 
-      - name: Publish the inspected package and documentation bytes
+      # A release is two uploads, and a second dispatch on the same commit finishes the first
+      # (infra baselabs/docs/ci.md, Releases). The package is the release: served package bytes
+      # must equal the archive just built. Docs builds are not byte-stable, so served docs are
+      # kept and read back as present, never compared. Nothing is ever replaced.
+      - name: Plan the uploads from the served release
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/hex_release_state.py" plan >> "$GITHUB_ENV"
+
+      - name: Upload the inspected package and documentation bytes
+        if: env.UPLOAD_PACKAGE == 'true' || env.UPLOAD_DOCS == 'true'
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           test -n "$HEX_API_KEY"
           sha256sum --check "$RUNNER_TEMP/hex-publish.sha256"
-          # hex.publish rebuilds its archive. The same Hex APIs upload these inspected bytes.
-          # No project or dependency code runs in the process holding the publishing key.
+          # hex.publish compiles the project and rebuilds its archive. The same Hex APIs upload
+          # these inspected bytes from a directory with no mix.exs, so no project or dependency
+          # code runs in the process holding the publishing key.
+          cd "$RUNNER_TEMP"
           mix run --no-mix-exs --no-start -e '
             Hex.start()
             auth = [key: System.fetch_env!("HEX_API_KEY")]
             published! = fn
               {:ok, {_status, _, %{"status" => "staged"}}} ->
-                Mix.raise("Hex staged publication for approval; publication is incomplete")
+                Mix.raise("Hex staged publication for approval; dispatch again on this commit once it is approved")
               {:ok, {status, _, _}} when status in 200..299 -> :ok
               _ -> Mix.raise("Hex publication failed")
             end
-            Hex.API.Release.publish(nil, File.read!(System.fetch_env!("PACKAGE_ARCHIVE")),
-              auth, fn _ -> nil end, replace: false) |> published!.()
-            Hex.API.ReleaseDocs.publish(nil, System.fetch_env!("PACKAGE"),
-              System.fetch_env!("VERSION"), File.read!(System.fetch_env!("DOCS_ARCHIVE")), auth)
-              |> published!.()
+            if System.fetch_env!("UPLOAD_PACKAGE") == "true" do
+              Hex.API.Release.publish(nil, File.read!(System.fetch_env!("PACKAGE_ARCHIVE")),
+                auth, fn _ -> nil end, replace: false) |> published!.()
+            end
+            if System.fetch_env!("UPLOAD_DOCS") == "true" do
+              Hex.API.ReleaseDocs.publish(nil, System.fetch_env!("PACKAGE"),
+                System.fetch_env!("VERSION"), File.read!(System.fetch_env!("DOCS_ARCHIVE")), auth)
+                |> published!.()
+            end
           '
+
+      - name: Read back the served package bytes and docs
+        run: python3 "$GITHUB_WORKSPACE/scripts/hex_release_state.py" read-back
