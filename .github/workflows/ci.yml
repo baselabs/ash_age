@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
       - name: Read defaults and compatibility lanes
         id: versions
-        run: sh scripts/toolchain.sh >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh >> "$GITHUB_OUTPUT"
 
   lint:
     name: Lint
@@ -183,7 +183,7 @@ jobs:
 
       - name: Read the floor toolchain
         id: versions
-        run: sh scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
+        run: scripts/toolchain.sh ci/floor/.tool-versions >> "$GITHUB_OUTPUT"
 
       - uses: ./.github/actions/setup-beam
         with:

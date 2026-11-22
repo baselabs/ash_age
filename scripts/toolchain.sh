@@ -1,9 +1,12 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Read asdf .tool-versions and print defaults and JSON lanes as GitHub outputs.
 # Run --self-test for the portable validation cases. This single file is shared
 # across repositories and runs before any listed toolchain is installed.
 # After installation, --installed TOOL=VERSION... refuses unless each installed
 # tool (elixir, erlang, nodejs, golang) reports exactly that version.
+# The one source is the harness's scripts/toolchain.sh; each repository carries a byte-identical
+# copy at scripts/toolchain.sh, mode 755, called by path, and the harness preflight refuses any other.
+set -euo pipefail
 
 self_test() (
     scratch=$(mktemp -d) || exit 1
@@ -17,8 +20,8 @@ self_test() (
         expected_status=$2
         expected=$3
         shift 3
-        actual=$(sh "$0" "$@" 2>&1)
-        status=$?
+        status=0
+        actual=$(bash "$0" "$@" 2>&1) || status=$?
         if { [ "$expected_status" = good ] && [ "$status" -eq 0 ]; } ||
            { [ "$expected_status" = bad ] && [ "$status" -ne 0 ]; }; then
             if [ "$actual" = "$expected" ]; then
@@ -97,6 +100,7 @@ installed() (
         exit 1
     fi
     refused=0
+    # A probe that exits nonzero refuses the tool, whatever it printed.
     for pair in "$@"; do
         tool=${pair%%=*}
         want=${pair#*=}
@@ -107,14 +111,14 @@ installed() (
         fi
         case $tool in
             elixir)
-                have=$(elixir -e 'IO.write(System.version() <> "-otp-" <> System.build_info()[:otp_release])') ;;
+                have=$(elixir -e 'IO.write(System.version() <> "-otp-" <> System.build_info()[:otp_release])') || { printf 'toolchain: %s version probe failed\n' "$tool" >&2; refused=1; continue; } ;;
             erlang)
-                have=$(erl -noshell -eval '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().') ;;
+                have=$(erl -noshell -noinput -eval '{ok, V} = file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])), io:put_chars(string:trim(V)), halt().') || { printf 'toolchain: %s version probe failed\n' "$tool" >&2; refused=1; continue; } ;;
             nodejs)
-                have=$(node --version)
+                have=$(node --version) || { printf 'toolchain: %s version probe failed\n' "$tool" >&2; refused=1; continue; }
                 have=${have#v} ;;
             golang)
-                have=$(go env GOVERSION)
+                have=$(go env GOVERSION) || { printf 'toolchain: %s version probe failed\n' "$tool" >&2; refused=1; continue; }
                 have=${have#go} ;;
             *)
                 printf 'toolchain: cannot check an installed %s\n' "$tool" >&2
