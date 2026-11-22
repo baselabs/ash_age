@@ -104,7 +104,7 @@ jobs:
           sha256sum "$PACKAGE_ARCHIVE" "$DOCS_ARCHIVE" > "$RUNNER_TEMP/hex-publish.sha256"
 
       # A release is two uploads, and a second dispatch on the same commit finishes the first
-      # (infra baselabs/docs/ci.md, Releases). The package is the release: served package bytes
+      # (the organization's CI requirements, Releases). The package is the release: served package bytes
       # must equal the archive just built. Docs builds are not byte-stable, so served docs are
       # kept and read back as present, never compared. Nothing is ever replaced.
       - name: Plan the uploads from the served release

@@ -13,7 +13,7 @@ read-back  the version is served, not retired, with package bytes equal to the a
 
 Docs bytes are never compared: a docs build is not byte-stable. Docs render files the package
 does not carry, so their release.json, not the package bytes, names the commit that built them
-(infra baselabs/docs/ci.md, Releases).
+(the organization's CI requirements, Releases).
 """
 import hashlib
 import http.client
