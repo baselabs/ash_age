@@ -78,6 +78,6 @@ compatibility lane CI also runs.
 ## CI/CD and releases
 
 Releases, deployments, and publications are done by the infra session (`infra-1`). The project
-lands on its default branch with `kimosabe-land --repo . --sha <full sha>` and stops there.
+lands on its default branch through the landing tool, by full commit SHA, and stops there.
 The requirements live in the infra repository at `baselabs/docs/ci.md`,
 "What infra requires of every product".
