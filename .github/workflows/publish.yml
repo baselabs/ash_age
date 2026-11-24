@@ -114,6 +114,50 @@ jobs:
           cd "$RUNNER_TEMP"
           sha256sum "${PACKAGE}-${VERSION}.tar" hex-docs.tar.gz > hex-publish.sha256
 
+      - name: Refuse a package whose changelog is not stamped for its version
+        shell: bash
+        run: |
+          python3 -I - "$PACKAGE_ARCHIVE" "$VERSION" <<'PY'
+          import io, re, sys, tarfile
+          archive, version = sys.argv[1], sys.argv[2]
+          def refuse(message):
+              raise SystemExit(f'{archive}: {message}; publication refused')
+          with tarfile.open(archive, 'r:*') as outer:
+              if 'contents.tar.gz' in outer.getnames():
+                  package = tarfile.open(fileobj=io.BytesIO(outer.extractfile('contents.tar.gz').read()), mode='r:gz')
+                  root = ''
+              else:
+                  package, root = outer, 'package/'
+              found = [member for member in package.getmembers() if member.isfile()
+                       and re.fullmatch(re.escape(root) + r'(?i:changelog(?:\.md|\.markdown|\.txt)?)', member.name)]
+              if len(found) != 1:
+                  refuse('the package must ship exactly one root CHANGELOG')
+              try:
+                  lines = package.extractfile(found[0]).read().decode('utf-8').splitlines()
+              except UnicodeDecodeError:
+                  refuse('the packaged CHANGELOG is not UTF-8')
+          headings, fence = {}, False
+          for index, line in enumerate(lines):
+              if re.match(r' {0,3}(```|~~~)', line):
+                  fence = not fence
+              elif not fence and (match := re.match(r' {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$', line)):
+                  headings[index] = (len(match.group(1)), match.group(2) or '')
+          token = re.compile(r'(?<![0-9A-Za-z.+-])v?' + re.escape(version) + r'(?![0-9A-Za-z.+-])')
+          stamped = [index for index, (_, title) in headings.items() if token.search(title)]
+          if not stamped:
+              refuse(f'the packaged CHANGELOG has no section for {version}')
+          at, level = stamped[0], headings[stamped[0]][0]
+          def written(start):
+              end = next((index for index, (depth, _) in headings.items() if index > start and depth <= level), len(lines))
+              return any(line.strip() for index, line in enumerate(lines[start + 1:end], start + 1) if index not in headings)
+          if not written(at):
+              refuse(f'the packaged CHANGELOG section for {version} is empty')
+          for start, (depth, title) in headings.items():
+              if start < at and depth == level and written(start):
+                  refuse(f'the packaged CHANGELOG has entries above {version}, under "{title}"')
+          print(f'{archive}: the packaged CHANGELOG is stamped for {version}')
+          PY
+
       # A release is two uploads, and a second dispatch on the same commit finishes the first
       # (the organization's CI requirements, Releases). The package is the release: served package bytes
       # must equal the archive just built. Docs builds are not byte-stable, so served docs are
