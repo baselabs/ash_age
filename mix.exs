@@ -57,11 +57,16 @@ defmodule AshAge.MixProject do
       {:splode, "~> 0.3"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:jason, "~> 1.2"},
-      {:ecto, "~> 3.10"},
+      {:ecto, ">= 3.14.3 and < 4.0.0-0"},
       {:ecto_sql, "~> 3.10"},
-      {:postgrex, "~> 0.19 or ~> 1.0"},
+      {:postgrex, ">= 0.22.4 and < 2.0.0-0"},
       {:db_connection, ">= 2.10.3 and < 3.0.0-0"},
       {:telemetry, "~> 1.0"},
+      # Not called directly: Ecto and Postgrex bring Decimal, and Reactor (through Ash)
+      # brings Ymlr. Declared only so no consumer resolves a release with a published
+      # advisory (Decimal before 3.1.2, Ymlr before 5.1.6).
+      {:decimal, ">= 3.1.2 and < 4.0.0-0", optional: true},
+      {:ymlr, ">= 5.1.6 and < 6.0.0-0", optional: true},
 
       # Dev/Test dependencies
       # Igniter powers `mix ash_age.install` / `mix igniter.install ash_age`

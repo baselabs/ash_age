@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3.38.0 are affected) and **DBConnection 2.10.3 or later** (EEF-CVE-2026-133555,
   GHSA-gmmq-fw75-wq46; 1.1.0 up to 2.10.2 are affected). AshAge calls DBConnection directly, so it
   now declares it; a consumer can no longer resolve either vulnerable range through AshAge.
+- **Requires Ecto 3.14.3 and Postgrex 0.22.4 or later**, and constrains Decimal to 3.1.2 or later
+  and Ymlr to 5.1.6 or later when present: the first releases without a published advisory
+  (EEF-CVE-2026-118391; EEF-CVE-2026-32687, EEF-CVE-2026-58225 and EEF-CVE-2026-66838;
+  EEF-CVE-2026-97853; EEF-CVE-2026-65636). The previous requirements let a consumer resolve
+  affected releases through AshAge's own dependencies.
 
 ## [2.2.1] - 2026-10-17
 
