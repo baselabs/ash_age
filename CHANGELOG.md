@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Corrected the ash_hooks webhooks guide to the ash_hooks API.
 
+### Security
+
+- **Requires Ash 3.38.1 or later** (EEF-CVE-2026-120299, GHSA-rwmx-99mc-qr2x; Ash 3.24.0 up to
+  3.38.0 are affected) and **DBConnection 2.10.3 or later** (EEF-CVE-2026-133555,
+  GHSA-gmmq-fw75-wq46; 1.1.0 up to 2.10.2 are affected). AshAge calls DBConnection directly, so it
+  now declares it; a consumer can no longer resolve either vulnerable range through AshAge.
+
 ## [2.2.1] - 2026-10-17
 
 Docs + ecosystem-integration release.

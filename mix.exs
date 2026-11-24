@@ -53,13 +53,14 @@ defmodule AshAge.MixProject do
   defp deps do
     [
       # Runtime dependencies
-      {:ash, "~> 3.11"},
+      {:ash, ">= 3.38.1 and < 4.0.0-0"},
       {:splode, "~> 0.3"},
       {:spark, ">= 2.3.3 and < 3.0.0-0"},
       {:jason, "~> 1.2"},
       {:ecto, "~> 3.10"},
       {:ecto_sql, "~> 3.10"},
       {:postgrex, "~> 0.19 or ~> 1.0"},
+      {:db_connection, ">= 2.10.3 and < 3.0.0-0"},
       {:telemetry, "~> 1.0"},
 
       # Dev/Test dependencies
