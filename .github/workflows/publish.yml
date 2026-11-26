@@ -184,7 +184,7 @@ jobs:
   upload:
     name: Upload inspected bytes
     needs: build
-    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) && (needs.build.outputs.UPLOAD_PACKAGE == 'true' || needs.build.outputs.UPLOAD_DOCS == 'true')
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     environment: publish
     permissions:
       contents: read # Sparse checkout of the workflow action and runtime declaration only.
@@ -239,6 +239,7 @@ jobs:
           sha256sum --check hex-publish.sha256
 
       - name: Exchange a package-scoped Hex workload token
+        if: env.UPLOAD_PACKAGE == 'true' || env.UPLOAD_DOCS == 'true'
         run: |
           python3 - <<'PYTHON'
           import http.client, json, os, pathlib, urllib.error, urllib.parse, urllib.request
@@ -282,6 +283,7 @@ jobs:
           PYTHON
 
       - name: Upload the inspected package and documentation bytes
+        if: env.UPLOAD_PACKAGE == 'true' || env.UPLOAD_DOCS == 'true'
         run: |
           # No mix.exs or dependency code is loaded in this job. Hex 2.7.0's
           # lib/hex/api/client.ex:21-25 adds Bearer for the explicit oauth: true option.
@@ -332,9 +334,7 @@ jobs:
   read-back:
     name: Read back the release
     needs: [build, upload]
-    if: >-
-      !cancelled() && contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor) &&
-      needs.build.result == 'success' && (needs.upload.result == 'success' || needs.upload.result == 'skipped')
+    if: contains(fromJSON('["corepay","palermo-git"]'), github.actor) && contains(fromJSON('["corepay","palermo-git"]'), github.triggering_actor)
     permissions:
       contents: read
     runs-on: ubuntu-24.04
